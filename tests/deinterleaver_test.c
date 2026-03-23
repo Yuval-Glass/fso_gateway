@@ -1,32 +1,19 @@
 /*
- * src/deinterleaver_test.c — End-to-end interleaver → deinterleaver
- * round-trip verification for the FSO Gateway.
+ * tests/deinterleaver_test.c — Deinterleaver Round-Trip Verification.
  *
- * The test:
- *   1. Fills an interleaver matrix (Depth=4, N=10) with 4 FEC blocks,
- *      each symbol carrying a unique deterministic payload.
- *   2. Drains the interleaver in column-major order, producing the
- *      shuffled symbol stream the transmitter would put on the wire.
- *   3. Pushes that shuffled stream into the deinterleaver.
- *   4. Retrieves all 4 reconstructed blocks and verifies:
- *        a. Correct block_id.
- *        b. Correct symbol_count (all 10 symbols present).
- *        c. Each symbol is at the correct fec_id position.
- *        d. Every payload byte matches the original deterministic pattern.
+ * Tests a full interleave → deinterleave round-trip and a set of edge-case
+ * checks.  Updated for the new deinterleaver_create() signature and the
+ * mandatory mark_result() lifecycle.
  *
- * Compile and run (from project root after `make DEBUG=1`):
+ * Geometry: Depth=4, N=10, Symbol_Size=1500  →  40 symbols total.
  *
- *   make dtest DEBUG=1
- *
- * Or manually:
- *   gcc -std=c11 -Iinclude -Wall -Wextra -Wpedantic -pthread         \
- *       -g -fsanitize=address                                         \
- *       -o build/deinterleaver_test                                   \
- *       src/deinterleaver_test.c                                      \
- *       build/src/interleaver.o                                       \
- *       build/src/deinterleaver.o                                     \
- *       build/src/logging.o                                           \
- *       -pthread -fsanitize=address
+ * Key changes from the original:
+ *   - deinterleaver_create() now takes 6 arguments:
+ *       (max_active, spb, k, symbol_size, stabilization_ms, max_age_ms)
+ *   - Every deinterleaver_get_ready_block() MUST be followed by
+ *       deinterleaver_mark_result() to recycle the slot to EMPTY.
+ *   - verify_blocks() now calls mark_result() after each retrieved block.
+ *   - test_duplicate_rejection() calls mark_result() after retrieval.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -42,16 +29,25 @@
 #include "types.h"
 
 /* -------------------------------------------------------------------------- */
-/* Test geometry — must match what the interleaver test uses                  */
+/* Test geometry                                                               */
 /* -------------------------------------------------------------------------- */
 
 #define TEST_DEPTH       4
 #define TEST_N           10
+#define TEST_K           7     /* real K for this test (K < N)               */
 #define TEST_SYMBOL_SIZE 1500
 #define TEST_TOTAL       (TEST_DEPTH * TEST_N)   /* 40 */
 
+/*
+ * Stabilization and max-age timing for deinterleaver_create().
+ * In this test blocks complete fully (all N symbols), so the timing
+ * paths are never exercised — values are provided for correctness.
+ */
+#define DIL_STAB_MS    5.0
+#define DIL_MAX_AGE_MS 500.0
+
 /* -------------------------------------------------------------------------- */
-/* Deterministic payload (identical formula to interleaver_test.c)           */
+/* Deterministic payload helper                                                */
 /* -------------------------------------------------------------------------- */
 
 static unsigned char expected_byte(uint32_t block_id,
@@ -99,19 +95,11 @@ static void fail(results_t *r, const char *desc)
 /* Phase 1 — build the interleaved stream                                     */
 /* -------------------------------------------------------------------------- */
 
-/*
- * Fills `out_stream` (caller-allocated array of TEST_TOTAL symbol_t) with
- * the 40 symbols in the column-major order the interleaver would emit.
- * Returns 0 on success, -1 on any interleaver error.
- */
 static int build_interleaved_stream(symbol_t *out_stream, results_t *r)
 {
     interleaver_t *il;
     symbol_t       sym;
-    int            b;
-    int            f;
-    int            i;
-    int            rc;
+    int            b, f, i, rc;
     char           desc[128];
 
     il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
@@ -120,7 +108,6 @@ static int build_interleaved_stream(symbol_t *out_stream, results_t *r)
         return -1;
     }
 
-    /* Push all 40 symbols row-major (block by block) */
     for (b = 0; b < TEST_DEPTH; ++b) {
         for (f = 0; f < TEST_N; ++f) {
             fill_symbol(&sym, (uint32_t)b, (uint32_t)f);
@@ -141,7 +128,6 @@ static int build_interleaved_stream(symbol_t *out_stream, results_t *r)
         return -1;
     }
 
-    /* Drain in column-major order into out_stream */
     for (i = 0; i < TEST_TOTAL; ++i) {
         rc = interleaver_pop_ready_symbol(il, &out_stream[i]);
         if (rc < 0) {
@@ -154,7 +140,6 @@ static int build_interleaved_stream(symbol_t *out_stream, results_t *r)
     }
 
     pass(r, "Phase 1: interleaved stream built (40 symbols, column-major)");
-
     interleaver_destroy(il);
     return 0;
 }
@@ -167,8 +152,7 @@ static int push_to_deinterleaver(deinterleaver_t *dil,
                                   const symbol_t  *stream,
                                   results_t       *r)
 {
-    int  i;
-    int  rc;
+    int  i, rc;
     char desc[128];
 
     printf("\n  Shuffled input to deinterleaver:\n");
@@ -206,8 +190,8 @@ static int push_to_deinterleaver(deinterleaver_t *dil,
 static void verify_blocks(deinterleaver_t *dil, results_t *r)
 {
     block_t  block;
-    int      retrieved  = 0;
-    int      all_ok     = 1;
+    int      retrieved = 0;
+    int      all_ok    = 1;
     char     desc[128];
 
     printf("\n  Reconstructed blocks:\n");
@@ -217,27 +201,22 @@ static void verify_blocks(deinterleaver_t *dil, results_t *r)
         int      order_ok     = 1;
         int      payload_ok   = 1;
         int      f;
+        uint32_t bid          = (uint32_t)block.block_id;
 
         printf("\n  Block %u (%d/%d symbols):\n",
-               (unsigned)block.block_id,
-               block.symbol_count,
-               TEST_N);
+               (unsigned)bid, block.symbol_count, TEST_N);
 
-        /* Check symbol count */
         if (block.symbol_count != TEST_N) {
             snprintf(desc, sizeof(desc),
                      "Block %u: symbol_count=%d expected=%d",
-                     (unsigned)block.block_id,
-                     block.symbol_count, TEST_N);
+                     (unsigned)bid, block.symbol_count, TEST_N);
             fail(r, desc);
             sym_count_ok = 0;
             all_ok       = 0;
         }
 
-        /* Check each symbol's fec_id and payload */
         for (f = 0; f < TEST_N; ++f) {
             const symbol_t *s   = &block.symbols[f];
-            uint32_t        bid = block.block_id;
             uint32_t        fid = (uint32_t)f;
             size_t          j;
 
@@ -246,7 +225,6 @@ static void verify_blocks(deinterleaver_t *dil, results_t *r)
                    (unsigned)s->packet_id,
                    s->data[0]);
 
-            /* fec_id must equal the array index */
             if (s->fec_id != fid) {
                 snprintf(desc, sizeof(desc),
                          "Block %u symbol[%d]: fec_id=%u expected=%u",
@@ -257,7 +235,6 @@ static void verify_blocks(deinterleaver_t *dil, results_t *r)
                 all_ok   = 0;
             }
 
-            /* packet_id must match the block_id */
             if (s->packet_id != bid) {
                 snprintf(desc, sizeof(desc),
                          "Block %u symbol[%d]: packet_id=%u expected=%u",
@@ -267,13 +244,11 @@ static void verify_blocks(deinterleaver_t *dil, results_t *r)
                 all_ok = 0;
             }
 
-            /* Byte-exact payload check */
             for (j = 0;
                  j < TEST_SYMBOL_SIZE && j < MAX_SYMBOL_DATA_SIZE;
                  ++j)
             {
                 unsigned char want = expected_byte(bid, fid, j);
-
                 if (s->data[j] != want) {
                     snprintf(desc, sizeof(desc),
                              "Block %u symbol[%d] byte[%zu]: "
@@ -282,7 +257,7 @@ static void verify_blocks(deinterleaver_t *dil, results_t *r)
                     fail(r, desc);
                     payload_ok = 0;
                     all_ok     = 0;
-                    break;   /* first mismatch per symbol */
+                    break;
                 }
             }
 
@@ -291,10 +266,16 @@ static void verify_blocks(deinterleaver_t *dil, results_t *r)
             (void)payload_ok;
         }
 
+        /*
+         * MANDATORY: acknowledge and recycle the slot.
+         * Without this call the slot stays READY_TO_DECODE forever and
+         * the while loop above would retrieve the same block repeatedly.
+         */
+        deinterleaver_mark_result(dil, bid, 1);
+
         retrieved++;
     }
 
-    /* Total block count */
     snprintf(desc, sizeof(desc),
              "Phase 3: retrieved %d/%d blocks", retrieved, TEST_DEPTH);
     if (retrieved == TEST_DEPTH) {
@@ -317,12 +298,12 @@ static void test_duplicate_rejection(results_t *r)
 {
     deinterleaver_t *dil;
     symbol_t         sym;
-    int              rc1;
-    int              rc2;
+    int              rc1, rc2;
 
     printf("\n--- Test: duplicate symbol rejection ---\n\n");
 
-    dil = deinterleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    dil = deinterleaver_create(TEST_DEPTH, TEST_N, TEST_K,
+                               TEST_SYMBOL_SIZE, DIL_STAB_MS, DIL_MAX_AGE_MS);
     if (dil == NULL) {
         fail(r, "Dup test: deinterleaver_create() failed");
         return;
@@ -342,15 +323,14 @@ static void test_duplicate_rejection(results_t *r)
         fail(r, desc);
     }
 
-    /* The block should have exactly one symbol, not two */
     {
         block_t block;
         int     found = 0;
         int     i;
 
-        /* Force complete the block so we can read it out */
+        /* Force-complete the block so we can retrieve it */
         for (i = 0; i < TEST_N; ++i) {
-            if (i == 3) continue;
+            if (i == 3) { continue; }
             fill_symbol(&sym, 0U, (uint32_t)i);
             deinterleaver_push_symbol(dil, &sym);
         }
@@ -367,6 +347,9 @@ static void test_duplicate_rejection(results_t *r)
                          block.symbol_count, TEST_N);
                 fail(r, desc);
             }
+
+            /* MANDATORY: recycle the slot */
+            deinterleaver_mark_result(dil, (uint32_t)block.block_id, 1);
         }
 
         if (!found) {
@@ -389,7 +372,8 @@ static void test_invalid_fec_id(results_t *r)
 
     printf("\n--- Test: out-of-range fec_id rejected ---\n\n");
 
-    dil = deinterleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    dil = deinterleaver_create(TEST_DEPTH, TEST_N, TEST_K,
+                               TEST_SYMBOL_SIZE, DIL_STAB_MS, DIL_MAX_AGE_MS);
     if (dil == NULL) {
         fail(r, "Invalid-fec test: deinterleaver_create() failed");
         return;
@@ -422,15 +406,14 @@ int main(void)
     symbol_t        *stream;
     deinterleaver_t *dil;
 
+    log_init();
+
     printf("============================================================\n");
     printf("  Deinterleaver Round-Trip Verification\n");
-    printf("  Depth=%d  N=%d  Symbol_Size=%d  Total=%d\n",
-           TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE, TEST_TOTAL);
+    printf("  Depth=%d  N=%d  K=%d  Symbol_Size=%d  Total=%d\n",
+           TEST_DEPTH, TEST_N, TEST_K, TEST_SYMBOL_SIZE, TEST_TOTAL);
     printf("============================================================\n");
 
-    /* ------------------------------------------------------------------ */
-    /* Main round-trip test                                                */
-    /* ------------------------------------------------------------------ */
     printf("\n--- Phase 1: Build interleaved stream ---\n\n");
 
     stream = (symbol_t *)malloc(sizeof(symbol_t) * TEST_TOTAL);
@@ -446,7 +429,8 @@ int main(void)
 
     printf("\n--- Phase 2: Push shuffled stream into deinterleaver ---\n");
 
-    dil = deinterleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    dil = deinterleaver_create(TEST_DEPTH, TEST_N, TEST_K,
+                               TEST_SYMBOL_SIZE, DIL_STAB_MS, DIL_MAX_AGE_MS);
     if (dil == NULL) {
         fail(&r, "deinterleaver_create() returned NULL");
         free(stream);
@@ -465,15 +449,9 @@ int main(void)
     deinterleaver_destroy(dil);
     free(stream);
 
-    /* ------------------------------------------------------------------ */
-    /* Edge-case tests                                                     */
-    /* ------------------------------------------------------------------ */
     test_duplicate_rejection(&r);
     test_invalid_fec_id(&r);
 
-    /* ------------------------------------------------------------------ */
-    /* Summary                                                             */
-    /* ------------------------------------------------------------------ */
     printf("\n============================================================\n");
     printf("  Results: %d passed, %d failed\n", r.passed, r.failed);
     printf("============================================================\n\n");
