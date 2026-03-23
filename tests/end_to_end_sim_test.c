@@ -73,6 +73,7 @@
 #include "logging.h"
 #include "packet_fragmenter.h"
 #include "packet_reassembler.h"
+#include "stats.h"
 #include "types.h"
 
 /* ==========================================================================
@@ -198,8 +199,15 @@ typedef struct {
 static void *alloc_aligned(size_t n)
 {
     void *p = NULL;
-    if (n == 0) { return NULL; }
-    if (posix_memalign(&p, 64U, n) != 0) { return NULL; }
+
+    if (n == 0) {
+        return NULL;
+    }
+
+    if (posix_memalign(&p, 64U, n) != 0) {
+        return NULL;
+    }
+
     memset(p, 0, n);
     return p;
 }
@@ -209,13 +217,20 @@ static void *alloc_aligned(size_t n)
  * ==========================================================================*/
 
 static pkt_accum_t *accum_find_or_create(pkt_accum_t *tbl, int *cnt,
-                                          uint32_t pid, int expected)
+                                         uint32_t pid, int expected)
 {
     int i;
+
     for (i = 0; i < *cnt; ++i) {
-        if (tbl[i].packet_id == pid) { return &tbl[i]; }
+        if (tbl[i].packet_id == pid) {
+            return &tbl[i];
+        }
     }
-    if (*cnt >= MAX_ACCUM) { return NULL; }
+
+    if (*cnt >= MAX_ACCUM) {
+        return NULL;
+    }
+
     tbl[*cnt].packet_id = pid;
     tbl[*cnt].expected  = expected;
     tbl[*cnt].count     = 0;
@@ -224,7 +239,10 @@ static pkt_accum_t *accum_find_or_create(pkt_accum_t *tbl, int *cnt,
 
 static void accum_remove(pkt_accum_t *tbl, int *cnt, int idx)
 {
-    if (idx < 0 || idx >= *cnt) { return; }
+    if (idx < 0 || idx >= *cnt) {
+        return;
+    }
+
     memmove(&tbl[idx], &tbl[idx + 1],
             sizeof(pkt_accum_t) * (size_t)(*cnt - idx - 1));
     (*cnt)--;
@@ -304,12 +322,12 @@ static int generate_packets(sim_t *ctx)
  *
  * Returns 0 on success, -1 on error.
  */
-static int encode_one_block(sim_t         *ctx,
-                             block_builder_t *bb,
-                             fec_handle_t    fec,
-                             interleaver_t  *il,
-                             unsigned char  *src_data,
-                             symbol_t       *repair_buf)
+static int encode_one_block(sim_t           *ctx,
+                            block_builder_t *bb,
+                            fec_handle_t     fec,
+                            interleaver_t   *il,
+                            unsigned char   *src_data,
+                            symbol_t        *repair_buf)
 {
     int blk_idx = ctx->num_blocks_encoded;
     int s, m;
@@ -389,9 +407,13 @@ static int encode_one_block(sim_t         *ctx,
         }
 
         pr = interleaver_pop_ready_symbol(il, &ctx->tx_buf[ctx->tx_count]);
-        if (pr < 0) { break; }
+        if (pr < 0) {
+            break;
+        }
         ctx->tx_count++;
-        if (pr == 1) { break; }
+        if (pr == 1) {
+            break;
+        }
     }
 
     return 0;
@@ -405,18 +427,17 @@ static int run_tx_pipeline(sim_t *ctx)
     interleaver_t  *il         = NULL;
     fec_handle_t    fec        = NULL;
     block_builder_t bb;
-    int result      = -1;
-    int block_slot  = 0;   /* next free fec_id slot in current block (0..K-1) */
-    int pi;
+    int             result     = -1;
+    int             block_slot = 0;   /* next free fec_id slot in current block (0..K-1) */
+    int             pi;
 
     ctx->num_blocks_encoded = 0;
     ctx->tx_count           = 0;
 
-    frag_buf   = (symbol_t *)calloc((size_t)MAX_FRAGS_PER_PKT,sizeof(symbol_t));
-    repair_buf = (symbol_t *)calloc((size_t)SIM_M,             sizeof(symbol_t));
-    src_data   = (unsigned char *)alloc_aligned(
-                     (size_t)SIM_K * SIM_SYMBOL_SIZE);
-    ctx->tx_buf = (symbol_t *)calloc((size_t)SIM_TOTAL_SYMS,  sizeof(symbol_t));
+    frag_buf    = (symbol_t *)calloc((size_t)MAX_FRAGS_PER_PKT, sizeof(symbol_t));
+    repair_buf  = (symbol_t *)calloc((size_t)SIM_M, sizeof(symbol_t));
+    src_data    = (unsigned char *)alloc_aligned((size_t)SIM_K * SIM_SYMBOL_SIZE);
+    ctx->tx_buf = (symbol_t *)calloc((size_t)SIM_TOTAL_SYMS, sizeof(symbol_t));
 
     if (!frag_buf || !repair_buf || !src_data || !ctx->tx_buf) {
         LOG_ERROR("[E2E] run_tx_pipeline: allocation failed");
@@ -448,7 +469,9 @@ static int run_tx_pipeline(sim_t *ctx)
         pkt_record_t *pr = &ctx->pkts[pi];
         int           nf, fi;
 
-        if (ctx->num_blocks_encoded >= SIM_NUM_BLOCKS) { break; }
+        if (ctx->num_blocks_encoded >= SIM_NUM_BLOCKS) {
+            break;
+        }
 
         memset(frag_buf, 0, (size_t)MAX_FRAGS_PER_PKT * sizeof(symbol_t));
 
@@ -464,12 +487,14 @@ static int run_tx_pipeline(sim_t *ctx)
         }
 
         for (fi = 0; fi < nf; ++fi) {
-            symbol_t    *sym = &frag_buf[fi];
+            symbol_t     *sym = &frag_buf[fi];
             block_meta_t *bm;
             slot_meta_t  *sm;
             int           rc;
 
-            if (ctx->num_blocks_encoded >= SIM_NUM_BLOCKS) { goto tx_done; }
+            if (ctx->num_blocks_encoded >= SIM_NUM_BLOCKS) {
+                goto tx_done;
+            }
 
             /* Assign fec_id = slot index within current block. */
             sym->fec_id = (uint32_t)block_slot;
@@ -534,9 +559,13 @@ tx_done:
         }
 
         pr2 = interleaver_pop_ready_symbol(il, &ctx->tx_buf[ctx->tx_count]);
-        if (pr2 < 0) { break; }
+        if (pr2 < 0) {
+            break;
+        }
         ctx->tx_count++;
-        if (pr2 == 1) { break; }
+        if (pr2 == 1) {
+            break;
+        }
     }
 
     LOG_INFO("[TX] FINAL tx_count=%d expected=%d",
@@ -559,9 +588,12 @@ tx_done:
 
     result = 0;
 
-cleanup_fec: fec_destroy(fec);
-cleanup_il:  interleaver_destroy(il);
-cleanup_bb:  block_builder_destroy(&bb);
+cleanup_fec:
+    fec_destroy(fec);
+cleanup_il:
+    interleaver_destroy(il);
+cleanup_bb:
+    block_builder_destroy(&bb);
 cleanup:
     free(frag_buf);
     free(repair_buf);
@@ -592,7 +624,9 @@ static void recount_transmitted(sim_t *ctx)
         block_meta_t *bm = &ctx->block_meta[b];
         for (s = 0; s < SIM_K; ++s) {
             slot_meta_t *sm = &bm->slots[s];
-            if (sm->payload_len == 0) { continue; }   /* padding slot */
+            if (sm->payload_len == 0) {
+                continue;
+            }
 
             for (p = 0; p < ctx->num_generated; ++p) {
                 if (ctx->pkts[p].packet_id == sm->orig_packet_id) {
@@ -605,7 +639,9 @@ static void recount_transmitted(sim_t *ctx)
 
     ctx->num_transmitted = 0;
     for (p = 0; p < ctx->num_generated; ++p) {
-        if (ctx->pkts[p].transmitted) { ctx->num_transmitted++; }
+        if (ctx->pkts[p].transmitted) {
+            ctx->num_transmitted++;
+        }
     }
 
     LOG_INFO("[E2E] Transmitted: %d / %d generated",
@@ -621,8 +657,12 @@ static void apply_burst_erasure(sim_t *ctx, int start, int len)
     int end = start + len;
     int i;
 
-    if (start >= ctx->tx_count) { return; }
-    if (end   >  ctx->tx_count) { end = ctx->tx_count; }
+    if (start >= ctx->tx_count) {
+        return;
+    }
+    if (end > ctx->tx_count) {
+        end = ctx->tx_count;
+    }
 
     for (i = start; i < end; ++i) {
         memset(&ctx->tx_buf[i], 0, sizeof(symbol_t));
@@ -642,21 +682,23 @@ static void apply_burst_erasure(sim_t *ctx, int start, int len)
  * calls reassemble_packet() and records the outcome.
  * ==========================================================================*/
 
-static void deliver_block(sim_t        *ctx,
-                           int           blk_idx,
-                           unsigned char *recon,
-                           pkt_accum_t  *accum,
-                           int          *accum_count)
+static void deliver_block(sim_t         *ctx,
+                          int            blk_idx,
+                          unsigned char *recon,
+                          pkt_accum_t   *accum,
+                          int           *accum_count)
 {
     block_meta_t *bm = &ctx->block_meta[blk_idx];
     int           s;
 
     for (s = 0; s < SIM_K; ++s) {
-        slot_meta_t *sm  = &bm->slots[s];
+        slot_meta_t *sm = &bm->slots[s];
         pkt_accum_t *pa;
         int          ai;
 
-        if (sm->payload_len == 0) { continue; }   /* padding — skip */
+        if (sm->payload_len == 0) {
+            continue;
+        }
 
         /* Reconstruct symbol_t from decoded bytes + saved metadata. */
         symbol_t sym;
@@ -704,13 +746,14 @@ static void deliver_block(sim_t        *ctx,
             /* Find and update the packet record. */
             for (p = 0; p < ctx->num_generated; ++p) {
                 pkt_record_t *pr = &ctx->pkts[p];
-                if (pr->packet_id != sm->orig_packet_id) { continue; }
+                if (pr->packet_id != sm->orig_packet_id) {
+                    continue;
+                }
 
                 if (recon_len > 0) {
                     pr->recovered = 1;
                     if ((size_t)recon_len == pr->packet_len &&
-                        memcmp(recon_pkt, pr->data, pr->packet_len) == 0)
-                    {
+                        memcmp(recon_pkt, pr->data, pr->packet_len) == 0) {
                         pr->exact_match = 1;
                     } else {
                         LOG_WARN("[E2E] CORRUPT packet_id=%u "
@@ -737,12 +780,12 @@ static void deliver_block(sim_t        *ctx,
 
 static int run_rx_pipeline(sim_t *ctx)
 {
-    deinterleaver_t *dil   = NULL;
-    fec_handle_t     fec   = NULL;
-    unsigned char   *recon = NULL;
-    pkt_accum_t     *accum = NULL;
+    deinterleaver_t *dil         = NULL;
+    fec_handle_t     fec         = NULL;
+    unsigned char   *recon       = NULL;
+    pkt_accum_t     *accum       = NULL;
     int              accum_count = 0;
-    int              result = -1;
+    int              result      = -1;
     int              i;
 
     dil = deinterleaver_create(ctx->num_blocks_encoded + DIL_HEADROOM,
@@ -761,8 +804,7 @@ static int run_rx_pipeline(sim_t *ctx)
         goto cleanup;
     }
 
-    recon = (unsigned char *)alloc_aligned(
-                (size_t)SIM_K * SIM_SYMBOL_SIZE);
+    recon = (unsigned char *)alloc_aligned((size_t)SIM_K * SIM_SYMBOL_SIZE);
     if (!recon) {
         LOG_ERROR("[E2E] alloc_aligned(recon) failed");
         goto cleanup;
@@ -782,8 +824,12 @@ static int run_rx_pipeline(sim_t *ctx)
         int       rc;
         block_t   blk;
 
-        if (sym->payload_len == 0) { continue; }   /* erasure sentinel */
+        if (sym->payload_len == 0) {
+            stats_record_symbol(true);
+            continue;
+        }
 
+        stats_record_symbol(false);
         rc = deinterleaver_push_symbol(dil, sym);
 
         if (rc < 0) {
@@ -791,16 +837,22 @@ static int run_rx_pipeline(sim_t *ctx)
              * Pool exhausted — drain ready blocks to free slots, retry.
              */
             while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-                int blk_idx = (int)blk.block_id;
+                int      blk_idx = (int)blk.block_id;
+                uint64_t holes   = 0U;
+
+                if (blk.symbols_per_block > blk.symbol_count) {
+                    holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+                }
+
                 ctx->stat_blocks_attempted++;
+                stats_record_block(holes);
                 memset(recon, 0, (size_t)SIM_K * SIM_SYMBOL_SIZE);
 
                 if (fec_decode_block(fec,
                                      blk.symbols,
                                      blk.symbol_count,
                                      blk.symbols_per_block,
-                                     recon) == FEC_DECODE_OK)
-                {
+                                     recon) == FEC_DECODE_OK) {
                     ctx->stat_blocks_ok++;
                     if (blk_idx >= 0 &&
                         blk_idx < ctx->num_blocks_encoded) {
@@ -808,11 +860,11 @@ static int run_rx_pipeline(sim_t *ctx)
                                       accum, &accum_count);
                     }
                     deinterleaver_mark_result(dil,
-                        (uint32_t)blk.block_id, 1);
+                                              (uint32_t)blk.block_id, 1);
                 } else {
                     ctx->stat_blocks_failed++;
                     deinterleaver_mark_result(dil,
-                        (uint32_t)blk.block_id, 0);
+                                              (uint32_t)blk.block_id, 0);
                 }
             }
 
@@ -827,24 +879,32 @@ static int run_rx_pipeline(sim_t *ctx)
         }
     }
 
+    stats_finalize_burst();
+
     /* ------------------------------------------------------------------ */
-    /* End-of-stream flush.                                                */
+    /* End-of-stream flush.                                               */
     /* ------------------------------------------------------------------ */
     deinterleaver_tick(dil, 0.0);
 
     {
         block_t blk;
         while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-            int blk_idx = (int)blk.block_id;
+            int      blk_idx = (int)blk.block_id;
+            uint64_t holes   = 0U;
+
+            if (blk.symbols_per_block > blk.symbol_count) {
+                holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+            }
+
             ctx->stat_blocks_attempted++;
+            stats_record_block(holes);
             memset(recon, 0, (size_t)SIM_K * SIM_SYMBOL_SIZE);
 
             if (fec_decode_block(fec,
                                  blk.symbols,
                                  blk.symbol_count,
                                  blk.symbols_per_block,
-                                 recon) == FEC_DECODE_OK)
-            {
+                                 recon) == FEC_DECODE_OK) {
                 ctx->stat_blocks_ok++;
                 if (blk_idx >= 0 &&
                     blk_idx < ctx->num_blocks_encoded) {
@@ -852,11 +912,11 @@ static int run_rx_pipeline(sim_t *ctx)
                                   accum, &accum_count);
                 }
                 deinterleaver_mark_result(dil,
-                    (uint32_t)blk.block_id, 1);
+                                          (uint32_t)blk.block_id, 1);
             } else {
                 ctx->stat_blocks_failed++;
                 deinterleaver_mark_result(dil,
-                    (uint32_t)blk.block_id, 0);
+                                          (uint32_t)blk.block_id, 0);
             }
         }
     }
@@ -887,53 +947,103 @@ static void print_report(const sim_t *ctx)
 
     for (p = 0; p < ctx->num_generated; ++p) {
         const pkt_record_t *pr = &ctx->pkts[p];
-        if (!pr->transmitted) { continue; }
+        if (!pr->transmitted) {
+            continue;
+        }
 
         if (pr->recovered) {
             recovered++;
-            if (pr->exact_match) { exact_match++; }
-            else                 { corrupted++;    }
+            if (pr->exact_match) {
+                exact_match++;
+            } else {
+                corrupted++;
+            }
         } else {
             missing++;
         }
     }
 
-    double recovery_pct    = transmitted > 0
-                           ? 100.0 * recovered   / transmitted : 0.0;
-    double exactmatch_pct  = transmitted > 0
-                           ? 100.0 * exact_match / transmitted : 0.0;
+    {
+        double recovery_pct   = transmitted > 0
+                              ? 100.0 * recovered / transmitted : 0.0;
+        double exactmatch_pct = transmitted > 0
+                              ? 100.0 * exact_match / transmitted : 0.0;
+        int all_ok = (transmitted > 0 &&
+                      missing == 0 &&
+                      corrupted == 0 &&
+                      exact_match == transmitted);
 
-    int all_ok = (transmitted > 0 &&
-                  missing     == 0 &&
-                  corrupted   == 0 &&
-                  exact_match == transmitted);
+        printf("\n");
+        printf("================================================================\n");
+        printf("  End-to-End Simulation Report — Task 20\n");
+        printf("  K=%d  M=%d  N=%d  Depth=%d  SymSize=%d  Blocks=%d\n",
+               SIM_K, SIM_M, SIM_N, SIM_DEPTH, SIM_SYMBOL_SIZE,
+               ctx->num_blocks_encoded);
+        printf("  Burst: start=%d len=%d\n", SIM_BURST_START, SIM_BURST_LEN);
+        printf("================================================================\n");
+        printf("  Packets generated     : %d\n",   generated);
+        printf("  Packets transmitted   : %d\n",   transmitted);
+        printf("  Packets recovered     : %d\n",   recovered);
+        printf("  Packets exact match   : %d\n",   exact_match);
+        printf("  Packets corrupted     : %d\n",   corrupted);
+        printf("  Packets missing       : %d\n",   missing);
+        printf("  Recovery rate         : %.1f%%  (recovered / transmitted)\n",
+               recovery_pct);
+        printf("  Exact-match rate      : %.1f%%  (exact_match / transmitted)\n",
+               exactmatch_pct);
+        printf("----------------------------------------------------------------\n");
+        printf("  Symbols erased        : %d\n",   ctx->stat_symbols_erased);
+        printf("  Blocks attempted      : %d\n",   ctx->stat_blocks_attempted);
+        printf("  Blocks decoded OK     : %d\n",   ctx->stat_blocks_ok);
+        printf("  Blocks failed         : %d\n",   ctx->stat_blocks_failed);
+        printf("================================================================\n");
+        printf("  RESULT: %s\n", all_ok ? "PASS" : "FAIL");
+        printf("================================================================\n\n");
+    }
+}
 
-    printf("\n");
-    printf("================================================================\n");
-    printf("  End-to-End Simulation Report — Task 20\n");
-    printf("  K=%d  M=%d  N=%d  Depth=%d  SymSize=%d  Blocks=%d\n",
-           SIM_K, SIM_M, SIM_N, SIM_DEPTH, SIM_SYMBOL_SIZE,
-           ctx->num_blocks_encoded);
-    printf("  Burst: start=%d len=%d\n", SIM_BURST_START, SIM_BURST_LEN);
-    printf("================================================================\n");
-    printf("  Packets generated     : %d\n",   generated);
-    printf("  Packets transmitted   : %d\n",   transmitted);
-    printf("  Packets recovered     : %d\n",   recovered);
-    printf("  Packets exact match   : %d\n",   exact_match);
-    printf("  Packets corrupted     : %d\n",   corrupted);
-    printf("  Packets missing       : %d\n",   missing);
-    printf("  Recovery rate         : %.1f%%  (recovered / transmitted)\n",
-           recovery_pct);
-    printf("  Exact-match rate      : %.1f%%  (exact_match / transmitted)\n",
-           exactmatch_pct);
-    printf("----------------------------------------------------------------\n");
-    printf("  Symbols erased        : %d\n",   ctx->stat_symbols_erased);
-    printf("  Blocks attempted      : %d\n",   ctx->stat_blocks_attempted);
-    printf("  Blocks decoded OK     : %d\n",   ctx->stat_blocks_ok);
-    printf("  Blocks failed         : %d\n",   ctx->stat_blocks_failed);
-    printf("================================================================\n");
-    printf("  RESULT: %s\n", all_ok ? "PASS" : "FAIL");
-    printf("================================================================\n\n");
+/* ==========================================================================
+ * Finalize statistics from authoritative simulation truth
+ * ==========================================================================*/
+
+static void finalize_packet_stats(sim_t *ctx)
+{
+    int p;
+    int i;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    for (p = 0; p < ctx->num_generated; ++p) {
+        pkt_record_t *pr = &ctx->pkts[p];
+
+        stats_inc_ingress(pr->packet_len);
+
+        if (pr->transmitted) {
+            stats_inc_transmitted(pr->packet_len);
+        }
+
+        if (pr->recovered) {
+            stats_inc_recovered(pr->packet_len);
+        }
+
+        if (pr->transmitted && !pr->recovered) {
+            stats_inc_failed_packet();
+        }
+    }
+
+    for (i = 0; i < ctx->stat_blocks_attempted; ++i) {
+        stats_inc_block_attempt();
+    }
+
+    for (i = 0; i < ctx->stat_blocks_ok; ++i) {
+        stats_inc_block_success();
+    }
+
+    for (i = 0; i < ctx->stat_blocks_failed; ++i) {
+        stats_inc_block_failure();
+    }
 }
 
 /* ==========================================================================
@@ -950,6 +1060,8 @@ int main(void)
     memset(&ctx, 0, sizeof(ctx));
 
     log_init();
+    stats_init();
+    stats_set_burst_fec_span((uint64_t)(SIM_M * SIM_DEPTH));
 
     printf("================================================================\n");
     printf("  FSO Gateway — Task 20: Full End-to-End Simulation\n");
@@ -1004,13 +1116,21 @@ int main(void)
     /* Step K */
     print_report(&ctx);
 
+    finalize_packet_stats(&ctx);
+    stats_report();
+
     /* exit code */
     {
         int exact = 0, miss = 0;
         for (p = 0; p < ctx.num_generated; ++p) {
-            if (!ctx.pkts[p].transmitted) { continue; }
-            if (ctx.pkts[p].exact_match)  { exact++; }
-            else if (!ctx.pkts[p].recovered) { miss++; }
+            if (!ctx.pkts[p].transmitted) {
+                continue;
+            }
+            if (ctx.pkts[p].exact_match) {
+                exact++;
+            } else if (!ctx.pkts[p].recovered) {
+                miss++;
+            }
         }
         exit_code = (ctx.num_transmitted > 0 &&
                      miss  == 0 &&
@@ -1021,7 +1141,9 @@ int main(void)
     (void)rc;
 
 done:
-    for (p = 0; p < ctx.num_generated; ++p) { free(ctx.pkts[p].data); }
+    for (p = 0; p < ctx.num_generated; ++p) {
+        free(ctx.pkts[p].data);
+    }
     free(ctx.tx_buf);
     return exit_code;
 }

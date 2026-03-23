@@ -218,6 +218,7 @@ E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
                   $(OBJ_DIR)/logging.o \
                   $(OBJ_DIR)/packet_fragmenter.o \
                   $(OBJ_DIR)/packet_reassembler.o \
+                  $(OBJ_DIR)/stats.o \
                   $(OBJ_DIR)/symbol.o \
                   $(WIREHAIR_OBJS)
 

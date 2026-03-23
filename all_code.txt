@@ -1,5 +1,5 @@
---- FSO GATEWAY FULL CODE ARCHIVE (v5.1 - March 2026) ---
-Generated on: Mon Mar 23 12:26:31 IST 2026
+--- FSO GATEWAY FULL CODE ARCHIVE (v6.0 - E2E Simulator Success) ---
+Generated on: Mon Mar 23 17:32:37 IST 2026
 
 --- FILE: include/block_builder.h ---
 #ifndef BLOCK_BUILDER_H
@@ -1135,65 +1135,168 @@ int reassemble_packet(const symbol_t *in_symbols,
 
 /**
  * @file stats.h
- * @brief Thread-safe statistics collection for the FSO Gateway.
+ * @brief Lock-free statistics collection for the FSO Gateway.
  *
- * This module provides a minimal but robust statistics layer for tracking
- * packet flow and future FEC-related recovery information.
- *
- * The counters are stored internally in a global static container in stats.c,
- * and access is protected with a mutex because the gateway is expected to
- * become multi-threaded in future development stages.
+ * This module centralizes runtime counters for simulation and future real-time
+ * pipeline stages. Counters are implemented with C11 atomics so the hot path
+ * can update them without mutex contention.
  */
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @struct stats_container
- * @brief Holds all runtime counters for the gateway.
+ * @brief Plain non-atomic snapshot/report structure.
  *
- * All counters use uint64_t so they can safely count very large numbers of
- * packets during long runs without overflowing quickly.
+ * This structure is used only for reporting and snapshot export. It is not the
+ * live synchronized storage used internally by the statistics subsystem.
  */
 struct stats_container {
-    uint64_t rx_packets;             /**< Number of received packets */
-    uint64_t tx_packets;             /**< Number of transmitted packets */
-    uint64_t dropped_packets;        /**< Number of dropped packets */
-    uint64_t fec_recovered_packets;  /**< Number of packets recovered by FEC */
+    uint64_t ingress_packets;
+    uint64_t ingress_bytes;
+
+    uint64_t transmitted_packets;
+    uint64_t transmitted_bytes;
+
+    uint64_t recovered_packets;
+    uint64_t recovered_bytes;
+    uint64_t failed_packets;
+
+    uint64_t total_symbols;
+    uint64_t lost_symbols;
+
+    uint64_t blocks_attempted;
+    uint64_t blocks_recovered;
+    uint64_t blocks_failed;
+
+    uint64_t total_bursts;
+    uint64_t current_burst_length;
+    uint64_t max_burst_length;
+    uint64_t sum_burst_lengths;
+
+    uint64_t burst_len_1;
+    uint64_t burst_len_2_5;
+    uint64_t burst_len_6_10;
+    uint64_t burst_len_11_50;
+    uint64_t burst_len_51_100;
+    uint64_t burst_len_101_500;
+    uint64_t burst_len_501_plus;
+
+    uint64_t bursts_exceeding_fec_span;
+    uint64_t configured_fec_burst_span;
+    uint64_t recoverable_bursts;
+    uint64_t critical_bursts;
+
+    uint64_t burst_samples_recorded;
+    uint64_t burst_samples_dropped;
+
+    uint64_t blocks_with_loss;
+    uint64_t worst_holes_in_block;
+    uint64_t total_holes_in_blocks;
 };
 
 /**
- * @brief Initialize the statistics module.
- *
- * Resets all counters to zero and prepares the internal mutex.
- *
- * This function must be called once during program startup before any
- * increment or report function is used.
+ * @brief Initialize the statistics subsystem and reset all counters.
  */
 void stats_init(void);
 
 /**
- * @brief Increment the received-packet counter.
- *
- * Thread-safe.
+ * @brief Reset all counters and restart timing measurements.
  */
-void stats_increment_rx(void);
+void stats_reset(void);
 
 /**
- * @brief Increment the transmitted-packet counter.
+ * @brief Configure the burst-length threshold above which a burst is counted
+ *        as exceeding the recoverable FEC/interleaver span.
  *
- * Thread-safe.
+ * @param span Recoverable span in symbols. A burst is flagged if burst_len > span.
  */
-void stats_increment_tx(void);
+void stats_set_burst_fec_span(uint64_t span);
 
 /**
- * @brief Print the current statistics counters using the logging system.
+ * @brief Record one ingress packet and its byte count.
  *
- * The report is emitted using LOG_INFO so it integrates with the project's
- * centralized logging output.
+ * @param bytes Packet size in bytes.
+ */
+void stats_inc_ingress(size_t bytes);
+
+/**
+ * @brief Record one transmitted packet and its byte count.
  *
- * Thread-safe.
+ * @param bytes Packet size in bytes.
+ */
+void stats_inc_transmitted(size_t bytes);
+
+/**
+ * @brief Record one recovered packet and its byte count.
+ *
+ * @param bytes Packet size in bytes.
+ */
+void stats_inc_recovered(size_t bytes);
+
+/**
+ * @brief Increment the failed-packet counter.
+ */
+void stats_inc_failed_packet(void);
+
+/**
+ * @brief Add symbol totals directly.
+ *
+ * @param total Number of symbols processed.
+ * @param lost  Number of lost/erased symbols.
+ */
+void stats_add_symbols(uint64_t total, uint64_t lost);
+
+/**
+ * @brief Record one symbol in the RX stream and update burst diagnostics.
+ *
+ * @param lost True if the symbol was erased/lost, false otherwise.
+ */
+void stats_record_symbol(bool lost);
+
+/**
+ * @brief Flush the currently open burst, if any.
+ *
+ * Call once at end-of-stream so a trailing burst is accounted for.
+ */
+void stats_finalize_burst(void);
+
+/**
+ * @brief Record block-level hole count for diagnostics.
+ *
+ * @param holes Number of missing symbols in this block.
+ */
+void stats_record_block(uint64_t holes);
+
+/**
+ * @brief Increment the block-attempt counter.
+ */
+void stats_inc_block_attempt(void);
+
+/**
+ * @brief Increment the successfully recovered block counter.
+ */
+void stats_inc_block_success(void);
+
+/**
+ * @brief Increment the failed block counter.
+ */
+void stats_inc_block_failure(void);
+
+/**
+ * @brief Print a structured statistics report through LOG_INFO.
  */
 void stats_report(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* STATS_H */
 
@@ -4810,88 +4913,638 @@ int reassemble_packet(const symbol_t *in_symbols,
 --- FILE: src/stats.c ---
 /**
  * @file stats.c
- * @brief Thread-safe runtime statistics for the FSO Gateway.
+ * @brief Lock-free runtime statistics for the FSO Gateway.
  */
+
+#define _POSIX_C_SOURCE 200112L
 
 #include "stats.h"
 #include "logging.h"
 
-#include <pthread.h>
-#include <string.h>
+#include <inttypes.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 
-/**
- * @brief Global statistics storage.
- *
- * This object is intentionally kept private to this translation unit so that
- * external code cannot modify counters directly without synchronization.
- */
-static struct stats_container g_stats;
+/* -------------------------------------------------------------------------- */
+/* Internal storage                                                            */
+/* -------------------------------------------------------------------------- */
 
-/**
- * @brief Mutex protecting all access to g_stats.
- *
- * Since packet processing will eventually happen across multiple threads,
- * every modification and report operation is guarded by this mutex.
- */
-static pthread_mutex_t g_stats_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define STATS_MAX_BURST_SAMPLES  4096U
 
-/**
- * @brief Initialize the statistics subsystem.
- *
- * Resets all counters to zero. The mutex is statically initialized above,
- * so no explicit pthread_mutex_init() call is required here.
- */
+typedef struct {
+    atomic_uint_fast64_t ingress_packets;
+    atomic_uint_fast64_t ingress_bytes;
+
+    atomic_uint_fast64_t transmitted_packets;
+    atomic_uint_fast64_t transmitted_bytes;
+
+    atomic_uint_fast64_t recovered_packets;
+    atomic_uint_fast64_t recovered_bytes;
+    atomic_uint_fast64_t failed_packets;
+
+    atomic_uint_fast64_t total_symbols;
+    atomic_uint_fast64_t lost_symbols;
+
+    atomic_uint_fast64_t blocks_attempted;
+    atomic_uint_fast64_t blocks_recovered;
+    atomic_uint_fast64_t blocks_failed;
+
+    atomic_uint_fast64_t total_bursts;
+    atomic_uint_fast64_t current_burst_length;
+    atomic_uint_fast64_t max_burst_length;
+    atomic_uint_fast64_t sum_burst_lengths;
+
+    atomic_uint_fast64_t burst_len_1;
+    atomic_uint_fast64_t burst_len_2_5;
+    atomic_uint_fast64_t burst_len_6_10;
+    atomic_uint_fast64_t burst_len_11_50;
+    atomic_uint_fast64_t burst_len_51_100;
+    atomic_uint_fast64_t burst_len_101_500;
+    atomic_uint_fast64_t burst_len_501_plus;
+
+    atomic_uint_fast64_t bursts_exceeding_fec_span;
+    atomic_uint_fast64_t configured_fec_burst_span;
+    atomic_uint_fast64_t recoverable_bursts;
+    atomic_uint_fast64_t critical_bursts;
+
+    atomic_uint_fast64_t burst_samples_recorded;
+    atomic_uint_fast64_t burst_samples_dropped;
+
+    atomic_uint_fast64_t blocks_with_loss;
+    atomic_uint_fast64_t worst_holes_in_block;
+    atomic_uint_fast64_t total_holes_in_blocks;
+} stats_atomic_container_t;
+
+static stats_atomic_container_t g_stats;
+static struct timespec          g_start_time;
+static uint64_t                 g_burst_samples[STATS_MAX_BURST_SAMPLES];
+
+/* -------------------------------------------------------------------------- */
+/* Helpers                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static uint64_t stats_atomic_load_u64(const atomic_uint_fast64_t *value)
+{
+    return (uint64_t)atomic_load_explicit(value, memory_order_relaxed);
+}
+
+static void stats_update_max(atomic_uint_fast64_t *target, uint64_t candidate)
+{
+    uint64_t current = (uint64_t)atomic_load_explicit(target, memory_order_relaxed);
+
+    while (candidate > current) {
+        if (atomic_compare_exchange_weak_explicit(target,
+                                                  &current,
+                                                  candidate,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+            break;
+        }
+    }
+}
+
+static void stats_bucket_burst_length(uint64_t burst_len)
+{
+    if (burst_len == 1U) {
+        atomic_fetch_add_explicit(&g_stats.burst_len_1, 1U, memory_order_relaxed);
+    } else if (burst_len <= 5U) {
+        atomic_fetch_add_explicit(&g_stats.burst_len_2_5, 1U, memory_order_relaxed);
+    } else if (burst_len <= 10U) {
+        atomic_fetch_add_explicit(&g_stats.burst_len_6_10, 1U, memory_order_relaxed);
+    } else if (burst_len <= 50U) {
+        atomic_fetch_add_explicit(&g_stats.burst_len_11_50, 1U, memory_order_relaxed);
+    } else if (burst_len <= 100U) {
+        atomic_fetch_add_explicit(&g_stats.burst_len_51_100, 1U, memory_order_relaxed);
+    } else if (burst_len <= 500U) {
+        atomic_fetch_add_explicit(&g_stats.burst_len_101_500, 1U, memory_order_relaxed);
+    } else {
+        atomic_fetch_add_explicit(&g_stats.burst_len_501_plus, 1U, memory_order_relaxed);
+    }
+}
+
+static void stats_store_burst_sample(uint64_t burst_len)
+{
+    uint64_t slot = stats_atomic_load_u64(&g_stats.burst_samples_recorded);
+
+    while (slot < STATS_MAX_BURST_SAMPLES) {
+        uint64_t desired = slot + 1U;
+        if (atomic_compare_exchange_weak_explicit(&g_stats.burst_samples_recorded,
+                                                  &slot,
+                                                  desired,
+                                                  memory_order_relaxed,
+                                                  memory_order_relaxed)) {
+            g_burst_samples[slot] = burst_len;
+            return;
+        }
+    }
+
+    atomic_fetch_add_explicit(&g_stats.burst_samples_dropped, 1U, memory_order_relaxed);
+}
+
+static void stats_close_current_burst(void)
+{
+    uint64_t burst_len;
+    uint64_t fec_span;
+
+    burst_len = (uint64_t)atomic_exchange_explicit(&g_stats.current_burst_length,
+                                                   0U,
+                                                   memory_order_relaxed);
+    if (burst_len == 0U) {
+        return;
+    }
+
+    atomic_fetch_add_explicit(&g_stats.total_bursts, 1U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_stats.sum_burst_lengths, burst_len, memory_order_relaxed);
+    stats_update_max(&g_stats.max_burst_length, burst_len);
+    stats_bucket_burst_length(burst_len);
+    stats_store_burst_sample(burst_len);
+
+    fec_span = stats_atomic_load_u64(&g_stats.configured_fec_burst_span);
+    if (fec_span > 0U && burst_len > fec_span) {
+        atomic_fetch_add_explicit(&g_stats.critical_bursts, 1U, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_stats.bursts_exceeding_fec_span,
+                                  1U,
+                                  memory_order_relaxed);
+    } else {
+        atomic_fetch_add_explicit(&g_stats.recoverable_bursts, 1U, memory_order_relaxed);
+    }
+}
+
+static void stats_snapshot(struct stats_container *out)
+{
+    if (out == NULL) {
+        return;
+    }
+
+    out->ingress_packets           = stats_atomic_load_u64(&g_stats.ingress_packets);
+    out->ingress_bytes             = stats_atomic_load_u64(&g_stats.ingress_bytes);
+    out->transmitted_packets       = stats_atomic_load_u64(&g_stats.transmitted_packets);
+    out->transmitted_bytes         = stats_atomic_load_u64(&g_stats.transmitted_bytes);
+    out->recovered_packets         = stats_atomic_load_u64(&g_stats.recovered_packets);
+    out->recovered_bytes           = stats_atomic_load_u64(&g_stats.recovered_bytes);
+    out->failed_packets            = stats_atomic_load_u64(&g_stats.failed_packets);
+    out->total_symbols             = stats_atomic_load_u64(&g_stats.total_symbols);
+    out->lost_symbols              = stats_atomic_load_u64(&g_stats.lost_symbols);
+    out->blocks_attempted          = stats_atomic_load_u64(&g_stats.blocks_attempted);
+    out->blocks_recovered          = stats_atomic_load_u64(&g_stats.blocks_recovered);
+    out->blocks_failed             = stats_atomic_load_u64(&g_stats.blocks_failed);
+
+    out->total_bursts              = stats_atomic_load_u64(&g_stats.total_bursts);
+    out->current_burst_length      = stats_atomic_load_u64(&g_stats.current_burst_length);
+    out->max_burst_length          = stats_atomic_load_u64(&g_stats.max_burst_length);
+    out->sum_burst_lengths         = stats_atomic_load_u64(&g_stats.sum_burst_lengths);
+
+    out->burst_len_1               = stats_atomic_load_u64(&g_stats.burst_len_1);
+    out->burst_len_2_5             = stats_atomic_load_u64(&g_stats.burst_len_2_5);
+    out->burst_len_6_10            = stats_atomic_load_u64(&g_stats.burst_len_6_10);
+    out->burst_len_11_50           = stats_atomic_load_u64(&g_stats.burst_len_11_50);
+    out->burst_len_51_100          = stats_atomic_load_u64(&g_stats.burst_len_51_100);
+    out->burst_len_101_500         = stats_atomic_load_u64(&g_stats.burst_len_101_500);
+    out->burst_len_501_plus        = stats_atomic_load_u64(&g_stats.burst_len_501_plus);
+
+    out->bursts_exceeding_fec_span = stats_atomic_load_u64(&g_stats.bursts_exceeding_fec_span);
+    out->configured_fec_burst_span = stats_atomic_load_u64(&g_stats.configured_fec_burst_span);
+    out->recoverable_bursts        = stats_atomic_load_u64(&g_stats.recoverable_bursts);
+    out->critical_bursts           = stats_atomic_load_u64(&g_stats.critical_bursts);
+
+    out->burst_samples_recorded    = stats_atomic_load_u64(&g_stats.burst_samples_recorded);
+    out->burst_samples_dropped     = stats_atomic_load_u64(&g_stats.burst_samples_dropped);
+
+    out->blocks_with_loss          = stats_atomic_load_u64(&g_stats.blocks_with_loss);
+    out->worst_holes_in_block      = stats_atomic_load_u64(&g_stats.worst_holes_in_block);
+    out->total_holes_in_blocks     = stats_atomic_load_u64(&g_stats.total_holes_in_blocks);
+}
+
+static void stats_safe_rate(char *out, size_t out_size,
+                            uint64_t numerator, uint64_t denominator)
+{
+    double pct;
+
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+
+    if (denominator == 0U) {
+        snprintf(out, out_size, "N/A");
+        return;
+    }
+
+    pct = (100.0 * (double)numerator) / (double)denominator;
+    snprintf(out, out_size, "%.2f%%", pct);
+}
+
+static void stats_safe_residual(char *out, size_t out_size,
+                                uint64_t recovered, uint64_t transmitted)
+{
+    double pct;
+
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+
+    if (transmitted == 0U) {
+        snprintf(out, out_size, "N/A");
+        return;
+    }
+
+    pct = 100.0 * (1.0 - ((double)recovered / (double)transmitted));
+    if (pct < 0.0) {
+        pct = 0.0;
+    }
+
+    snprintf(out, out_size, "%.2f%%", pct);
+}
+
+static void stats_safe_percent_string(char *out, size_t out_size,
+                                      uint64_t numerator, uint64_t denominator)
+{
+    double pct;
+
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+
+    if (denominator == 0U) {
+        snprintf(out, out_size, "N/A");
+        return;
+    }
+
+    pct = (100.0 * (double)numerator) / (double)denominator;
+    snprintf(out, out_size, "%.2f%%", pct);
+}
+
+static double stats_elapsed_seconds(void)
+{
+    struct timespec now;
+    double seconds;
+    double nanoseconds;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+        return 0.0;
+    }
+
+    seconds     = (double)(now.tv_sec - g_start_time.tv_sec);
+    nanoseconds = (double)(now.tv_nsec - g_start_time.tv_nsec);
+
+    return seconds + (nanoseconds / 1000000000.0);
+}
+
+static int stats_compare_u64(const void *a, const void *b)
+{
+    const uint64_t va = *(const uint64_t *)a;
+    const uint64_t vb = *(const uint64_t *)b;
+
+    if (va < vb) {
+        return -1;
+    }
+    if (va > vb) {
+        return 1;
+    }
+    return 0;
+}
+
+static int stats_percentile_value(uint64_t *out_value,
+                                  uint64_t numerator,
+                                  uint64_t denominator)
+{
+    uint64_t count;
+    uint64_t work[STATS_MAX_BURST_SAMPLES];
+    uint64_t rank;
+    uint64_t index;
+
+    if (out_value == NULL || denominator == 0U) {
+        return -1;
+    }
+
+    count = stats_atomic_load_u64(&g_stats.burst_samples_recorded);
+    if (count == 0U) {
+        return -1;
+    }
+    if (count > STATS_MAX_BURST_SAMPLES) {
+        count = STATS_MAX_BURST_SAMPLES;
+    }
+
+    for (index = 0U; index < count; ++index) {
+        work[index] = g_burst_samples[index];
+    }
+
+    qsort(work, (size_t)count, sizeof(work[0]), stats_compare_u64);
+
+    rank = (numerator * count + denominator - 1U) / denominator;
+    if (rank == 0U) {
+        rank = 1U;
+    }
+    if (rank > count) {
+        rank = count;
+    }
+
+    *out_value = work[rank - 1U];
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Public API                                                                  */
+/* -------------------------------------------------------------------------- */
+
+void stats_reset(void)
+{
+    atomic_store_explicit(&g_stats.ingress_packets,           0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.ingress_bytes,             0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.transmitted_packets,       0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.transmitted_bytes,         0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.recovered_packets,         0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.recovered_bytes,           0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.failed_packets,            0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.total_symbols,             0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.lost_symbols,              0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.blocks_attempted,          0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.blocks_recovered,          0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.blocks_failed,             0U, memory_order_relaxed);
+
+    atomic_store_explicit(&g_stats.total_bursts,              0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.current_burst_length,      0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.max_burst_length,          0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.sum_burst_lengths,         0U, memory_order_relaxed);
+
+    atomic_store_explicit(&g_stats.burst_len_1,               0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_len_2_5,             0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_len_6_10,            0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_len_11_50,           0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_len_51_100,          0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_len_101_500,         0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_len_501_plus,        0U, memory_order_relaxed);
+
+    atomic_store_explicit(&g_stats.bursts_exceeding_fec_span, 0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.configured_fec_burst_span, 0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.recoverable_bursts,        0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.critical_bursts,           0U, memory_order_relaxed);
+
+    atomic_store_explicit(&g_stats.burst_samples_recorded,    0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.burst_samples_dropped,     0U, memory_order_relaxed);
+
+    atomic_store_explicit(&g_stats.blocks_with_loss,          0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.worst_holes_in_block,      0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.total_holes_in_blocks,     0U, memory_order_relaxed);
+
+    clock_gettime(CLOCK_MONOTONIC, &g_start_time);
+}
+
 void stats_init(void)
 {
-    pthread_mutex_lock(&g_stats_mutex);
-    memset(&g_stats, 0, sizeof(g_stats));
-    pthread_mutex_unlock(&g_stats_mutex);
+    stats_reset();
 }
 
-/**
- * @brief Increment the RX packet counter in a thread-safe way.
- */
-void stats_increment_rx(void)
+void stats_set_burst_fec_span(uint64_t span)
 {
-    pthread_mutex_lock(&g_stats_mutex);
-    g_stats.rx_packets++;
-    pthread_mutex_unlock(&g_stats_mutex);
+    atomic_store_explicit(&g_stats.configured_fec_burst_span,
+                          span,
+                          memory_order_relaxed);
 }
 
-/**
- * @brief Increment the TX packet counter in a thread-safe way.
- */
-void stats_increment_tx(void)
+void stats_inc_ingress(size_t bytes)
 {
-    pthread_mutex_lock(&g_stats_mutex);
-    g_stats.tx_packets++;
-    pthread_mutex_unlock(&g_stats_mutex);
+    atomic_fetch_add_explicit(&g_stats.ingress_packets, 1U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_stats.ingress_bytes,
+                              (uint64_t)bytes,
+                              memory_order_relaxed);
 }
 
-/**
- * @brief Print a snapshot of the current counters.
- *
- * A local copy is taken while holding the mutex, then the lock is released
- * before logging. This keeps the critical section short and avoids holding
- * the mutex during formatted output.
- */
+void stats_inc_transmitted(size_t bytes)
+{
+    atomic_fetch_add_explicit(&g_stats.transmitted_packets, 1U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_stats.transmitted_bytes,
+                              (uint64_t)bytes,
+                              memory_order_relaxed);
+}
+
+void stats_inc_recovered(size_t bytes)
+{
+    atomic_fetch_add_explicit(&g_stats.recovered_packets, 1U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_stats.recovered_bytes,
+                              (uint64_t)bytes,
+                              memory_order_relaxed);
+}
+
+void stats_inc_failed_packet(void)
+{
+    atomic_fetch_add_explicit(&g_stats.failed_packets, 1U, memory_order_relaxed);
+}
+
+void stats_add_symbols(uint64_t total, uint64_t lost)
+{
+    if (total > 0U) {
+        atomic_fetch_add_explicit(&g_stats.total_symbols, total, memory_order_relaxed);
+    }
+
+    if (lost > 0U) {
+        atomic_fetch_add_explicit(&g_stats.lost_symbols, lost, memory_order_relaxed);
+    }
+}
+
+void stats_record_symbol(bool lost)
+{
+    atomic_fetch_add_explicit(&g_stats.total_symbols, 1U, memory_order_relaxed);
+
+    if (lost) {
+        atomic_fetch_add_explicit(&g_stats.lost_symbols, 1U, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_stats.current_burst_length, 1U, memory_order_relaxed);
+        return;
+    }
+
+    stats_close_current_burst();
+}
+
+void stats_finalize_burst(void)
+{
+    stats_close_current_burst();
+}
+
+void stats_record_block(uint64_t holes)
+{
+    if (holes == 0U) {
+        return;
+    }
+
+    atomic_fetch_add_explicit(&g_stats.blocks_with_loss, 1U, memory_order_relaxed);
+    atomic_fetch_add_explicit(&g_stats.total_holes_in_blocks, holes, memory_order_relaxed);
+    stats_update_max(&g_stats.worst_holes_in_block, holes);
+}
+
+void stats_inc_block_attempt(void)
+{
+    atomic_fetch_add_explicit(&g_stats.blocks_attempted, 1U, memory_order_relaxed);
+}
+
+void stats_inc_block_success(void)
+{
+    atomic_fetch_add_explicit(&g_stats.blocks_recovered, 1U, memory_order_relaxed);
+}
+
+void stats_inc_block_failure(void)
+{
+    atomic_fetch_add_explicit(&g_stats.blocks_failed, 1U, memory_order_relaxed);
+}
+
 void stats_report(void)
 {
     struct stats_container snapshot;
+    char recovery_rate[32];
+    char residual_loss[32];
+    char fec_efficiency[32];
+    char recoverable_pct[32];
+    char critical_pct[32];
+    char p50_str[32];
+    char p90_str[32];
+    char p99_str[32];
+    double elapsed_s;
+    double ingress_mib;
+    double transmitted_mib;
+    double recovered_mib;
+    double avg_burst_length;
+    double avg_holes_per_affected_block;
+    uint64_t p50_value;
+    uint64_t p90_value;
+    uint64_t p99_value;
 
-    pthread_mutex_lock(&g_stats_mutex);
-    snapshot = g_stats;
-    pthread_mutex_unlock(&g_stats_mutex);
+    stats_finalize_burst();
+    stats_snapshot(&snapshot);
 
-    LOG_INFO("=== Statistics Report ===");
-    LOG_INFO("RX packets            : %llu",
-             (unsigned long long)snapshot.rx_packets);
-    LOG_INFO("TX packets            : %llu",
-             (unsigned long long)snapshot.tx_packets);
-    LOG_INFO("Dropped packets       : %llu",
-             (unsigned long long)snapshot.dropped_packets);
-    LOG_INFO("FEC recovered packets : %llu",
-             (unsigned long long)snapshot.fec_recovered_packets);
+    stats_safe_rate(recovery_rate,
+                    sizeof(recovery_rate),
+                    snapshot.recovered_packets,
+                    snapshot.ingress_packets);
+
+    stats_safe_residual(residual_loss,
+                        sizeof(residual_loss),
+                        snapshot.recovered_packets,
+                        snapshot.transmitted_packets);
+
+    stats_safe_rate(fec_efficiency,
+                    sizeof(fec_efficiency),
+                    snapshot.blocks_recovered,
+                    snapshot.blocks_attempted);
+
+    stats_safe_percent_string(recoverable_pct,
+                              sizeof(recoverable_pct),
+                              snapshot.recoverable_bursts,
+                              snapshot.total_bursts);
+
+    stats_safe_percent_string(critical_pct,
+                              sizeof(critical_pct),
+                              snapshot.critical_bursts,
+                              snapshot.total_bursts);
+
+    if (stats_percentile_value(&p50_value, 50U, 100U) == 0) {
+        snprintf(p50_str, sizeof(p50_str), "%" PRIu64, p50_value);
+    } else {
+        snprintf(p50_str, sizeof(p50_str), "N/A");
+    }
+
+    if (stats_percentile_value(&p90_value, 90U, 100U) == 0) {
+        snprintf(p90_str, sizeof(p90_str), "%" PRIu64, p90_value);
+    } else {
+        snprintf(p90_str, sizeof(p90_str), "N/A");
+    }
+
+    if (stats_percentile_value(&p99_value, 99U, 100U) == 0) {
+        snprintf(p99_str, sizeof(p99_str), "%" PRIu64, p99_value);
+    } else {
+        snprintf(p99_str, sizeof(p99_str), "N/A");
+    }
+
+    elapsed_s       = stats_elapsed_seconds();
+    ingress_mib     = (double)snapshot.ingress_bytes / (1024.0 * 1024.0);
+    transmitted_mib = (double)snapshot.transmitted_bytes / (1024.0 * 1024.0);
+    recovered_mib   = (double)snapshot.recovered_bytes / (1024.0 * 1024.0);
+
+    avg_burst_length = (snapshot.total_bursts > 0U)
+                     ? ((double)snapshot.sum_burst_lengths / (double)snapshot.total_bursts)
+                     : 0.0;
+
+    avg_holes_per_affected_block = (snapshot.blocks_with_loss > 0U)
+                                 ? ((double)snapshot.total_holes_in_blocks /
+                                    (double)snapshot.blocks_with_loss)
+                                 : 0.0;
+
+    LOG_INFO("===== FSO GATEWAY STATS =====");
+
+    LOG_INFO("Packets:");
+    LOG_INFO("  Ingress:              %" PRIu64, snapshot.ingress_packets);
+    LOG_INFO("  Transmitted:          %" PRIu64, snapshot.transmitted_packets);
+    LOG_INFO("  Recovered:            %" PRIu64, snapshot.recovered_packets);
+    LOG_INFO("  Failed:               %" PRIu64, snapshot.failed_packets);
+
+    LOG_INFO("Bytes:");
+    LOG_INFO("  Ingress:              %" PRIu64 " (%.3f MiB)",
+             snapshot.ingress_bytes, ingress_mib);
+    LOG_INFO("  Transmitted:          %" PRIu64 " (%.3f MiB)",
+             snapshot.transmitted_bytes, transmitted_mib);
+    LOG_INFO("  Recovered:            %" PRIu64 " (%.3f MiB)",
+             snapshot.recovered_bytes, recovered_mib);
+
+    LOG_INFO("Symbols:");
+    LOG_INFO("  Total:                %" PRIu64, snapshot.total_symbols);
+    LOG_INFO("  Lost:                 %" PRIu64, snapshot.lost_symbols);
+
+    LOG_INFO("FEC:");
+    LOG_INFO("  Blocks Attempted:     %" PRIu64, snapshot.blocks_attempted);
+    LOG_INFO("  Blocks Recovered:     %" PRIu64, snapshot.blocks_recovered);
+    LOG_INFO("  Blocks Failed:        %" PRIu64, snapshot.blocks_failed);
+
+    LOG_INFO("Performance:");
+    LOG_INFO("  Recovery Rate:        %s", recovery_rate);
+    LOG_INFO("  Residual Loss:        %s", residual_loss);
+    LOG_INFO("  FEC Efficiency:       %s", fec_efficiency);
+
+    if (elapsed_s > 0.0) {
+        LOG_INFO("  Runtime:              %.3f s", elapsed_s);
+        LOG_INFO("  Ingress Throughput:   %.3f MiB/s", ingress_mib / elapsed_s);
+        LOG_INFO("  Transmit Throughput:  %.3f MiB/s", transmitted_mib / elapsed_s);
+        LOG_INFO("  Recover Throughput:   %.3f MiB/s", recovered_mib / elapsed_s);
+    } else {
+        LOG_INFO("  Runtime:              N/A");
+    }
+
+    LOG_INFO("===== CHANNEL DIAGNOSTICS =====");
+
+    LOG_INFO("Burst Statistics:");
+    LOG_INFO("  Total Bursts:         %" PRIu64, snapshot.total_bursts);
+    LOG_INFO("  Max Burst Length:     %" PRIu64, snapshot.max_burst_length);
+    LOG_INFO("  Avg Burst Length:     %.2f", avg_burst_length);
+
+    LOG_INFO("Burst Percentiles:");
+    LOG_INFO("  P50:                  %s", p50_str);
+    LOG_INFO("  P90:                  %s", p90_str);
+    LOG_INFO("  P99:                  %s", p99_str);
+
+    LOG_INFO("Burst Histogram:");
+    LOG_INFO("  1:                    %" PRIu64, snapshot.burst_len_1);
+    LOG_INFO("  2-5:                  %" PRIu64, snapshot.burst_len_2_5);
+    LOG_INFO("  6-10:                 %" PRIu64, snapshot.burst_len_6_10);
+    LOG_INFO("  11-50:                %" PRIu64, snapshot.burst_len_11_50);
+    LOG_INFO("  51-100:               %" PRIu64, snapshot.burst_len_51_100);
+    LOG_INFO("  101-500:              %" PRIu64, snapshot.burst_len_101_500);
+    LOG_INFO("  501+:                 %" PRIu64, snapshot.burst_len_501_plus);
+
+    LOG_INFO("Recoverability:");
+    LOG_INFO("  Configured FEC Span:  %" PRIu64, snapshot.configured_fec_burst_span);
+    LOG_INFO("  Recoverable Bursts:   %" PRIu64 " (%s)",
+             snapshot.recoverable_bursts, recoverable_pct);
+    LOG_INFO("  Critical Bursts:      %" PRIu64 " (%s)",
+             snapshot.critical_bursts, critical_pct);
+
+    LOG_INFO("Block Stress:");
+    LOG_INFO("  Blocks with loss:     %" PRIu64, snapshot.blocks_with_loss);
+    LOG_INFO("  Worst holes/block:    %" PRIu64, snapshot.worst_holes_in_block);
+    LOG_INFO("  Avg holes/block:      %.2f", avg_holes_per_affected_block);
+
+    if (snapshot.burst_samples_dropped > 0U) {
+        LOG_INFO("  Burst samples dropped:%" PRIu64, snapshot.burst_samples_dropped);
+    }
+
+    LOG_INFO("================================");
 }
 
 --- FILE: src/symbol.c ---
@@ -6284,6 +6937,1157 @@ int main(void)
     return (r.failed == 0) ? 0 : 1;
 }
 
+
+--- FILE: tests/end_to_end_sim_test.c ---
+/*
+ * tests/end_to_end_sim_test.c — Task 20: Full End-to-End Simulation.
+ *
+ * Pipeline under test:
+ *   generate packets
+ *       -> fragment_packet()       [packet -> source symbol_t units]
+ *       -> block builder           [group K source symbols per block]
+ *       -> fec_encode_block()      [produce M repair symbols per block]
+ *       -> interleaver             [symbol-level matrix interleave]
+ *       -> burst erasure           [zero out selected symbols]
+ *       -> deinterleaver           [sparse block reassembly]
+ *       -> fec_decode_block()      [recover source data]
+ *       -> packet reassembly       [group source symbols by packet_id]
+ *       -> byte-exact comparison   [verify against originals]
+ *
+ * ==========================================================================
+ * Packet accounting model
+ * ==========================================================================
+ *
+ *   generated   — packets created by the synthetic generator.
+ *                 Only as many packets are generated as needed to fill
+ *                 the SIM_NUM_BLOCKS * K source-symbol budget.  A packet
+ *                 that would straddle the budget boundary is not generated.
+ *
+ *   transmitted — packets where at least one fragment was committed into
+ *                 a source block that was encoded and interleaved.
+ *                 Derived authoritatively from block_meta at the end of
+ *                 the TX pipeline by scanning every slot with
+ *                 payload_len > 0 and marking the owning packet_id.
+ *
+ *   recovered   — transmitted packets reassembled successfully.
+ *
+ *   exact_match — recovered packets whose bytes and length exactly equal
+ *                 the original.
+ *
+ *   corrupted   — recovered − exact_match.
+ *
+ *   missing     — transmitted − recovered.  Computed at packet level from
+ *                 the per-packet flags; never inferred from failed blocks.
+ *
+ * ==========================================================================
+ * symbol_t dual-id design
+ * ==========================================================================
+ *
+ *   The interleaver routes by (symbol->packet_id % depth) so it uses
+ *   packet_id as a block sequence number.  We save the real packet_id in
+ *   block_meta, overwrite packet_id with the block index before pushing
+ *   into the interleaver, and restore it from block_meta after FEC decode.
+ *
+ * ==========================================================================
+ * Build
+ * ==========================================================================
+ *   make e2etest
+ *
+ * Run
+ * ==========================================================================
+ *   ./build/bin/end_to_end_sim_test
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <wirehair/wirehair.h>
+
+#include "block_builder.h"
+#include "deinterleaver.h"
+#include "fec_wrapper.h"
+#include "interleaver.h"
+#include "logging.h"
+#include "packet_fragmenter.h"
+#include "packet_reassembler.h"
+#include "stats.h"
+#include "types.h"
+
+/* ==========================================================================
+ * Simulation geometry
+ * ==========================================================================*/
+
+#define SIM_K            16      /* source symbols per FEC block              */
+#define SIM_M             8      /* repair symbols per FEC block              */
+#define SIM_N            (SIM_K + SIM_M)    /* 24                            */
+
+#define SIM_DEPTH         8      /* interleave window depth (blocks)          */
+#define SIM_SYMBOL_SIZE  1500    /* bytes per symbol (uniform)                */
+
+/* Number of complete interleave windows to simulate. */
+#define SIM_NUM_WINDOWS   4
+#define SIM_NUM_BLOCKS   (SIM_NUM_WINDOWS * SIM_DEPTH)   /* 32              */
+#define SIM_WINDOW_SYMS  (SIM_DEPTH * SIM_N)             /* 192             */
+#define SIM_TOTAL_SYMS   (SIM_NUM_BLOCKS * SIM_N)        /* 768             */
+
+/* Total source symbol slots across all blocks. */
+#define SIM_TOTAL_SRC_SLOTS  (SIM_NUM_BLOCKS * SIM_K)   /* 512             */
+
+/* Maximum fragments one packet can produce: ceil(9000/1500) = 6. */
+#define MAX_FRAGS_PER_PKT  8
+
+/*
+ * Burst erasure parameters.
+ * SIM_BURST_LEN <= SIM_DEPTH * SIM_M guarantees FEC can recover all blocks.
+ */
+#define SIM_BURST_LEN    (SIM_DEPTH * SIM_M - 4)   /* 60 symbols           */
+#define SIM_BURST_START   20
+
+/* Deinterleaver slot headroom. */
+#define DIL_HEADROOM     (SIM_DEPTH * 2)
+
+/* ==========================================================================
+ * Packet size table  (mix of small / MTU / jumbo)
+ * ==========================================================================*/
+
+static const size_t k_pkt_sizes[] = {
+    64, 128, 512, 1500, 2048, 4096, 9000, 256, 1024, 3000
+};
+#define NUM_PKT_SIZES  ((int)(sizeof(k_pkt_sizes) / sizeof(k_pkt_sizes[0])))
+
+/*
+ * Upper bound on packets generated.
+ * Worst case: all packets are 1 fragment (64 B), so packets == slots.
+ */
+#define MAX_PACKETS  (SIM_TOTAL_SRC_SLOTS + 8)
+
+/* ==========================================================================
+ * Per-packet record
+ * ==========================================================================*/
+
+typedef struct {
+    uint32_t       packet_id;    /* 1-based, unique                          */
+    size_t         packet_len;
+    unsigned char *data;         /* heap-allocated                           */
+    int            transmitted;  /* 1 iff at least one fragment was encoded  */
+    int            recovered;    /* 1 iff fully reassembled after decode     */
+    int            exact_match;  /* 1 iff recovered bytes == original        */
+} pkt_record_t;
+
+/* ==========================================================================
+ * Per-block source-symbol metadata
+ *
+ * Saved at encode time.  After FEC decode we use this to reconstruct
+ * symbol_t objects (with the correct original packet_id, symbol_index,
+ * total_symbols, and payload_len) for the packet reassembler.
+ * ==========================================================================*/
+
+typedef struct {
+    uint32_t  orig_packet_id;    /* true packet id (before il overwrite)     */
+    uint16_t  symbol_index;      /* fragment index within the packet          */
+    uint16_t  total_symbols;     /* total fragments this packet was split to  */
+    uint16_t  payload_len;       /* 0 means padding slot — skip on reassembly */
+} slot_meta_t;
+
+typedef struct {
+    uint64_t    block_id;        /* block_builder block_id                   */
+    slot_meta_t slots[SIM_K];    /* one entry per source symbol slot          */
+} block_meta_t;
+
+/* ==========================================================================
+ * Per-packet accumulator  (used during RX reassembly)
+ * ==========================================================================*/
+
+/* At most K fragments per block arrive together; two blocks can overlap. */
+#define MAX_ACCUM  (SIM_K * 4)
+
+typedef struct {
+    uint32_t  packet_id;
+    int       expected;          /* total_symbols of this packet              */
+    int       count;             /* fragments stored so far                   */
+    symbol_t  frags[MAX_FRAGS_PER_PKT];
+} pkt_accum_t;
+
+/* ==========================================================================
+ * Simulation context
+ * ==========================================================================*/
+
+typedef struct {
+    pkt_record_t  pkts[MAX_PACKETS];
+    int           num_generated;
+    int           num_transmitted;
+
+    block_meta_t  block_meta[SIM_NUM_BLOCKS];
+    int           num_blocks_encoded;
+
+    symbol_t     *tx_buf;        /* SIM_TOTAL_SYMS entries, heap             */
+    int           tx_count;
+
+    int  stat_symbols_erased;
+    int  stat_blocks_attempted;
+    int  stat_blocks_ok;
+    int  stat_blocks_failed;
+} sim_t;
+
+/* ==========================================================================
+ * Utility: 64-byte-aligned zeroed allocation
+ * ==========================================================================*/
+
+static void *alloc_aligned(size_t n)
+{
+    void *p = NULL;
+
+    if (n == 0) {
+        return NULL;
+    }
+
+    if (posix_memalign(&p, 64U, n) != 0) {
+        return NULL;
+    }
+
+    memset(p, 0, n);
+    return p;
+}
+
+/* ==========================================================================
+ * Accumulator helpers
+ * ==========================================================================*/
+
+static pkt_accum_t *accum_find_or_create(pkt_accum_t *tbl, int *cnt,
+                                         uint32_t pid, int expected)
+{
+    int i;
+
+    for (i = 0; i < *cnt; ++i) {
+        if (tbl[i].packet_id == pid) {
+            return &tbl[i];
+        }
+    }
+
+    if (*cnt >= MAX_ACCUM) {
+        return NULL;
+    }
+
+    tbl[*cnt].packet_id = pid;
+    tbl[*cnt].expected  = expected;
+    tbl[*cnt].count     = 0;
+    return &tbl[(*cnt)++];
+}
+
+static void accum_remove(pkt_accum_t *tbl, int *cnt, int idx)
+{
+    if (idx < 0 || idx >= *cnt) {
+        return;
+    }
+
+    memmove(&tbl[idx], &tbl[idx + 1],
+            sizeof(pkt_accum_t) * (size_t)(*cnt - idx - 1));
+    (*cnt)--;
+}
+
+/* ==========================================================================
+ * Step A: Generate packets
+ *
+ * Generate exactly as many packets as needed to fill SIM_TOTAL_SRC_SLOTS.
+ * A packet that would straddle the budget boundary is not generated,
+ * so every generated packet can be fully admitted into the TX pipeline.
+ * ==========================================================================*/
+
+static int generate_packets(sim_t *ctx)
+{
+    int slots_remaining = SIM_TOTAL_SRC_SLOTS;
+    int size_idx        = 0;
+    int unique_id       = 1;
+
+    ctx->num_generated = 0;
+
+    while (slots_remaining > 0 && ctx->num_generated < MAX_PACKETS) {
+        size_t        sz  = k_pkt_sizes[size_idx % NUM_PKT_SIZES];
+        pkt_record_t *pr  = &ctx->pkts[ctx->num_generated];
+        int           nf  = (int)((sz + SIM_SYMBOL_SIZE - 1) / SIM_SYMBOL_SIZE);
+        size_t        j;
+
+        size_idx++;
+
+        /* Skip this packet if its fragments would exceed remaining budget. */
+        if (nf > slots_remaining) {
+            continue;
+        }
+
+        pr->packet_id   = (uint32_t)unique_id++;
+        pr->packet_len  = sz;
+        pr->transmitted = 0;
+        pr->recovered   = 0;
+        pr->exact_match = 0;
+
+        pr->data = (unsigned char *)malloc(sz);
+        if (!pr->data) {
+            LOG_ERROR("[E2E] generate_packets: malloc failed idx=%d",
+                      ctx->num_generated);
+            return -1;
+        }
+
+        for (j = 0; j < sz; ++j) {
+            pr->data[j] = (unsigned char)(
+                (pr->packet_id * 251U + (uint32_t)j * 37U +
+                 (uint32_t)(j >> 8)) & 0xFFU);
+        }
+
+        slots_remaining -= nf;
+        ctx->num_generated++;
+    }
+
+    LOG_INFO("[E2E] Generated %d packets (%d src slots used)",
+             ctx->num_generated, SIM_TOTAL_SRC_SLOTS - slots_remaining);
+    return 0;
+}
+
+/* ==========================================================================
+ * Steps B-E: TX pipeline
+ *
+ * Fragment -> block build -> FEC encode -> interleave.
+ *
+ * All SIM_NUM_BLOCKS are fully encoded.  Partial final block is
+ * zero-padded.  Every packet whose fragments are placed into an encoded
+ * block is marked transmitted.
+ * ==========================================================================*/
+
+/*
+ * encode_one_block — called whenever a block is full (either naturally or
+ * after padding).  Encodes the block, pushes all N symbols into il, and
+ * drains any completed window into tx_buf.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+static int encode_one_block(sim_t           *ctx,
+                            block_builder_t *bb,
+                            fec_handle_t     fec,
+                            interleaver_t   *il,
+                            unsigned char   *src_data,
+                            symbol_t        *repair_buf)
+{
+    int blk_idx = ctx->num_blocks_encoded;
+    int s, m;
+
+    if (blk_idx >= SIM_NUM_BLOCKS) {
+        LOG_ERROR("[E2E] encode_one_block: blk_idx=%d >= SIM_NUM_BLOCKS",
+                  blk_idx);
+        return -1;
+    }
+
+    ctx->block_meta[blk_idx].block_id = bb->block_id;
+
+    /* Build contiguous source data: concatenate K symbol payloads. */
+    for (s = 0; s < SIM_K; ++s) {
+        memcpy(src_data + (size_t)s * SIM_SYMBOL_SIZE,
+               bb->symbols[s].data, SIM_SYMBOL_SIZE);
+    }
+
+    /* Generate M repair symbols. */
+    memset(repair_buf, 0, (size_t)SIM_M * sizeof(symbol_t));
+    if (fec_encode_block(fec, src_data, repair_buf, SIM_M) != FEC_DECODE_OK) {
+        LOG_ERROR("[E2E] fec_encode_block failed block %d", blk_idx);
+        return -1;
+    }
+
+    /* Push K source symbols into interleaver.
+     * packet_id is overwritten with block index for interleaver row routing.
+     * payload_len is forced to SIM_SYMBOL_SIZE (padded).
+     * fec_id is forced to the slot index even for padding symbols. */
+    for (s = 0; s < SIM_K; ++s) {
+        symbol_t sym      = bb->symbols[s];
+        sym.packet_id     = (uint32_t)blk_idx;
+        sym.fec_id        = (uint32_t)s;
+        sym.total_symbols = (uint16_t)SIM_N;
+        sym.payload_len   = (uint16_t)SIM_SYMBOL_SIZE;
+
+        LOG_DEBUG("[TX] SRC blk=%d slot=%d fec_id=%u pkt=%u",
+                  blk_idx, s,
+                  (unsigned)sym.fec_id,
+                  (unsigned)sym.packet_id);
+
+        if (interleaver_push_symbol(il, &sym) < 0) {
+            LOG_ERROR("[E2E] push src sym failed block=%d fec=%d", blk_idx, s);
+            return -1;
+        }
+    }
+
+    /* Push M repair symbols. */
+    for (m = 0; m < SIM_M; ++m) {
+        repair_buf[m].packet_id     = (uint32_t)blk_idx;
+        repair_buf[m].fec_id        = (uint32_t)(SIM_K + m);
+        repair_buf[m].total_symbols = (uint16_t)SIM_N;
+        repair_buf[m].payload_len   = (uint16_t)SIM_SYMBOL_SIZE;
+
+        LOG_DEBUG("[TX] REPAIR blk=%d idx=%d fec_id=%u",
+                  blk_idx, m, (unsigned)repair_buf[m].fec_id);
+
+        if (interleaver_push_symbol(il, &repair_buf[m]) < 0) {
+            LOG_ERROR("[E2E] push rep sym failed block=%d idx=%d", blk_idx, m);
+            return -1;
+        }
+    }
+
+    ctx->num_blocks_encoded++;
+    block_builder_reset(bb);
+
+    LOG_INFO("[TX] encoded block=%d tx_count=%d ready=%d",
+             blk_idx, ctx->tx_count, interleaver_is_ready(il));
+
+    /* Drain any completed window(s) into tx_buf. */
+    while (interleaver_is_ready(il)) {
+        int pr;
+
+        if (ctx->tx_count >= SIM_TOTAL_SYMS) {
+            LOG_ERROR("[E2E] tx_buf overflow at block %d", blk_idx);
+            return -1;
+        }
+
+        pr = interleaver_pop_ready_symbol(il, &ctx->tx_buf[ctx->tx_count]);
+        if (pr < 0) {
+            break;
+        }
+        ctx->tx_count++;
+        if (pr == 1) {
+            break;
+        }
+    }
+
+    return 0;
+}
+
+static int run_tx_pipeline(sim_t *ctx)
+{
+    symbol_t       *frag_buf   = NULL;
+    symbol_t       *repair_buf = NULL;
+    unsigned char  *src_data   = NULL;
+    interleaver_t  *il         = NULL;
+    fec_handle_t    fec        = NULL;
+    block_builder_t bb;
+    int             result     = -1;
+    int             block_slot = 0;   /* next free fec_id slot in current block (0..K-1) */
+    int             pi;
+
+    ctx->num_blocks_encoded = 0;
+    ctx->tx_count           = 0;
+
+    frag_buf    = (symbol_t *)calloc((size_t)MAX_FRAGS_PER_PKT, sizeof(symbol_t));
+    repair_buf  = (symbol_t *)calloc((size_t)SIM_M, sizeof(symbol_t));
+    src_data    = (unsigned char *)alloc_aligned((size_t)SIM_K * SIM_SYMBOL_SIZE);
+    ctx->tx_buf = (symbol_t *)calloc((size_t)SIM_TOTAL_SYMS, sizeof(symbol_t));
+
+    if (!frag_buf || !repair_buf || !src_data || !ctx->tx_buf) {
+        LOG_ERROR("[E2E] run_tx_pipeline: allocation failed");
+        goto cleanup;
+    }
+
+    memset(&bb, 0, sizeof(bb));
+    if (block_builder_init(&bb, SIM_K) != 0) {
+        LOG_ERROR("[E2E] block_builder_init failed");
+        goto cleanup;
+    }
+
+    il = interleaver_create(SIM_DEPTH, SIM_N, SIM_SYMBOL_SIZE);
+    if (!il) {
+        LOG_ERROR("[E2E] interleaver_create failed");
+        goto cleanup_bb;
+    }
+
+    fec = fec_create(SIM_K, SIM_SYMBOL_SIZE);
+    if (!fec) {
+        LOG_ERROR("[E2E] fec_create(tx) failed");
+        goto cleanup_il;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Fragment each packet and feed into block builder.                  */
+    /* ------------------------------------------------------------------ */
+    for (pi = 0; pi < ctx->num_generated; ++pi) {
+        pkt_record_t *pr = &ctx->pkts[pi];
+        int           nf, fi;
+
+        if (ctx->num_blocks_encoded >= SIM_NUM_BLOCKS) {
+            break;
+        }
+
+        memset(frag_buf, 0, (size_t)MAX_FRAGS_PER_PKT * sizeof(symbol_t));
+
+        nf = fragment_packet(pr->data, pr->packet_len,
+                             pr->packet_id,
+                             (uint16_t)SIM_SYMBOL_SIZE,
+                             frag_buf,
+                             (uint16_t)MAX_FRAGS_PER_PKT);
+        if (nf < 0) {
+            LOG_ERROR("[E2E] fragment_packet failed packet_id=%u",
+                      pr->packet_id);
+            goto cleanup_fec;
+        }
+
+        for (fi = 0; fi < nf; ++fi) {
+            symbol_t     *sym = &frag_buf[fi];
+            block_meta_t *bm;
+            slot_meta_t  *sm;
+            int           rc;
+
+            if (ctx->num_blocks_encoded >= SIM_NUM_BLOCKS) {
+                goto tx_done;
+            }
+
+            /* Assign fec_id = slot index within current block. */
+            sym->fec_id = (uint32_t)block_slot;
+
+            /* Zero-pad short payload to SIM_SYMBOL_SIZE for FEC uniformity.
+             * payload_len retains the true byte count. */
+            if (sym->payload_len < (uint16_t)SIM_SYMBOL_SIZE) {
+                memset(sym->data + sym->payload_len, 0,
+                       (size_t)(SIM_SYMBOL_SIZE - sym->payload_len));
+            }
+
+            /* Save metadata for post-decode reassembly. */
+            bm = &ctx->block_meta[ctx->num_blocks_encoded];
+            sm = &bm->slots[block_slot];
+            sm->orig_packet_id = sym->packet_id;
+            sm->symbol_index   = sym->symbol_index;
+            sm->total_symbols  = sym->total_symbols;
+            sm->payload_len    = sym->payload_len;
+
+            rc = block_builder_add_symbol(&bb, sym);
+            if (rc < 0) {
+                LOG_ERROR("[E2E] block_builder_add_symbol failed "
+                          "block=%d slot=%d", ctx->num_blocks_encoded,
+                          block_slot);
+                goto cleanup_fec;
+            }
+
+            block_slot++;
+
+            if (rc == 1) {
+                /* Block full — encode, interleave, reset. */
+                if (encode_one_block(ctx, &bb, fec, il,
+                                     src_data, repair_buf) != 0) {
+                    goto cleanup_fec;
+                }
+                block_slot = 0;
+            }
+        }
+    }
+
+tx_done:
+    /* ------------------------------------------------------------------ */
+    /* Flush final partial block with zero-padding if needed.             */
+    /* ------------------------------------------------------------------ */
+    if (block_slot > 0 && ctx->num_blocks_encoded < SIM_NUM_BLOCKS) {
+        /* Padding slots: slot_meta remains zeroed (payload_len == 0). */
+        block_builder_finalize_with_padding(&bb);
+        if (encode_one_block(ctx, &bb, fec, il,
+                             src_data, repair_buf) != 0) {
+            goto cleanup_fec;
+        }
+        block_slot = 0;
+    }
+
+    /* Drain any remaining interleaver content. */
+    while (interleaver_is_ready(il)) {
+        int pr2;
+
+        if (ctx->tx_count >= SIM_TOTAL_SYMS) {
+            LOG_ERROR("[E2E] tx_buf overflow during final drain");
+            goto cleanup_fec;
+        }
+
+        pr2 = interleaver_pop_ready_symbol(il, &ctx->tx_buf[ctx->tx_count]);
+        if (pr2 < 0) {
+            break;
+        }
+        ctx->tx_count++;
+        if (pr2 == 1) {
+            break;
+        }
+    }
+
+    LOG_INFO("[TX] FINAL tx_count=%d expected=%d",
+             ctx->tx_count, SIM_TOTAL_SYMS);
+
+    LOG_INFO("[E2E] TX pipeline: %d blocks encoded, %d tx symbols",
+             ctx->num_blocks_encoded, ctx->tx_count);
+
+    if (ctx->num_blocks_encoded != SIM_NUM_BLOCKS) {
+        LOG_ERROR("[E2E] TX block count mismatch: got=%d expected=%d",
+                  ctx->num_blocks_encoded, SIM_NUM_BLOCKS);
+        goto cleanup_fec;
+    }
+
+    if (ctx->tx_count != SIM_TOTAL_SYMS) {
+        LOG_ERROR("[E2E] TX symbol count mismatch: got=%d expected=%d",
+                  ctx->tx_count, SIM_TOTAL_SYMS);
+        goto cleanup_fec;
+    }
+
+    result = 0;
+
+cleanup_fec:
+    fec_destroy(fec);
+cleanup_il:
+    interleaver_destroy(il);
+cleanup_bb:
+    block_builder_destroy(&bb);
+cleanup:
+    free(frag_buf);
+    free(repair_buf);
+    free(src_data);
+    return result;
+}
+
+/* ==========================================================================
+ * Recount transmitted packets from block_meta (authoritative pass)
+ *
+ * Scans every slot in every encoded block.  A slot with payload_len > 0
+ * contributed a real fragment; its orig_packet_id packet is marked
+ * transmitted.  This is the single authoritative source of truth for
+ * the "transmitted" counter — it is immune to early-exit edge cases in
+ * the fragmentation loop.
+ * ==========================================================================*/
+
+static void recount_transmitted(sim_t *ctx)
+{
+    int b, s, p;
+
+    /* Reset all transmitted flags. */
+    for (p = 0; p < ctx->num_generated; ++p) {
+        ctx->pkts[p].transmitted = 0;
+    }
+
+    for (b = 0; b < ctx->num_blocks_encoded; ++b) {
+        block_meta_t *bm = &ctx->block_meta[b];
+        for (s = 0; s < SIM_K; ++s) {
+            slot_meta_t *sm = &bm->slots[s];
+            if (sm->payload_len == 0) {
+                continue;
+            }
+
+            for (p = 0; p < ctx->num_generated; ++p) {
+                if (ctx->pkts[p].packet_id == sm->orig_packet_id) {
+                    ctx->pkts[p].transmitted = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    ctx->num_transmitted = 0;
+    for (p = 0; p < ctx->num_generated; ++p) {
+        if (ctx->pkts[p].transmitted) {
+            ctx->num_transmitted++;
+        }
+    }
+
+    LOG_INFO("[E2E] Transmitted: %d / %d generated",
+             ctx->num_transmitted, ctx->num_generated);
+}
+
+/* ==========================================================================
+ * Step F: Burst erasure
+ * ==========================================================================*/
+
+static void apply_burst_erasure(sim_t *ctx, int start, int len)
+{
+    int end = start + len;
+    int i;
+
+    if (start >= ctx->tx_count) {
+        return;
+    }
+    if (end > ctx->tx_count) {
+        end = ctx->tx_count;
+    }
+
+    for (i = start; i < end; ++i) {
+        memset(&ctx->tx_buf[i], 0, sizeof(symbol_t));
+    }
+
+    ctx->stat_symbols_erased = end - start;
+    LOG_INFO("[E2E] Burst erasure: start=%d len=%d (erased=%d of %d)",
+             start, len, ctx->stat_symbols_erased, ctx->tx_count);
+}
+
+/* ==========================================================================
+ * deliver_block
+ *
+ * Called after a block is successfully FEC-decoded.  Re-builds source
+ * symbol_t objects from the raw reconstructed bytes and saved slot_meta,
+ * feeds them into per-packet accumulators, and when a packet is complete
+ * calls reassemble_packet() and records the outcome.
+ * ==========================================================================*/
+
+static void deliver_block(sim_t         *ctx,
+                          int            blk_idx,
+                          unsigned char *recon,
+                          pkt_accum_t   *accum,
+                          int           *accum_count)
+{
+    block_meta_t *bm = &ctx->block_meta[blk_idx];
+    int           s;
+
+    for (s = 0; s < SIM_K; ++s) {
+        slot_meta_t *sm = &bm->slots[s];
+        pkt_accum_t *pa;
+        int          ai;
+
+        if (sm->payload_len == 0) {
+            continue;
+        }
+
+        /* Reconstruct symbol_t from decoded bytes + saved metadata. */
+        symbol_t sym;
+        memset(&sym, 0, sizeof(sym));
+        sym.packet_id     = sm->orig_packet_id;
+        sym.fec_id        = (uint32_t)s;
+        sym.symbol_index  = sm->symbol_index;
+        sym.total_symbols = sm->total_symbols;
+        sym.payload_len   = sm->payload_len;
+        memcpy(sym.data,
+               recon + (size_t)s * SIM_SYMBOL_SIZE,
+               sm->payload_len);
+
+        pa = accum_find_or_create(accum, accum_count,
+                                  sm->orig_packet_id,
+                                  (int)sm->total_symbols);
+        if (!pa) {
+            LOG_WARN("[E2E] accum full — dropping frag packet_id=%u",
+                     sm->orig_packet_id);
+            continue;
+        }
+
+        if (pa->count >= MAX_FRAGS_PER_PKT) {
+            LOG_WARN("[E2E] too many frags for packet_id=%u",
+                     sm->orig_packet_id);
+            continue;
+        }
+
+        pa->frags[pa->count++] = sym;
+
+        /* Packet complete? */
+        if (pa->count == pa->expected) {
+            unsigned char recon_pkt[9000];
+            int           recon_len;
+            int           p;
+
+            ai = (int)(pa - accum);   /* index before potential pointer move */
+
+            memset(recon_pkt, 0, sizeof(recon_pkt));
+            recon_len = reassemble_packet(pa->frags,
+                                          (uint16_t)pa->count,
+                                          recon_pkt,
+                                          sizeof(recon_pkt));
+
+            /* Find and update the packet record. */
+            for (p = 0; p < ctx->num_generated; ++p) {
+                pkt_record_t *pr = &ctx->pkts[p];
+                if (pr->packet_id != sm->orig_packet_id) {
+                    continue;
+                }
+
+                if (recon_len > 0) {
+                    pr->recovered = 1;
+                    if ((size_t)recon_len == pr->packet_len &&
+                        memcmp(recon_pkt, pr->data, pr->packet_len) == 0) {
+                        pr->exact_match = 1;
+                    } else {
+                        LOG_WARN("[E2E] CORRUPT packet_id=%u "
+                                 "orig_len=%zu recon_len=%d",
+                                 pr->packet_id, pr->packet_len, recon_len);
+                    }
+                } else {
+                    LOG_WARN("[E2E] reassemble_packet failed "
+                             "packet_id=%u", pr->packet_id);
+                }
+                break;
+            }
+
+            accum_remove(accum, accum_count, ai);
+        }
+    }
+}
+
+/* ==========================================================================
+ * Steps G-J: RX pipeline
+ *
+ * Deinterleave -> FEC decode -> reassemble -> compare.
+ * ==========================================================================*/
+
+static int run_rx_pipeline(sim_t *ctx)
+{
+    deinterleaver_t *dil         = NULL;
+    fec_handle_t     fec         = NULL;
+    unsigned char   *recon       = NULL;
+    pkt_accum_t     *accum       = NULL;
+    int              accum_count = 0;
+    int              result      = -1;
+    int              i;
+
+    dil = deinterleaver_create(ctx->num_blocks_encoded + DIL_HEADROOM,
+                               SIM_N, SIM_K,
+                               SIM_SYMBOL_SIZE,
+                               0.0,   /* stabilization_ms — disabled          */
+                               0.0);  /* block_max_age_ms — use tick(0.0)     */
+    if (!dil) {
+        LOG_ERROR("[E2E] deinterleaver_create failed");
+        return -1;
+    }
+
+    fec = fec_create(SIM_K, SIM_SYMBOL_SIZE);
+    if (!fec) {
+        LOG_ERROR("[E2E] fec_create(rx) failed");
+        goto cleanup;
+    }
+
+    recon = (unsigned char *)alloc_aligned((size_t)SIM_K * SIM_SYMBOL_SIZE);
+    if (!recon) {
+        LOG_ERROR("[E2E] alloc_aligned(recon) failed");
+        goto cleanup;
+    }
+
+    accum = (pkt_accum_t *)calloc((size_t)MAX_ACCUM, sizeof(pkt_accum_t));
+    if (!accum) {
+        LOG_ERROR("[E2E] calloc(accum) failed");
+        goto cleanup;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Push surviving symbols into deinterleaver.                         */
+    /* ------------------------------------------------------------------ */
+    for (i = 0; i < ctx->tx_count; ++i) {
+        symbol_t *sym = &ctx->tx_buf[i];
+        int       rc;
+        block_t   blk;
+
+        if (sym->payload_len == 0) {
+            stats_record_symbol(true);
+            continue;
+        }
+
+        stats_record_symbol(false);
+        rc = deinterleaver_push_symbol(dil, sym);
+
+        if (rc < 0) {
+            /*
+             * Pool exhausted — drain ready blocks to free slots, retry.
+             */
+            while (deinterleaver_get_ready_block(dil, &blk) == 0) {
+                int      blk_idx = (int)blk.block_id;
+                uint64_t holes   = 0U;
+
+                if (blk.symbols_per_block > blk.symbol_count) {
+                    holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+                }
+
+                ctx->stat_blocks_attempted++;
+                stats_record_block(holes);
+                memset(recon, 0, (size_t)SIM_K * SIM_SYMBOL_SIZE);
+
+                if (fec_decode_block(fec,
+                                     blk.symbols,
+                                     blk.symbol_count,
+                                     blk.symbols_per_block,
+                                     recon) == FEC_DECODE_OK) {
+                    ctx->stat_blocks_ok++;
+                    if (blk_idx >= 0 &&
+                        blk_idx < ctx->num_blocks_encoded) {
+                        deliver_block(ctx, blk_idx, recon,
+                                      accum, &accum_count);
+                    }
+                    deinterleaver_mark_result(dil,
+                                              (uint32_t)blk.block_id, 1);
+                } else {
+                    ctx->stat_blocks_failed++;
+                    deinterleaver_mark_result(dil,
+                                              (uint32_t)blk.block_id, 0);
+                }
+            }
+
+            rc = deinterleaver_push_symbol(dil, sym);
+            if (rc < 0) {
+                LOG_WARN("[E2E] symbol permanently rejected i=%d "
+                         "block_id=%u fec_id=%u",
+                         i,
+                         (unsigned)sym->packet_id,
+                         (unsigned)sym->fec_id);
+            }
+        }
+    }
+
+    stats_finalize_burst();
+
+    /* ------------------------------------------------------------------ */
+    /* End-of-stream flush.                                               */
+    /* ------------------------------------------------------------------ */
+    deinterleaver_tick(dil, 0.0);
+
+    {
+        block_t blk;
+        while (deinterleaver_get_ready_block(dil, &blk) == 0) {
+            int      blk_idx = (int)blk.block_id;
+            uint64_t holes   = 0U;
+
+            if (blk.symbols_per_block > blk.symbol_count) {
+                holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+            }
+
+            ctx->stat_blocks_attempted++;
+            stats_record_block(holes);
+            memset(recon, 0, (size_t)SIM_K * SIM_SYMBOL_SIZE);
+
+            if (fec_decode_block(fec,
+                                 blk.symbols,
+                                 blk.symbol_count,
+                                 blk.symbols_per_block,
+                                 recon) == FEC_DECODE_OK) {
+                ctx->stat_blocks_ok++;
+                if (blk_idx >= 0 &&
+                    blk_idx < ctx->num_blocks_encoded) {
+                    deliver_block(ctx, blk_idx, recon,
+                                  accum, &accum_count);
+                }
+                deinterleaver_mark_result(dil,
+                                          (uint32_t)blk.block_id, 1);
+            } else {
+                ctx->stat_blocks_failed++;
+                deinterleaver_mark_result(dil,
+                                          (uint32_t)blk.block_id, 0);
+            }
+        }
+    }
+
+    result = 0;
+
+cleanup:
+    free(accum);
+    free(recon);
+    fec_destroy(fec);
+    deinterleaver_destroy(dil);
+    return result;
+}
+
+/* ==========================================================================
+ * Step K: Final report
+ * ==========================================================================*/
+
+static void print_report(const sim_t *ctx)
+{
+    int generated   = ctx->num_generated;
+    int transmitted = ctx->num_transmitted;
+    int recovered   = 0;
+    int exact_match = 0;
+    int corrupted   = 0;
+    int missing     = 0;
+    int p;
+
+    for (p = 0; p < ctx->num_generated; ++p) {
+        const pkt_record_t *pr = &ctx->pkts[p];
+        if (!pr->transmitted) {
+            continue;
+        }
+
+        if (pr->recovered) {
+            recovered++;
+            if (pr->exact_match) {
+                exact_match++;
+            } else {
+                corrupted++;
+            }
+        } else {
+            missing++;
+        }
+    }
+
+    {
+        double recovery_pct   = transmitted > 0
+                              ? 100.0 * recovered / transmitted : 0.0;
+        double exactmatch_pct = transmitted > 0
+                              ? 100.0 * exact_match / transmitted : 0.0;
+        int all_ok = (transmitted > 0 &&
+                      missing == 0 &&
+                      corrupted == 0 &&
+                      exact_match == transmitted);
+
+        printf("\n");
+        printf("================================================================\n");
+        printf("  End-to-End Simulation Report — Task 20\n");
+        printf("  K=%d  M=%d  N=%d  Depth=%d  SymSize=%d  Blocks=%d\n",
+               SIM_K, SIM_M, SIM_N, SIM_DEPTH, SIM_SYMBOL_SIZE,
+               ctx->num_blocks_encoded);
+        printf("  Burst: start=%d len=%d\n", SIM_BURST_START, SIM_BURST_LEN);
+        printf("================================================================\n");
+        printf("  Packets generated     : %d\n",   generated);
+        printf("  Packets transmitted   : %d\n",   transmitted);
+        printf("  Packets recovered     : %d\n",   recovered);
+        printf("  Packets exact match   : %d\n",   exact_match);
+        printf("  Packets corrupted     : %d\n",   corrupted);
+        printf("  Packets missing       : %d\n",   missing);
+        printf("  Recovery rate         : %.1f%%  (recovered / transmitted)\n",
+               recovery_pct);
+        printf("  Exact-match rate      : %.1f%%  (exact_match / transmitted)\n",
+               exactmatch_pct);
+        printf("----------------------------------------------------------------\n");
+        printf("  Symbols erased        : %d\n",   ctx->stat_symbols_erased);
+        printf("  Blocks attempted      : %d\n",   ctx->stat_blocks_attempted);
+        printf("  Blocks decoded OK     : %d\n",   ctx->stat_blocks_ok);
+        printf("  Blocks failed         : %d\n",   ctx->stat_blocks_failed);
+        printf("================================================================\n");
+        printf("  RESULT: %s\n", all_ok ? "PASS" : "FAIL");
+        printf("================================================================\n\n");
+    }
+}
+
+/* ==========================================================================
+ * Finalize statistics from authoritative simulation truth
+ * ==========================================================================*/
+
+static void finalize_packet_stats(sim_t *ctx)
+{
+    int p;
+    int i;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    for (p = 0; p < ctx->num_generated; ++p) {
+        pkt_record_t *pr = &ctx->pkts[p];
+
+        stats_inc_ingress(pr->packet_len);
+
+        if (pr->transmitted) {
+            stats_inc_transmitted(pr->packet_len);
+        }
+
+        if (pr->recovered) {
+            stats_inc_recovered(pr->packet_len);
+        }
+
+        if (pr->transmitted && !pr->recovered) {
+            stats_inc_failed_packet();
+        }
+    }
+
+    for (i = 0; i < ctx->stat_blocks_attempted; ++i) {
+        stats_inc_block_attempt();
+    }
+
+    for (i = 0; i < ctx->stat_blocks_ok; ++i) {
+        stats_inc_block_success();
+    }
+
+    for (i = 0; i < ctx->stat_blocks_failed; ++i) {
+        stats_inc_block_failure();
+    }
+}
+
+/* ==========================================================================
+ * main
+ * ==========================================================================*/
+
+int main(void)
+{
+    sim_t ctx;
+    int   rc;
+    int   exit_code = 1;
+    int   p;
+
+    memset(&ctx, 0, sizeof(ctx));
+
+    log_init();
+    stats_init();
+    stats_set_burst_fec_span((uint64_t)(SIM_M * SIM_DEPTH));
+
+    printf("================================================================\n");
+    printf("  FSO Gateway — Task 20: Full End-to-End Simulation\n");
+    printf("  K=%d  M=%d  N=%d  Depth=%d  SymSize=%d\n",
+           SIM_K, SIM_M, SIM_N, SIM_DEPTH, SIM_SYMBOL_SIZE);
+    printf("  Blocks=%d  Windows=%d  BurstLen=%d  BurstStart=%d\n",
+           SIM_NUM_BLOCKS, SIM_NUM_WINDOWS, SIM_BURST_LEN, SIM_BURST_START);
+    printf("================================================================\n\n");
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "[E2E] FATAL: wirehair_init() failed\n");
+        return 1;
+    }
+
+    /* Step A */
+    printf("Step A: Generating packets...\n");
+    if (generate_packets(&ctx) != 0) {
+        fprintf(stderr, "[E2E] generate_packets failed\n");
+        goto done;
+    }
+    printf("  -> %d packets generated\n\n", ctx.num_generated);
+
+    /* Steps B-E */
+    printf("Steps B-E: TX pipeline...\n");
+    if (run_tx_pipeline(&ctx) != 0) {
+        fprintf(stderr, "[E2E] run_tx_pipeline failed\n");
+        goto done;
+    }
+    printf("  -> %d blocks, %d tx symbols\n\n",
+           ctx.num_blocks_encoded, ctx.tx_count);
+
+    /* Authoritative transmitted count from block_meta. */
+    recount_transmitted(&ctx);
+    printf("  -> %d / %d packets transmitted\n\n",
+           ctx.num_transmitted, ctx.num_generated);
+
+    /* Step F */
+    printf("Step F: Burst erasure (start=%d len=%d)...\n",
+           SIM_BURST_START, SIM_BURST_LEN);
+    apply_burst_erasure(&ctx, SIM_BURST_START, SIM_BURST_LEN);
+    printf("  -> %d symbols erased\n\n", ctx.stat_symbols_erased);
+
+    /* Steps G-J */
+    printf("Steps G-J: RX pipeline...\n");
+    if (run_rx_pipeline(&ctx) != 0) {
+        fprintf(stderr, "[E2E] run_rx_pipeline failed\n");
+        goto done;
+    }
+    printf("  -> %d blocks OK, %d failed\n\n",
+           ctx.stat_blocks_ok, ctx.stat_blocks_failed);
+
+    /* Step K */
+    print_report(&ctx);
+
+    finalize_packet_stats(&ctx);
+    stats_report();
+
+    /* exit code */
+    {
+        int exact = 0, miss = 0;
+        for (p = 0; p < ctx.num_generated; ++p) {
+            if (!ctx.pkts[p].transmitted) {
+                continue;
+            }
+            if (ctx.pkts[p].exact_match) {
+                exact++;
+            } else if (!ctx.pkts[p].recovered) {
+                miss++;
+            }
+        }
+        exit_code = (ctx.num_transmitted > 0 &&
+                     miss  == 0 &&
+                     exact == ctx.num_transmitted) ? 0 : 1;
+    }
+
+    rc = exit_code;   /* suppress unused-variable warning */
+    (void)rc;
+
+done:
+    for (p = 0; p < ctx.num_generated; ++p) {
+        free(ctx.pkts[p].data);
+    }
+    free(ctx.tx_buf);
+    return exit_code;
+}
 
 --- FILE: tests/fec_stress_test.c ---
 /*
@@ -8175,7 +9979,9 @@ int main(void)
 # =============================================================================
 #
 # Automatic source discovery:  all *.c under src/ are compiled.
-# Include path:                include/
+# Include paths:               include/  third_party/wirehair/include/
+# Wirehair:                    compiled from third_party/wirehair/*.cpp
+#                              (no system libwirehair required)
 # Build output:                build/
 #
 # Targets
@@ -8187,6 +9993,7 @@ int main(void)
 #   make btest        — run burst_sim_test (all modes)
 #   make rtest        — run receiver_robustness_test
 #   make ftest        — run fec_stress_test
+#   make e2etest      — build and run end_to_end_sim_test (Task 20)
 #   make alltest      — build and run all tests
 #   make clean        — remove build directory
 #
@@ -8199,54 +10006,77 @@ int main(void)
 # Toolchain
 # =============================================================================
 
-CC      := gcc
-AR      := ar
+CC  := gcc
+CXX := g++
+AR  := ar
 
 # =============================================================================
 # Directories
 # =============================================================================
 
-SRC_DIR   := src
-INC_DIR   := include
-TEST_DIR  := tests
-BUILD_DIR := build
-OBJ_DIR   := $(BUILD_DIR)/obj
-BIN_DIR   := $(BUILD_DIR)/bin
+SRC_DIR           := src
+INC_DIR           := include
+TEST_DIR          := tests
+WIREHAIR_DIR      := third_party/wirehair
+WIREHAIR_INC      := $(WIREHAIR_DIR)/include
+BUILD_DIR         := build
+OBJ_DIR           := $(BUILD_DIR)/obj
+BIN_DIR           := $(BUILD_DIR)/bin
+WIREHAIR_OBJS_DIR := $(OBJ_DIR)/wirehair
+TEST_OBJS_DIR     := $(OBJ_DIR)/tests
 
 # =============================================================================
-# Source files  (automatic discovery)
+# Source files
 # =============================================================================
 
-# All production sources in src/
-SRCS := $(wildcard $(SRC_DIR)/*.c)
-
-# Exclude main.c when building test binaries (it defines its own main)
+SRCS         := $(wildcard $(SRC_DIR)/*.c)
 SRCS_NO_MAIN := $(filter-out $(SRC_DIR)/main.c, $(SRCS))
 
-OBJS         := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
-OBJS_NO_MAIN := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS_NO_MAIN))
+OBJS         := $(patsubst $(SRC_DIR)/%.c,         $(OBJ_DIR)/%.o,           $(SRCS))
+OBJS_NO_MAIN := $(patsubst $(SRC_DIR)/%.c,         $(OBJ_DIR)/%.o,           $(SRCS_NO_MAIN))
+
+WIREHAIR_SRCS := $(wildcard $(WIREHAIR_DIR)/*.cpp)
+WIREHAIR_OBJS := $(patsubst $(WIREHAIR_DIR)/%.cpp, $(WIREHAIR_OBJS_DIR)/%.o, $(WIREHAIR_SRCS))
+
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
+TEST_OBJS := $(patsubst $(TEST_DIR)/%.c,           $(TEST_OBJS_DIR)/%.o,     $(TEST_SRCS))
 
 # =============================================================================
-# Flags
+# Compiler flags
 # =============================================================================
 
 CFLAGS_BASE := -std=c11 \
                -I$(INC_DIR) \
+               -I$(WIREHAIR_INC) \
                -Wall \
                -Wextra \
                -Wpedantic \
                -D_POSIX_C_SOURCE=200112L
 
+CXXFLAGS_BASE := -std=c++11 \
+                 -I$(INC_DIR) \
+                 -I$(WIREHAIR_INC) \
+                 -O2
+
+# gf256.cpp uses _mm_shuffle_epi8 which is an SSSE3 intrinsic.
+# Applied only to the Wirehair compilation rule.
+WIREHAIR_CXXFLAGS_EXTRA := -mssse3
+
 ifeq ($(DEBUG),1)
-    CFLAGS_EXTRA := -g -O0 -fsanitize=address,undefined
-    LDFLAGS_EXTRA := -fsanitize=address,undefined
+    CFLAGS_EXTRA   := -g -O0 -fsanitize=address,undefined
+    CXXFLAGS_EXTRA := -g -O0 -fsanitize=address,undefined
+    LDFLAGS_EXTRA  := -fsanitize=address,undefined
 else
-    CFLAGS_EXTRA := -O2
-    LDFLAGS_EXTRA :=
+    CFLAGS_EXTRA   := -O2
+    CXXFLAGS_EXTRA :=
+    LDFLAGS_EXTRA  :=
 endif
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_EXTRA)
-LDFLAGS := $(LDFLAGS_EXTRA) -lwirehair -lpthread -lm
+CFLAGS   := $(CFLAGS_BASE)   $(CFLAGS_EXTRA)
+CXXFLAGS := $(CXXFLAGS_BASE) $(CXXFLAGS_EXTRA)
+
+# Link with g++ so C++ objects (Wirehair) resolve correctly.
+LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++
 
 ifeq ($(VERBOSE),1)
     Q :=
@@ -8263,15 +10093,26 @@ TARGET := $(BIN_DIR)/fso_gateway
 .PHONY: all
 all: $(TARGET)
 
-$(TARGET): $(OBJS) | $(BIN_DIR)
+$(TARGET): $(OBJS) $(WIREHAIR_OBJS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # =============================================================================
-# Object file rule
+# Object file rules
 # =============================================================================
 
+# C sources under src/
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(Q)echo "  CC    $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+# Wirehair C++ sources — SSSE3 required for gf256.cpp
+$(WIREHAIR_OBJS_DIR)/%.o: $(WIREHAIR_DIR)/%.cpp | $(WIREHAIR_OBJS_DIR)
+	$(Q)echo "  CXX   $<"
+	$(Q)$(CXX) $(CXXFLAGS) $(WIREHAIR_CXXFLAGS_EXTRA) -c -o $@ $<
+
+# Test C sources
+$(TEST_OBJS_DIR)/%.o: $(TEST_DIR)/%.c | $(TEST_OBJS_DIR)
 	$(Q)echo "  CC    $<"
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -8279,7 +10120,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 # Directory creation
 # =============================================================================
 
-$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR):
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(WIREHAIR_OBJS_DIR) $(TEST_OBJS_DIR):
 	$(Q)mkdir -p $@
 
 # =============================================================================
@@ -8287,58 +10128,79 @@ $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR):
 # =============================================================================
 
 # ---- interleaver_test -------------------------------------------------------
-INTERLEAVER_TEST_SRC := $(TEST_DIR)/interleaver_test.c
-INTERLEAVER_TEST_BIN := $(BIN_DIR)/interleaver_test
+INTERLEAVER_TEST_BIN  := $(BIN_DIR)/interleaver_test
+INTERLEAVER_TEST_OBJ  := $(TEST_OBJS_DIR)/interleaver_test.o
 INTERLEAVER_TEST_DEPS := $(OBJ_DIR)/interleaver.o \
                           $(OBJ_DIR)/logging.o
 
-$(INTERLEAVER_TEST_BIN): $(INTERLEAVER_TEST_SRC) $(INTERLEAVER_TEST_DEPS) | $(BIN_DIR)
+$(INTERLEAVER_TEST_BIN): $(INTERLEAVER_TEST_OBJ) $(INTERLEAVER_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- deinterleaver_test -----------------------------------------------------
-DEINTERLEAVER_TEST_SRC := $(TEST_DIR)/deinterleaver_test.c
-DEINTERLEAVER_TEST_BIN := $(BIN_DIR)/deinterleaver_test
+DEINTERLEAVER_TEST_BIN  := $(BIN_DIR)/deinterleaver_test
+DEINTERLEAVER_TEST_OBJ  := $(TEST_OBJS_DIR)/deinterleaver_test.o
 DEINTERLEAVER_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                             $(OBJ_DIR)/interleaver.o \
                             $(OBJ_DIR)/logging.o
 
-$(DEINTERLEAVER_TEST_BIN): $(DEINTERLEAVER_TEST_SRC) $(DEINTERLEAVER_TEST_DEPS) | $(BIN_DIR)
+$(DEINTERLEAVER_TEST_BIN): $(DEINTERLEAVER_TEST_OBJ) $(DEINTERLEAVER_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- burst_sim_test ---------------------------------------------------------
-BURST_TEST_SRC := $(TEST_DIR)/burst_sim_test.c
-BURST_TEST_BIN := $(BIN_DIR)/burst_sim_test
+BURST_TEST_BIN  := $(BIN_DIR)/burst_sim_test
+BURST_TEST_OBJ  := $(TEST_OBJS_DIR)/burst_sim_test.o
 BURST_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                    $(OBJ_DIR)/fec_wrapper.o \
                    $(OBJ_DIR)/interleaver.o \
-                   $(OBJ_DIR)/logging.o
+                   $(OBJ_DIR)/logging.o \
+                   $(WIREHAIR_OBJS)
 
-$(BURST_TEST_BIN): $(BURST_TEST_SRC) $(BURST_TEST_DEPS) | $(BIN_DIR)
+$(BURST_TEST_BIN): $(BURST_TEST_OBJ) $(BURST_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- receiver_robustness_test -----------------------------------------------
-ROBUSTNESS_TEST_SRC := $(TEST_DIR)/receiver_robustness_test.c
-ROBUSTNESS_TEST_BIN := $(BIN_DIR)/receiver_robustness_test
+ROBUSTNESS_TEST_BIN  := $(BIN_DIR)/receiver_robustness_test
+ROBUSTNESS_TEST_OBJ  := $(TEST_OBJS_DIR)/receiver_robustness_test.o
 ROBUSTNESS_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                          $(OBJ_DIR)/fec_wrapper.o \
-                         $(OBJ_DIR)/logging.o
+                         $(OBJ_DIR)/logging.o \
+                         $(WIREHAIR_OBJS)
 
-$(ROBUSTNESS_TEST_BIN): $(ROBUSTNESS_TEST_SRC) $(ROBUSTNESS_TEST_DEPS) | $(BIN_DIR)
+$(ROBUSTNESS_TEST_BIN): $(ROBUSTNESS_TEST_OBJ) $(ROBUSTNESS_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- fec_stress_test --------------------------------------------------------
-FEC_STRESS_TEST_SRC := $(TEST_DIR)/fec_stress_test.c
-FEC_STRESS_TEST_BIN := $(BIN_DIR)/fec_stress_test
+FEC_STRESS_TEST_BIN  := $(BIN_DIR)/fec_stress_test
+FEC_STRESS_TEST_OBJ  := $(TEST_OBJS_DIR)/fec_stress_test.o
 FEC_STRESS_TEST_DEPS := $(OBJ_DIR)/fec_wrapper.o \
-                         $(OBJ_DIR)/logging.o
+                         $(OBJ_DIR)/logging.o \
+                         $(WIREHAIR_OBJS)
 
-$(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_SRC) $(FEC_STRESS_TEST_DEPS) | $(BIN_DIR)
+$(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_OBJ) $(FEC_STRESS_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- end_to_end_sim_test  (Task 20) ----------------------------------------
+E2E_TEST_BIN  := $(BIN_DIR)/end_to_end_sim_test
+E2E_TEST_OBJ  := $(TEST_OBJS_DIR)/end_to_end_sim_test.o
+E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
+                  $(OBJ_DIR)/deinterleaver.o \
+                  $(OBJ_DIR)/fec_wrapper.o \
+                  $(OBJ_DIR)/interleaver.o \
+                  $(OBJ_DIR)/logging.o \
+                  $(OBJ_DIR)/packet_fragmenter.o \
+                  $(OBJ_DIR)/packet_reassembler.o \
+                  $(OBJ_DIR)/stats.o \
+                  $(OBJ_DIR)/symbol.o \
+                  $(WIREHAIR_OBJS)
+
+$(E2E_TEST_BIN): $(E2E_TEST_OBJ) $(E2E_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # =============================================================================
 # Grouped test target
@@ -8349,7 +10211,8 @@ tests: $(INTERLEAVER_TEST_BIN) \
        $(DEINTERLEAVER_TEST_BIN) \
        $(BURST_TEST_BIN) \
        $(ROBUSTNESS_TEST_BIN) \
-       $(FEC_STRESS_TEST_BIN)
+       $(FEC_STRESS_TEST_BIN) \
+       $(E2E_TEST_BIN)
 
 # =============================================================================
 # Run targets
@@ -8385,8 +10248,14 @@ ftest: $(FEC_STRESS_TEST_BIN)
 	$(Q)echo "Running fec_stress_test..."
 	$(Q)$(FEC_STRESS_TEST_BIN)
 
+.PHONY: e2etest
+e2etest: $(E2E_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running end_to_end_sim_test (Task 20)..."
+	$(Q)$(E2E_TEST_BIN)
+
 .PHONY: alltest
-alltest: tests itest dtest btest rtest ftest
+alltest: tests itest dtest btest rtest ftest e2etest
 
 # =============================================================================
 # Clean
@@ -8397,103 +10266,117 @@ clean:
 	$(Q)echo "  CLEAN $(BUILD_DIR)"
 	$(Q)rm -rf $(BUILD_DIR)
 
-
 --- FILE: README.md ---
-# FSO Gateway POC - High-Performance Packet Recovery System
+FSO Gateway POC - High-Performance Packet Recovery System
+Overview
 
-## Overview
 The FSO Gateway is a specialized bridge designed to connect standard Ethernet networks over Free Space Optical (FSO) links. FSO communication is highly susceptible to atmospheric turbulence, which causes deep fading and significant "burst" packet losses.
 
 This system mitigates these issues by implementing a robust pipeline of Fragmentation, Matrix Interleaving, and Forward Error Correction (FEC) using the Wirehair (Fountain Code) library.
 
----
+Project Status: March 2026
 
-## Project Status: March 2026
-**Current Milestone:** Phase 5.1 (Receiver Robustness & State Machine) - **COMPLETED**.
+Current Milestone: Phase 5.1 (Receiver Robustness & State Machine) - COMPLETED.
 
 The system is now production-ready at the logic level, featuring a deterministic state machine for block management and high resilience to jitter and out-of-order delivery.
 
----
+Completed Core Components
+1. Infrastructure (Phases 0-1)
+Linux Environment: Isolated development environment.
+Modern Build System: Makefile supporting C/C++ with automatic dependency tracking.
+Advanced Logging: Multi-level logging system with CLI configuration.
+Memory Safety: Full integration with AddressSanitizer (ASan) for debugging.
+2. Packet Processing & Fragmentation (Phase 2)
+Implements logic to break down large Ethernet frames (including 9000B Jumbo Frames) into fixed-size symbols.
+Ensures bit-exact reassembly at the receiver side.
+3. Block Management & FEC Wrapper (Phases 3-4)
+Block Builder: Groups symbols into blocks of size $K$. Includes timeout logic for flushing partial blocks.
+Wirehair Integration: A professional C wrapper for the Wirehair library.
+The "Cold Buffer" Fix: Resolved a critical mathematical bug in GF(256) by implementing full-reconstruction semantics and strictly aligned memory buffers.
+4. Matrix Interleaving & Burst Resilience (Phase 5)
+Matrix Interleaver: Disperses symbols from the same FEC block across the time domain.
+Sparse Deinterleaver: Assembles blocks from an interleaved stream, capable of handling "holes" (lost packets) without state corruption.
+5. Receiver Robustness (Phase 5.1) - NEW
 
-## Completed Core Components
-
-### 1. Infrastructure (Phases 0-1)
-* **Linux Environment:** Isolated development environment.
-* **Modern Build System:** Makefile supporting C/C++ with automatic dependency tracking.
-* **Advanced Logging:** Multi-level logging system with CLI configuration.
-* **Memory Safety:** Full integration with AddressSanitizer (ASan) for debugging.
-
-### 2. Packet Processing & Fragmentation (Phase 2)
-* Implements logic to break down large Ethernet frames (including 9000B Jumbo Frames) into fixed-size symbols.
-* Ensures bit-exact reassembly at the receiver side.
-
-### 3. Block Management & FEC Wrapper (Phases 3-4)
-* **Block Builder:** Groups symbols into blocks of size $K$. Includes timeout logic for flushing partial blocks.
-* **Wirehair Integration:** A professional C wrapper for the Wirehair library.
-* **The "Cold Buffer" Fix:** Resolved a critical mathematical bug in GF(256) by implementing full-reconstruction semantics and strictly aligned memory buffers.
-
-### 4. Matrix Interleaving & Burst Resilience (Phase 5)
-* **Matrix Interleaver:** Disperses symbols from the same FEC block across the time domain.
-* **Sparse Deinterleaver:** Assembles blocks from an interleaved stream, capable of handling "holes" (lost packets) without state corruption.
-
-### 5. Receiver Robustness (Phase 5.1) - **NEW**
 This sub-phase transformed the deinterleaver from a passive buffer into an active, robust state machine:
 
-* **Block Lifecycle FSM:** Every block slot follows a strict `EMPTY` → `FILLING` → `READY` → `EMPTY` cycle.
-* **Quiet Period (Stabilization):** Implemented a "Wait-for-Jitter" mechanism. Even if $K$ symbols are reached, the system waits (default 5ms) for late source symbols to arrive, reducing CPU load.
-* **The Freeze Rule:** Once a block is marked `READY`, it is locked. Late-arriving symbols are dropped to prevent Race Conditions during FEC decoding.
-* **Early Failure Detection:** Algorithms check if `holes > M` before attempting FEC, saving CPU cycles on irrecoverable blocks.
-* **O(1) Duplicate Rejection:** Bitmap-based tracking prevents redundant symbol processing.
+Block Lifecycle FSM: Every block slot follows a strict EMPTY → FILLING → READY → EMPTY cycle.
+Quiet Period (Stabilization): Implemented a "Wait-for-Jitter" mechanism. Even if $K$ symbols are reached, the system waits (default 5ms) for late source symbols to arrive, reducing CPU load.
+The Freeze Rule: Once a block is marked READY, it is locked. Late-arriving symbols are dropped to prevent Race Conditions during FEC decoding.
+Early Failure Detection: Algorithms check if holes > M before attempting FEC, saving CPU cycles on irrecoverable blocks.
+O(1) Duplicate Rejection: Bitmap-based tracking prevents redundant symbol processing.
+Performance & Robustness Verification
 
----
+The system was validated using multiple stress and integration test suites:
 
-## Performance & Robustness Verification
-The system was validated using two specialized stress test suites:
+A. The Burst Stress Test (Task 19)
+Burst Length Sweep: Verified 100% recovery for burst lengths up to 3,200 consecutive packets ($D=100, M=32$).
+Exact Boundary Testing: Mathematically verified recovery up to exactly $M$ losses and graceful failure at $M+1$.
+Result: 20/20 Success Rate.
+B. The Receiver Robustness Suite (Phase 5.1)
+72 Unit Tests: Covering FSM transitions, slot eviction under pressure, late arrival handling, and Wirehair integration.
+Result: 72/72 Success Rate.
+C. End-to-End Integration Test (Task 20) - NEW
 
-### A. The Burst Stress Test (Task 19)
-* **Burst Length Sweep:** Verified 100% recovery for burst lengths up to **3,200** consecutive packets ($D=100, M=32$).
-* **Exact Boundary Testing:** Mathematically verified recovery up to exactly $M$ losses and graceful failure at $M+1$.
-* **Result:** 20/20 Success Rate.
+A full pipeline simulation was implemented to validate the entire system:
 
-### B. The Receiver Robustness Suite (Phase 5.1)
-* **72 Unit Tests:** Covering FSM transitions, slot eviction under pressure, late arrival handling, and Wirehair integration.
-* **Result:** 72/72 Success Rate.
+Fragmentation → Block Builder → FEC → Interleaver → Burst Loss → Deinterleaver → FEC Decode → Reassembly
 
----
+Issue Discovered (Critical Bug)
 
-## Build & Run Instructions
+During initial runs, the system produced:
 
-### 1. Running the Receiver Robustness Test (FSM Logic)
-```bash
-# Clean and compile the robustness suite
+Only 576 transmitted symbols instead of 768
+Final interleaver window was never drained
+Missing packets despite sufficient FEC redundancy
+Root Cause
+
+The last block (after block_builder_finalize_with_padding()) contained a padded source symbol with an incorrect fec_id.
+
+Padding symbols inherited fec_id = 0
+This caused a duplicate (block_id, fec_id)
+One column (fec_id=K-1) was missing
+Result: interleaver row never completed → window never became READY
+Impact
+Last interleaver window stuck at 7/8
+Only 3 out of 4 windows transmitted
+System silently degraded despite valid FEC conditions
+Fix
+
+In encode_one_block():
+
+sym.fec_id = s;
+
+This enforces deterministic mapping:
+
+Source symbols → fec_id = 0..K-1
+Repair symbols → fec_id = K..K+M-1
+Result After Fix
+Full transmission: 768 / 768 symbols
+All windows drained correctly
+32/32 blocks decoded successfully
+100% packet recovery with exact byte match
+Build & Run Instructions
+1. Running the Receiver Robustness Test (FSM Logic)
 g++ -O3 -msse3 -march=native -Iinclude -Ithird_party/wirehair/include \
     src/deinterleaver.c src/fec_wrapper.c src/logging.c src/symbol.c src/stats.c \
     tests/receiver_robustness_test.c third_party/wirehair/*.cpp \
     -o build/bin/robustness_test -pthread -lstdc++
 
-# Execute
 ./build/bin/robustness_test
 2. Running the Burst Stress Test (Algorithm Logic)
-Bash
-# Compile the stress test (Excluding main.c)
 g++ -O3 -msse3 -march=native -Iinclude -Ithird_party/wirehair/include \
     src/deinterleaver.c src/fec_wrapper.c src/interleaver.c \
     src/logging.c src/symbol.c src/stats.c \
     tests/burst_sim_test.c third_party/wirehair/*.cpp \
     -o build/burst_test -pthread -lstdc++
 
-# Execute
 ./build/burst_test all
 3. Running the Gateway (Real-time Sniffing)
-Bash
-# Build the full project via Makefile
 make clean && make DEBUG=1
 
-# Run with sudo for raw socket access
 sudo ./build/fso_gateway --lan-iface eth0 --symbol-size 1500 --k 64 --m 32 --depth 100
 Roadmap - Upcoming Milestones
-Phase 6: End-to-End Integration: Connecting all modules into a single unified data plane.
-
-Phase 7: Real-World Networking: Integrating libpcap and Raw Sockets for physical NIC testing (10Gbps target).
-
-Phase 8: Atmospheric Simulation: Testing against real-world FSO scintillation models.
+Phase 6: End-to-End Integration – Connecting all modules into a unified real-time data plane
+Phase 7: Real-World Networking – Integration with libpcap and raw sockets (10Gbps target)
+Phase 8: Atmospheric Simulation – Testing under realistic FSO turbulence models

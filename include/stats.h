@@ -3,64 +3,167 @@
 
 /**
  * @file stats.h
- * @brief Thread-safe statistics collection for the FSO Gateway.
+ * @brief Lock-free statistics collection for the FSO Gateway.
  *
- * This module provides a minimal but robust statistics layer for tracking
- * packet flow and future FEC-related recovery information.
- *
- * The counters are stored internally in a global static container in stats.c,
- * and access is protected with a mutex because the gateway is expected to
- * become multi-threaded in future development stages.
+ * This module centralizes runtime counters for simulation and future real-time
+ * pipeline stages. Counters are implemented with C11 atomics so the hot path
+ * can update them without mutex contention.
  */
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @struct stats_container
- * @brief Holds all runtime counters for the gateway.
+ * @brief Plain non-atomic snapshot/report structure.
  *
- * All counters use uint64_t so they can safely count very large numbers of
- * packets during long runs without overflowing quickly.
+ * This structure is used only for reporting and snapshot export. It is not the
+ * live synchronized storage used internally by the statistics subsystem.
  */
 struct stats_container {
-    uint64_t rx_packets;             /**< Number of received packets */
-    uint64_t tx_packets;             /**< Number of transmitted packets */
-    uint64_t dropped_packets;        /**< Number of dropped packets */
-    uint64_t fec_recovered_packets;  /**< Number of packets recovered by FEC */
+    uint64_t ingress_packets;
+    uint64_t ingress_bytes;
+
+    uint64_t transmitted_packets;
+    uint64_t transmitted_bytes;
+
+    uint64_t recovered_packets;
+    uint64_t recovered_bytes;
+    uint64_t failed_packets;
+
+    uint64_t total_symbols;
+    uint64_t lost_symbols;
+
+    uint64_t blocks_attempted;
+    uint64_t blocks_recovered;
+    uint64_t blocks_failed;
+
+    uint64_t total_bursts;
+    uint64_t current_burst_length;
+    uint64_t max_burst_length;
+    uint64_t sum_burst_lengths;
+
+    uint64_t burst_len_1;
+    uint64_t burst_len_2_5;
+    uint64_t burst_len_6_10;
+    uint64_t burst_len_11_50;
+    uint64_t burst_len_51_100;
+    uint64_t burst_len_101_500;
+    uint64_t burst_len_501_plus;
+
+    uint64_t bursts_exceeding_fec_span;
+    uint64_t configured_fec_burst_span;
+    uint64_t recoverable_bursts;
+    uint64_t critical_bursts;
+
+    uint64_t burst_samples_recorded;
+    uint64_t burst_samples_dropped;
+
+    uint64_t blocks_with_loss;
+    uint64_t worst_holes_in_block;
+    uint64_t total_holes_in_blocks;
 };
 
 /**
- * @brief Initialize the statistics module.
- *
- * Resets all counters to zero and prepares the internal mutex.
- *
- * This function must be called once during program startup before any
- * increment or report function is used.
+ * @brief Initialize the statistics subsystem and reset all counters.
  */
 void stats_init(void);
 
 /**
- * @brief Increment the received-packet counter.
- *
- * Thread-safe.
+ * @brief Reset all counters and restart timing measurements.
  */
-void stats_increment_rx(void);
+void stats_reset(void);
 
 /**
- * @brief Increment the transmitted-packet counter.
+ * @brief Configure the burst-length threshold above which a burst is counted
+ *        as exceeding the recoverable FEC/interleaver span.
  *
- * Thread-safe.
+ * @param span Recoverable span in symbols. A burst is flagged if burst_len > span.
  */
-void stats_increment_tx(void);
+void stats_set_burst_fec_span(uint64_t span);
 
 /**
- * @brief Print the current statistics counters using the logging system.
+ * @brief Record one ingress packet and its byte count.
  *
- * The report is emitted using LOG_INFO so it integrates with the project's
- * centralized logging output.
+ * @param bytes Packet size in bytes.
+ */
+void stats_inc_ingress(size_t bytes);
+
+/**
+ * @brief Record one transmitted packet and its byte count.
  *
- * Thread-safe.
+ * @param bytes Packet size in bytes.
+ */
+void stats_inc_transmitted(size_t bytes);
+
+/**
+ * @brief Record one recovered packet and its byte count.
+ *
+ * @param bytes Packet size in bytes.
+ */
+void stats_inc_recovered(size_t bytes);
+
+/**
+ * @brief Increment the failed-packet counter.
+ */
+void stats_inc_failed_packet(void);
+
+/**
+ * @brief Add symbol totals directly.
+ *
+ * @param total Number of symbols processed.
+ * @param lost  Number of lost/erased symbols.
+ */
+void stats_add_symbols(uint64_t total, uint64_t lost);
+
+/**
+ * @brief Record one symbol in the RX stream and update burst diagnostics.
+ *
+ * @param lost True if the symbol was erased/lost, false otherwise.
+ */
+void stats_record_symbol(bool lost);
+
+/**
+ * @brief Flush the currently open burst, if any.
+ *
+ * Call once at end-of-stream so a trailing burst is accounted for.
+ */
+void stats_finalize_burst(void);
+
+/**
+ * @brief Record block-level hole count for diagnostics.
+ *
+ * @param holes Number of missing symbols in this block.
+ */
+void stats_record_block(uint64_t holes);
+
+/**
+ * @brief Increment the block-attempt counter.
+ */
+void stats_inc_block_attempt(void);
+
+/**
+ * @brief Increment the successfully recovered block counter.
+ */
+void stats_inc_block_success(void);
+
+/**
+ * @brief Increment the failed block counter.
+ */
+void stats_inc_block_failure(void);
+
+/**
+ * @brief Print a structured statistics report through LOG_INFO.
  */
 void stats_report(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* STATS_H */
