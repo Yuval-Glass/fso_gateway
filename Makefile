@@ -3,7 +3,9 @@
 # =============================================================================
 #
 # Automatic source discovery:  all *.c under src/ are compiled.
-# Include path:                include/
+# Include paths:               include/  third_party/wirehair/include/
+# Wirehair:                    compiled from third_party/wirehair/*.cpp
+#                              (no system libwirehair required)
 # Build output:                build/
 #
 # Targets
@@ -15,6 +17,7 @@
 #   make btest        — run burst_sim_test (all modes)
 #   make rtest        — run receiver_robustness_test
 #   make ftest        — run fec_stress_test
+#   make e2etest      — build and run end_to_end_sim_test (Task 20)
 #   make alltest      — build and run all tests
 #   make clean        — remove build directory
 #
@@ -27,54 +30,77 @@
 # Toolchain
 # =============================================================================
 
-CC      := gcc
-AR      := ar
+CC  := gcc
+CXX := g++
+AR  := ar
 
 # =============================================================================
 # Directories
 # =============================================================================
 
-SRC_DIR   := src
-INC_DIR   := include
-TEST_DIR  := tests
-BUILD_DIR := build
-OBJ_DIR   := $(BUILD_DIR)/obj
-BIN_DIR   := $(BUILD_DIR)/bin
+SRC_DIR           := src
+INC_DIR           := include
+TEST_DIR          := tests
+WIREHAIR_DIR      := third_party/wirehair
+WIREHAIR_INC      := $(WIREHAIR_DIR)/include
+BUILD_DIR         := build
+OBJ_DIR           := $(BUILD_DIR)/obj
+BIN_DIR           := $(BUILD_DIR)/bin
+WIREHAIR_OBJS_DIR := $(OBJ_DIR)/wirehair
+TEST_OBJS_DIR     := $(OBJ_DIR)/tests
 
 # =============================================================================
-# Source files  (automatic discovery)
+# Source files
 # =============================================================================
 
-# All production sources in src/
-SRCS := $(wildcard $(SRC_DIR)/*.c)
-
-# Exclude main.c when building test binaries (it defines its own main)
+SRCS         := $(wildcard $(SRC_DIR)/*.c)
 SRCS_NO_MAIN := $(filter-out $(SRC_DIR)/main.c, $(SRCS))
 
-OBJS         := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
-OBJS_NO_MAIN := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS_NO_MAIN))
+OBJS         := $(patsubst $(SRC_DIR)/%.c,         $(OBJ_DIR)/%.o,           $(SRCS))
+OBJS_NO_MAIN := $(patsubst $(SRC_DIR)/%.c,         $(OBJ_DIR)/%.o,           $(SRCS_NO_MAIN))
+
+WIREHAIR_SRCS := $(wildcard $(WIREHAIR_DIR)/*.cpp)
+WIREHAIR_OBJS := $(patsubst $(WIREHAIR_DIR)/%.cpp, $(WIREHAIR_OBJS_DIR)/%.o, $(WIREHAIR_SRCS))
+
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
+TEST_OBJS := $(patsubst $(TEST_DIR)/%.c,           $(TEST_OBJS_DIR)/%.o,     $(TEST_SRCS))
 
 # =============================================================================
-# Flags
+# Compiler flags
 # =============================================================================
 
 CFLAGS_BASE := -std=c11 \
                -I$(INC_DIR) \
+               -I$(WIREHAIR_INC) \
                -Wall \
                -Wextra \
                -Wpedantic \
                -D_POSIX_C_SOURCE=200112L
 
+CXXFLAGS_BASE := -std=c++11 \
+                 -I$(INC_DIR) \
+                 -I$(WIREHAIR_INC) \
+                 -O2
+
+# gf256.cpp uses _mm_shuffle_epi8 which is an SSSE3 intrinsic.
+# Applied only to the Wirehair compilation rule.
+WIREHAIR_CXXFLAGS_EXTRA := -mssse3
+
 ifeq ($(DEBUG),1)
-    CFLAGS_EXTRA := -g -O0 -fsanitize=address,undefined
-    LDFLAGS_EXTRA := -fsanitize=address,undefined
+    CFLAGS_EXTRA   := -g -O0 -fsanitize=address,undefined
+    CXXFLAGS_EXTRA := -g -O0 -fsanitize=address,undefined
+    LDFLAGS_EXTRA  := -fsanitize=address,undefined
 else
-    CFLAGS_EXTRA := -O2
-    LDFLAGS_EXTRA :=
+    CFLAGS_EXTRA   := -O2
+    CXXFLAGS_EXTRA :=
+    LDFLAGS_EXTRA  :=
 endif
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_EXTRA)
-LDFLAGS := $(LDFLAGS_EXTRA) -lwirehair -lpthread -lm
+CFLAGS   := $(CFLAGS_BASE)   $(CFLAGS_EXTRA)
+CXXFLAGS := $(CXXFLAGS_BASE) $(CXXFLAGS_EXTRA)
+
+# Link with g++ so C++ objects (Wirehair) resolve correctly.
+LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++
 
 ifeq ($(VERBOSE),1)
     Q :=
@@ -91,15 +117,26 @@ TARGET := $(BIN_DIR)/fso_gateway
 .PHONY: all
 all: $(TARGET)
 
-$(TARGET): $(OBJS) | $(BIN_DIR)
+$(TARGET): $(OBJS) $(WIREHAIR_OBJS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # =============================================================================
-# Object file rule
+# Object file rules
 # =============================================================================
 
+# C sources under src/
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(Q)echo "  CC    $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+# Wirehair C++ sources — SSSE3 required for gf256.cpp
+$(WIREHAIR_OBJS_DIR)/%.o: $(WIREHAIR_DIR)/%.cpp | $(WIREHAIR_OBJS_DIR)
+	$(Q)echo "  CXX   $<"
+	$(Q)$(CXX) $(CXXFLAGS) $(WIREHAIR_CXXFLAGS_EXTRA) -c -o $@ $<
+
+# Test C sources
+$(TEST_OBJS_DIR)/%.o: $(TEST_DIR)/%.c | $(TEST_OBJS_DIR)
 	$(Q)echo "  CC    $<"
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
 
@@ -107,7 +144,7 @@ $(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 # Directory creation
 # =============================================================================
 
-$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR):
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(WIREHAIR_OBJS_DIR) $(TEST_OBJS_DIR):
 	$(Q)mkdir -p $@
 
 # =============================================================================
@@ -115,58 +152,78 @@ $(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR):
 # =============================================================================
 
 # ---- interleaver_test -------------------------------------------------------
-INTERLEAVER_TEST_SRC := $(TEST_DIR)/interleaver_test.c
-INTERLEAVER_TEST_BIN := $(BIN_DIR)/interleaver_test
+INTERLEAVER_TEST_BIN  := $(BIN_DIR)/interleaver_test
+INTERLEAVER_TEST_OBJ  := $(TEST_OBJS_DIR)/interleaver_test.o
 INTERLEAVER_TEST_DEPS := $(OBJ_DIR)/interleaver.o \
                           $(OBJ_DIR)/logging.o
 
-$(INTERLEAVER_TEST_BIN): $(INTERLEAVER_TEST_SRC) $(INTERLEAVER_TEST_DEPS) | $(BIN_DIR)
+$(INTERLEAVER_TEST_BIN): $(INTERLEAVER_TEST_OBJ) $(INTERLEAVER_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- deinterleaver_test -----------------------------------------------------
-DEINTERLEAVER_TEST_SRC := $(TEST_DIR)/deinterleaver_test.c
-DEINTERLEAVER_TEST_BIN := $(BIN_DIR)/deinterleaver_test
+DEINTERLEAVER_TEST_BIN  := $(BIN_DIR)/deinterleaver_test
+DEINTERLEAVER_TEST_OBJ  := $(TEST_OBJS_DIR)/deinterleaver_test.o
 DEINTERLEAVER_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                             $(OBJ_DIR)/interleaver.o \
                             $(OBJ_DIR)/logging.o
 
-$(DEINTERLEAVER_TEST_BIN): $(DEINTERLEAVER_TEST_SRC) $(DEINTERLEAVER_TEST_DEPS) | $(BIN_DIR)
+$(DEINTERLEAVER_TEST_BIN): $(DEINTERLEAVER_TEST_OBJ) $(DEINTERLEAVER_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- burst_sim_test ---------------------------------------------------------
-BURST_TEST_SRC := $(TEST_DIR)/burst_sim_test.c
-BURST_TEST_BIN := $(BIN_DIR)/burst_sim_test
+BURST_TEST_BIN  := $(BIN_DIR)/burst_sim_test
+BURST_TEST_OBJ  := $(TEST_OBJS_DIR)/burst_sim_test.o
 BURST_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                    $(OBJ_DIR)/fec_wrapper.o \
                    $(OBJ_DIR)/interleaver.o \
-                   $(OBJ_DIR)/logging.o
+                   $(OBJ_DIR)/logging.o \
+                   $(WIREHAIR_OBJS)
 
-$(BURST_TEST_BIN): $(BURST_TEST_SRC) $(BURST_TEST_DEPS) | $(BIN_DIR)
+$(BURST_TEST_BIN): $(BURST_TEST_OBJ) $(BURST_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- receiver_robustness_test -----------------------------------------------
-ROBUSTNESS_TEST_SRC := $(TEST_DIR)/receiver_robustness_test.c
-ROBUSTNESS_TEST_BIN := $(BIN_DIR)/receiver_robustness_test
+ROBUSTNESS_TEST_BIN  := $(BIN_DIR)/receiver_robustness_test
+ROBUSTNESS_TEST_OBJ  := $(TEST_OBJS_DIR)/receiver_robustness_test.o
 ROBUSTNESS_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                          $(OBJ_DIR)/fec_wrapper.o \
-                         $(OBJ_DIR)/logging.o
+                         $(OBJ_DIR)/logging.o \
+                         $(WIREHAIR_OBJS)
 
-$(ROBUSTNESS_TEST_BIN): $(ROBUSTNESS_TEST_SRC) $(ROBUSTNESS_TEST_DEPS) | $(BIN_DIR)
+$(ROBUSTNESS_TEST_BIN): $(ROBUSTNESS_TEST_OBJ) $(ROBUSTNESS_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # ---- fec_stress_test --------------------------------------------------------
-FEC_STRESS_TEST_SRC := $(TEST_DIR)/fec_stress_test.c
-FEC_STRESS_TEST_BIN := $(BIN_DIR)/fec_stress_test
+FEC_STRESS_TEST_BIN  := $(BIN_DIR)/fec_stress_test
+FEC_STRESS_TEST_OBJ  := $(TEST_OBJS_DIR)/fec_stress_test.o
 FEC_STRESS_TEST_DEPS := $(OBJ_DIR)/fec_wrapper.o \
-                         $(OBJ_DIR)/logging.o
+                         $(OBJ_DIR)/logging.o \
+                         $(WIREHAIR_OBJS)
 
-$(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_SRC) $(FEC_STRESS_TEST_DEPS) | $(BIN_DIR)
+$(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_OBJ) $(FEC_STRESS_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
-	$(Q)$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- end_to_end_sim_test  (Task 20) ----------------------------------------
+E2E_TEST_BIN  := $(BIN_DIR)/end_to_end_sim_test
+E2E_TEST_OBJ  := $(TEST_OBJS_DIR)/end_to_end_sim_test.o
+E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
+                  $(OBJ_DIR)/deinterleaver.o \
+                  $(OBJ_DIR)/fec_wrapper.o \
+                  $(OBJ_DIR)/interleaver.o \
+                  $(OBJ_DIR)/logging.o \
+                  $(OBJ_DIR)/packet_fragmenter.o \
+                  $(OBJ_DIR)/packet_reassembler.o \
+                  $(OBJ_DIR)/symbol.o \
+                  $(WIREHAIR_OBJS)
+
+$(E2E_TEST_BIN): $(E2E_TEST_OBJ) $(E2E_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
 # =============================================================================
 # Grouped test target
@@ -177,7 +234,8 @@ tests: $(INTERLEAVER_TEST_BIN) \
        $(DEINTERLEAVER_TEST_BIN) \
        $(BURST_TEST_BIN) \
        $(ROBUSTNESS_TEST_BIN) \
-       $(FEC_STRESS_TEST_BIN)
+       $(FEC_STRESS_TEST_BIN) \
+       $(E2E_TEST_BIN)
 
 # =============================================================================
 # Run targets
@@ -213,8 +271,14 @@ ftest: $(FEC_STRESS_TEST_BIN)
 	$(Q)echo "Running fec_stress_test..."
 	$(Q)$(FEC_STRESS_TEST_BIN)
 
+.PHONY: e2etest
+e2etest: $(E2E_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running end_to_end_sim_test (Task 20)..."
+	$(Q)$(E2E_TEST_BIN)
+
 .PHONY: alltest
-alltest: tests itest dtest btest rtest ftest
+alltest: tests itest dtest btest rtest ftest e2etest
 
 # =============================================================================
 # Clean
