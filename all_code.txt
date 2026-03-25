@@ -1,7 +1,11 @@
---- FSO GATEWAY FULL CODE ARCHIVE (v6.0 - E2E Simulator Success) ---
-Generated on: Mon Mar 23 17:32:37 IST 2026
+===== FSO GATEWAY - FULL CODE SNAPSHOT =====
+Generated on: Wed Mar 25 02:25:12 IST 2026
 
---- FILE: include/block_builder.h ---
+======================
+DIR: include
+======================
+
+----- FILE: include/block_builder.h -----
 #ifndef BLOCK_BUILDER_H
 #define BLOCK_BUILDER_H
 
@@ -90,8 +94,7 @@ void block_builder_reset(block_builder_t *bb);
 void block_builder_destroy(block_builder_t *bb);
 
 #endif /* BLOCK_BUILDER_H */
-
---- FILE: include/config.h ---
+----- FILE: include/config.h -----
 #ifndef CONFIG_H
 #define CONFIG_H
 
@@ -196,8 +199,7 @@ struct config {
 int config_parse(int argc, char *argv[], struct config *cfg);
 
 #endif /* CONFIG_H */
-
---- FILE: include/deinterleaver.h ---
+----- FILE: include/deinterleaver.h -----
 /*
  * include/deinterleaver.h — Receiver-side block collector: Block Lifecycle FSM.
  *
@@ -480,8 +482,7 @@ int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out);
 
 #endif /* FSO_DEINTERLEAVER_H */
 
-
---- FILE: include/fec_wrapper.h ---
+----- FILE: include/fec_wrapper.h -----
 /*
  * include/fec_wrapper.h — Forward Error Correction API for the FSO Gateway.
  *
@@ -630,8 +631,7 @@ int fec_run_self_test(void);
 
 #endif /* FSO_FEC_WRAPPER_H */
 
-
---- FILE: include/fso_protocol.h ---
+----- FILE: include/fso_protocol.h -----
 #ifndef FSO_PROTOCOL_H
 #define FSO_PROTOCOL_H
 
@@ -736,8 +736,7 @@ void fso_protocol_print_header(const struct fso_header *header);
 #endif
 
 #endif /* FSO_PROTOCOL_H */
-
---- FILE: include/interleaver.h ---
+----- FILE: include/interleaver.h -----
 /*
  * include/interleaver.h — Symbol-level matrix interleaver for the FSO Gateway.
  *
@@ -899,8 +898,7 @@ int interleaver_symbols_pending(const interleaver_t *il);
 #endif
 
 #endif /* FSO_INTERLEAVER_H */
-
---- FILE: include/logging.h ---
+----- FILE: include/logging.h -----
 #ifndef LOGGING_H
 #define LOGGING_H
 
@@ -959,6 +957,26 @@ int log_init(void);
 int log_shutdown(void);
 
 /**
+ * @brief Set the minimum log level that will be emitted.
+ *
+ * Messages with a severity below this threshold are suppressed.
+ * For example, setting INFO will suppress DEBUG messages while keeping
+ * INFO/WARN/ERROR visible.
+ *
+ * @param level The minimum severity that should be printed.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int log_set_level(log_level level);
+
+/**
+ * @brief Get the current minimum log level threshold.
+ *
+ * @return The currently active minimum log level.
+ */
+log_level log_get_level(void);
+
+/**
  * @brief Emit a formatted log message in a thread-safe manner.
  *
  * This function creates a timestamp, resolves the current thread ID,
@@ -997,8 +1015,7 @@ int log_msg(log_level level, const char *fmt, ...);
 #define LOG_ERROR(...) log_msg(ERROR, __VA_ARGS__)
 
 #endif /* LOGGING_H */
-
---- FILE: include/network.h ---
+----- FILE: include/network.h -----
 #ifndef NETWORK_H
 #define NETWORK_H
 
@@ -1052,8 +1069,7 @@ void net_sniff_loop(int sockfd, int max_packets);
 #endif
 
 #endif /* NETWORK_H */
-
---- FILE: include/packet_fragmenter.h ---
+----- FILE: include/packet_fragmenter.h -----
 #ifndef PACKET_FRAGMENTER_H
 #define PACKET_FRAGMENTER_H
 
@@ -1092,8 +1108,7 @@ int fragment_packet(const unsigned char *packet_data,
                     uint16_t max_symbols);
 
 #endif /* PACKET_FRAGMENTER_H */
-
---- FILE: include/packet_reassembler.h ---
+----- FILE: include/packet_reassembler.h -----
 #ifndef PACKET_REASSEMBLER_H
 #define PACKET_REASSEMBLER_H
 
@@ -1128,8 +1143,7 @@ int reassemble_packet(const symbol_t *in_symbols,
                       size_t max_packet_size);
 
 #endif /* PACKET_REASSEMBLER_H */
-
---- FILE: include/stats.h ---
+----- FILE: include/stats.h -----
 #ifndef STATS_H
 #define STATS_H
 
@@ -1299,8 +1313,7 @@ void stats_report(void);
 #endif
 
 #endif /* STATS_H */
-
---- FILE: include/symbol.h ---
+----- FILE: include/symbol.h -----
 #ifndef SYMBOL_H
 #define SYMBOL_H
 
@@ -1350,8 +1363,7 @@ void symbol_dump(const symbol_t *sym);
 #endif
 
 #endif /* SYMBOL_H */
-
---- FILE: include/types.h ---
+----- FILE: include/types.h -----
 /*
  * include/types.h — Core data types for the FSO Gateway pipeline.
  *
@@ -1504,8 +1516,11 @@ typedef struct block_t {
 #endif
 
 #endif /* FSO_TYPES_H */
+======================
+DIR: src
+======================
 
---- FILE: src/block_builder.c ---
+----- FILE: src/block_builder.c -----
 #include "block_builder.h"
 
 #include <stdlib.h>
@@ -1752,8 +1767,7 @@ void block_builder_destroy(block_builder_t *bb)
     bb->last_activity.tv_sec = 0;
     bb->last_activity.tv_nsec = 0;
 }
-
---- FILE: src/config.c ---
+----- FILE: src/config.c -----
 /**
  * @file config.c
  * @brief Command-line configuration parsing for the FSO Gateway.
@@ -2091,8 +2105,7 @@ int config_parse(int argc, char *argv[], struct config *cfg)
 
     return 0;
 }
-
---- FILE: src/deinterleaver.c ---
+----- FILE: src/deinterleaver.c -----
 /*
  * src/deinterleaver.c — Block Lifecycle FSM implementation.
  *
@@ -2453,7 +2466,7 @@ static int maybe_freeze_slot(slot_t                *s,
         if (s->valid_symbols >= K && holes <= M) {
             s->state = BLOCK_READY_TO_DECODE;
             stats->blocks_ready++;
-            LOG_WARN("[DIL] Block %u → READY_TO_DECODE "
+            LOG_INFO("[DIL] Block %u → READY_TO_DECODE "
                      "(timeout %.1f ms: valid=%d/%d holes=%d)",
                      (unsigned)s->block_id,
                      timeout_ms, s->valid_symbols, N, holes);
@@ -2836,8 +2849,7 @@ int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out)
     *out = self->stats;
     return 0;
 }
-
---- FILE: src/fec_wrapper.c ---
+----- FILE: src/fec_wrapper.c -----
 /*
  * src/fec_wrapper.c — Forward Error Correction wrapper for the FSO Gateway.
  *
@@ -2855,21 +2867,19 @@ int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out)
  *
  * Source-First Feeding
  * --------------------
- *   build_feed_order() partitions valid symbols into:
- *     source  (fec_id < K)  — fed first
- *     repair  (fec_id >= K) — fed second
- *   This minimises iterations in the common no-loss / low-loss case.
- *   It uses the upper half of a 2×scan_capacity buffer as scratch space
- *   for the repair partition, avoiding an extra allocation.
+ *   Valid source symbols (fec_id < K) are fed first.
+ *   Valid repair symbols (fec_id >= K) are fed second.
  *
- * Return codes
- * ------------
- *   FEC_DECODE_OK              (0)  — success.
- *   FEC_DECODE_ERR            (-1)  — generic failure.
- *   FEC_DECODE_TOO_MANY_HOLES (-2)  — holes > M; block is irrecoverable.
+ * Runtime telemetry
+ * -----------------
+ *   The decoder records telemetry for the last decode attempt:
+ *     - block_id
+ *     - number_of_symbols_received
+ *     - number_of_missing_symbols
+ *     - number_of_repair_symbols_used
+ *     - decode_success
  *
- *   All three symbols are defined in include/fec_wrapper.h (public API).
- *   No magic integers are used in this file.
+ *   sim_runner.c reads this via local extern declarations.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -2884,204 +2894,145 @@ int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out)
 #include "logging.h"
 #include "types.h"
 
-/* -------------------------------------------------------------------------- */
-/* Internal constants                                                          */
-/* -------------------------------------------------------------------------- */
-
-#define FEC_ALIGNMENT_BYTES 64U
-
-/* -------------------------------------------------------------------------- */
-/* Internal context                                                            */
-/* -------------------------------------------------------------------------- */
-
 struct fec_ctx {
-    int    k;
-    int    symbol_size;
-    size_t block_bytes;   /* k * symbol_size */
+    int k;
+    int symbol_size;
+    int block_bytes;
 };
 
-/* -------------------------------------------------------------------------- */
-/* Private helpers                                                             */
-/* -------------------------------------------------------------------------- */
+typedef struct fec_decode_telemetry_t {
+    uint64_t block_id;
+    int      number_of_symbols_received;
+    int      number_of_missing_symbols;
+    int      number_of_repair_symbols_used;
+    int      decode_success;
+} fec_decode_telemetry_t;
 
-static void *alloc_aligned(size_t size)
+static uint64_t                g_current_decode_block_id = 0U;
+static fec_decode_telemetry_t  g_last_decode_telemetry;
+
+static void fec_clear_last_decode_telemetry(void)
 {
-    void *ptr = NULL;
-
-    if (size == 0U) { return NULL; }
-
-    if (posix_memalign(&ptr, FEC_ALIGNMENT_BYTES, size) != 0) { return NULL; }
-
-    memset(ptr, 0, size);
-    return ptr;
+    memset(&g_last_decode_telemetry, 0, sizeof(g_last_decode_telemetry));
+    g_last_decode_telemetry.block_id = g_current_decode_block_id;
 }
 
-static int is_aligned_64(const void *ptr)
+void fec_set_current_decode_block_id(uint64_t block_id)
 {
-    return (((uintptr_t)ptr & (uintptr_t)(FEC_ALIGNMENT_BYTES - 1U)) == 0U);
+    g_current_decode_block_id = block_id;
 }
 
-/*
- * symbol_slot_is_valid() — true if symbols[pos] is a usable decoding input.
- *
- * Conditions:
- *   - pos in [0, scan_capacity).
- *   - payload_len > 0  (not an erasure hole).
- *   - payload_len == ctx->symbol_size  (full-size; no partial symbols).
- *   - fec_id in [0, scan_capacity).
- *   - sparse mode: fec_id == pos  (slot is indexed by its own fec_id).
- */
-static int symbol_slot_is_valid(const struct fec_ctx *ctx,
-                                const symbol_t       *symbols,
-                                int                   pos,
-                                int                   scan_capacity,
-                                int                   sparse_mode)
+void fec_get_last_decode_telemetry(fec_decode_telemetry_t *out)
 {
-    const symbol_t *sym;
-
-    if (ctx == NULL || symbols == NULL || pos < 0 || pos >= scan_capacity) {
-        return 0;
+    if (out == NULL) {
+        return;
     }
 
-    sym = &symbols[pos];
-
-    if (sym->payload_len == 0) { return 0; }
-    if ((int)sym->payload_len != ctx->symbol_size) { return 0; }
-    if ((int)sym->fec_id < 0 || (int)sym->fec_id >= scan_capacity) { return 0; }
-    if (sparse_mode && (int)sym->fec_id != pos) { return 0; }
-
-    return 1;
+    *out = g_last_decode_telemetry;
 }
 
-static int count_valid_symbols(const struct fec_ctx *ctx,
-                               const symbol_t       *symbols,
-                               int                   scan_capacity,
-                               int                   sparse_mode)
+static int fec_count_valid_symbols(const symbol_t *symbols, int scan_capacity)
 {
-    int pos, valid = 0;
+    int i;
+    int count = 0;
 
-    for (pos = 0; pos < scan_capacity; ++pos) {
-        if (symbol_slot_is_valid(ctx, symbols, pos, scan_capacity,
-                                 sparse_mode)) {
-            valid++;
+    for (i = 0; i < scan_capacity; ++i) {
+        if (symbols[i].payload_len > 0U) {
+            count++;
         }
     }
 
-    return valid;
+    return count;
 }
 
-/*
- * build_feed_order() — populate out_order with valid-symbol positions,
- * source symbols (fec_id < K) first, then repair symbols (fec_id >= K).
- *
- * out_order must have capacity of at least 2 * scan_capacity ints.
- * The upper half is used as temporary storage for the repair partition
- * before the final memmove concatenation.
- *
- * Returns total count of valid symbols, or -1 on error.
- */
-static int build_feed_order(const struct fec_ctx *ctx,
-                            symbol_t             *symbols,
-                            int                   scan_capacity,
-                            int                   sparse_mode,
-                            int                  *out_order)
+static int fec_build_feed_order(const symbol_t *symbols,
+                                int             scan_capacity,
+                                int             k,
+                                int            *order_out,
+                                int            *repair_available_out)
 {
-    int *src_buf;
-    int *rep_buf;
-    int  src_count = 0, repair_count = 0;
-    int  pos;
+    int i;
+    int pos = 0;
+    int repair_available = 0;
 
-    if (ctx == NULL || symbols == NULL || out_order == NULL ||
-        scan_capacity < 1) {
-        return -1;
-    }
-
-    src_buf = out_order;
-    rep_buf = out_order + scan_capacity;   /* upper half — temporary */
-
-    for (pos = 0; pos < scan_capacity; ++pos) {
-        if (!symbol_slot_is_valid(ctx, symbols, pos, scan_capacity,
-                                  sparse_mode)) {
+    for (i = 0; i < scan_capacity; ++i) {
+        if (symbols[i].payload_len == 0U) {
             continue;
         }
 
-        if ((int)symbols[pos].fec_id < ctx->k) {
-            src_buf[src_count++] = pos;
-        } else {
-            rep_buf[repair_count++] = pos;
+        if ((int)symbols[i].fec_id < k) {
+            order_out[pos++] = i;
         }
     }
 
-    /* Concatenate: repair portion follows source portion */
-    memmove(out_order + src_count, rep_buf,
-            (size_t)repair_count * sizeof(int));
+    for (i = 0; i < scan_capacity; ++i) {
+        if (symbols[i].payload_len == 0U) {
+            continue;
+        }
 
-    return src_count + repair_count;
+        if ((int)symbols[i].fec_id >= k) {
+            order_out[pos++] = i;
+            repair_available++;
+        }
+    }
+
+    if (repair_available_out != NULL) {
+        *repair_available_out = repair_available;
+    }
+
+    return pos;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Lifecycle                                                                   */
-/* -------------------------------------------------------------------------- */
 
 fec_handle_t fec_create(int k, int symbol_size)
 {
     struct fec_ctx *ctx;
 
     if (k < 2 || symbol_size <= 0) {
-        LOG_ERROR("[FEC] fec_create: invalid k=%d symbol_size=%d",
+        LOG_ERROR("[FEC] fec_create: invalid parameters k=%d symbol_size=%d",
                   k, symbol_size);
         return NULL;
     }
 
-    ctx = (struct fec_ctx *)malloc(sizeof(struct fec_ctx));
+    ctx = (struct fec_ctx *)calloc(1U, sizeof(*ctx));
     if (ctx == NULL) {
-        LOG_ERROR("[FEC] fec_create: malloc failed");
+        LOG_ERROR("[FEC] fec_create: calloc failed");
         return NULL;
     }
 
     ctx->k           = k;
     ctx->symbol_size = symbol_size;
-    ctx->block_bytes = (size_t)k * (size_t)symbol_size;
+    ctx->block_bytes = k * symbol_size;
 
-    LOG_INFO("[FEC] Context: k=%d symbol_size=%d block_bytes=%zu",
-             k, symbol_size, ctx->block_bytes);
+    LOG_INFO("[FEC] Created: k=%d symbol_size=%d block_bytes=%d",
+             ctx->k, ctx->symbol_size, ctx->block_bytes);
 
     return ctx;
 }
 
 void fec_destroy(fec_handle_t handle)
 {
-    if (handle != NULL) { free(handle); }
+    free(handle);
 }
 
-/* -------------------------------------------------------------------------- */
-/* Encoding                                                                    */
-/* -------------------------------------------------------------------------- */
-
-int fec_encode_block(fec_handle_t         handle,
-                     const unsigned char *source_data,
-                     symbol_t            *out_repair_symbols,
-                     int                  m)
+int fec_encode_block(fec_handle_t          handle,
+                     const unsigned char  *source_data,
+                     symbol_t             *out_repair_symbols,
+                     int                   m)
 {
-    struct fec_ctx *ctx        = (struct fec_ctx *)handle;
-    WirehairCodec   encoder    = NULL;
-    unsigned char  *symbol_buf = NULL;
-    int             result     = FEC_DECODE_ERR;
-    int             i;
+    struct fec_ctx   *ctx = handle;
+    WirehairCodec    encoder = NULL;
+    unsigned char    *symbol_buf = NULL;
+    int               result = FEC_DECODE_ERR;
+    int               i;
 
-    if (ctx == NULL || source_data == NULL ||
-        out_repair_symbols == NULL || m < 1) {
-        LOG_ERROR("[FEC] fec_encode_block: invalid argument");
+    if (ctx == NULL || source_data == NULL || out_repair_symbols == NULL || m < 1) {
+        LOG_ERROR("[FEC] fec_encode_block: invalid arguments");
         return FEC_DECODE_ERR;
     }
 
-    if (!is_aligned_64(source_data)) {
-        LOG_WARN("[FEC] fec_encode_block: source_data not 64-byte aligned");
-    }
-
-    symbol_buf = (unsigned char *)alloc_aligned((size_t)ctx->symbol_size);
+    symbol_buf = (unsigned char *)calloc((size_t)ctx->symbol_size, sizeof(unsigned char));
     if (symbol_buf == NULL) {
-        LOG_ERROR("[FEC] fec_encode_block: alloc_aligned failed");
+        LOG_ERROR("[FEC] fec_encode_block: symbol buffer allocation failed");
         return FEC_DECODE_ERR;
     }
 
@@ -3095,40 +3046,45 @@ int fec_encode_block(fec_handle_t         handle,
     }
 
     for (i = 0; i < m; ++i) {
-        uint32_t       bytes_out     = 0;
+        uint32_t       bytes_out     = 0U;
         uint32_t       repair_fec_id = (uint32_t)(ctx->k + i);
         WirehairResult wr;
 
         memset(symbol_buf, 0, (size_t)ctx->symbol_size);
 
-        wr = wirehair_encode(encoder, repair_fec_id, symbol_buf,
-                             (uint32_t)ctx->symbol_size, &bytes_out);
+        wr = wirehair_encode(encoder,
+                             repair_fec_id,
+                             symbol_buf,
+                             (uint32_t)ctx->symbol_size,
+                             &bytes_out);
 
         if (wr != Wirehair_Success ||
             bytes_out != (uint32_t)ctx->symbol_size) {
             LOG_ERROR("[FEC] fec_encode_block: wirehair_encode() failed "
                       "fec_id=%u wr=%d bytes_out=%u",
-                      (unsigned)repair_fec_id, (int)wr, (unsigned)bytes_out);
+                      (unsigned)repair_fec_id,
+                      (int)wr,
+                      (unsigned)bytes_out);
             goto cleanup;
         }
 
+        memset(&out_repair_symbols[i], 0, sizeof(symbol_t));
         out_repair_symbols[i].fec_id      = repair_fec_id;
         out_repair_symbols[i].payload_len = (uint16_t)bytes_out;
-        memcpy(out_repair_symbols[i].data, symbol_buf,
+        memcpy(out_repair_symbols[i].data,
+               symbol_buf,
                (size_t)ctx->symbol_size);
     }
 
     result = FEC_DECODE_OK;
 
 cleanup:
-    if (encoder != NULL) { wirehair_free(encoder); }
+    if (encoder != NULL) {
+        wirehair_free(encoder);
+    }
     free(symbol_buf);
     return result;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Decoding                                                                    */
-/* -------------------------------------------------------------------------- */
 
 int fec_decode_block(fec_handle_t   handle,
                      symbol_t      *symbols,
@@ -3136,157 +3092,246 @@ int fec_decode_block(fec_handle_t   handle,
                      int            scan_capacity,
                      unsigned char *out_reconstructed)
 {
-    struct fec_ctx  *ctx           = (struct fec_ctx *)handle;
-    WirehairCodec    decoder       = NULL;
-    int             *feed_order    = NULL;
-    int              feed_count;
-    int              valid_symbols;
-    int              holes;
-    int              m_available;
-    int              sparse_mode;
-    int              fed           = 0;
-    int              pos_index;
-    int              decoder_ready = 0;
-    int              result        = FEC_DECODE_ERR;
+    struct fec_ctx    *ctx = handle;
+    WirehairCodec      decoder = NULL;
+    int               *feed_order = NULL;
+    int                valid_received;
+    int                repair_available = 0;
+    int                feed_count;
+    int                effective_n;
+    int                missing_count;
+    int                m_limit;
+    int                result = FEC_DECODE_ERR;
+    int                repair_used = 0;
+    int                fed;
+    int                decode_success = 0;
 
-    if (ctx == NULL || symbols == NULL || out_reconstructed == NULL) {
-        LOG_ERROR("[FEC] fec_decode_block: NULL argument");
+    fec_clear_last_decode_telemetry();
+
+    if (ctx == NULL || symbols == NULL || out_reconstructed == NULL ||
+        symbol_count < 0 || scan_capacity < 0) {
+        LOG_ERROR("[FEC] fec_decode_block: invalid arguments");
         return FEC_DECODE_ERR;
     }
 
-    if (symbol_count < 0 ||
-        scan_capacity < 1 ||
-        scan_capacity > MAX_SYMBOLS_PER_BLOCK) {
-        LOG_ERROR("[FEC] fec_decode_block: invalid counts "
-                  "symbol_count=%d scan_capacity=%d",
-                  symbol_count, scan_capacity);
+    if (scan_capacity < symbol_count) {
+        scan_capacity = symbol_count;
+    }
+
+    valid_received = fec_count_valid_symbols(symbols, scan_capacity);
+    effective_n    = scan_capacity;
+    missing_count  = (effective_n > valid_received) ? (effective_n - valid_received) : 0;
+    m_limit        = (effective_n > ctx->k) ? (effective_n - ctx->k) : 0;
+
+    g_last_decode_telemetry.block_id                    = g_current_decode_block_id;
+    g_last_decode_telemetry.number_of_symbols_received  = valid_received;
+    g_last_decode_telemetry.number_of_missing_symbols   = missing_count;
+    g_last_decode_telemetry.number_of_repair_symbols_used = 0;
+    g_last_decode_telemetry.decode_success              = 0;
+
+    if (valid_received < ctx->k) {
+        LOG_WARN("[FEC] fec_decode_block: block=%llu insufficient symbols "
+                 "received=%d required=%d",
+                 (unsigned long long)g_current_decode_block_id,
+                 valid_received,
+                 ctx->k);
         return FEC_DECODE_ERR;
     }
 
-    sparse_mode   = (scan_capacity > symbol_count);
-    valid_symbols = count_valid_symbols(ctx, symbols, scan_capacity,
-                                        sparse_mode);
-    holes         = scan_capacity - valid_symbols;
-    m_available   = scan_capacity - ctx->k;
-    if (m_available < 0) { m_available = 0; }
-
-    /*
-     * holes > M: irrecoverable.
-     * Return FEC_DECODE_TOO_MANY_HOLES (-2) so callers can distinguish
-     * this from a generic internal failure (FEC_DECODE_ERR = -1).
-     */
-    if (holes > m_available) {
-        LOG_ERROR("[FEC] fec_decode_block: FEC_DECODE_TOO_MANY_HOLES "
-                  "holes=%d > M=%d (valid=%d k=%d scan_capacity=%d)",
-                  holes, m_available, valid_symbols, ctx->k, scan_capacity);
+    if (effective_n > ctx->k && missing_count > m_limit) {
+        LOG_WARN("[FEC] fec_decode_block: block=%llu too many holes "
+                 "received=%d missing=%d m=%d",
+                 (unsigned long long)g_current_decode_block_id,
+                 valid_received,
+                 missing_count,
+                 m_limit);
         return FEC_DECODE_TOO_MANY_HOLES;
     }
 
-    if (valid_symbols < ctx->k) {
-        LOG_ERROR("[FEC] fec_decode_block: insufficient valid symbols "
-                  "(valid=%d k=%d holes=%d scan_capacity=%d)",
-                  valid_symbols, ctx->k, holes, scan_capacity);
+    feed_order = (int *)calloc((size_t)scan_capacity, sizeof(int));
+    if (feed_order == NULL) {
+        LOG_ERROR("[FEC] fec_decode_block: feed_order allocation failed");
         return FEC_DECODE_ERR;
     }
 
-    if (!is_aligned_64(out_reconstructed)) {
-        LOG_WARN("[FEC] fec_decode_block: out_reconstructed not 64-byte aligned");
-    }
-
-    LOG_DEBUG("[FEC] decode: valid=%d holes=%d k=%d M=%d scan=%d sparse=%d",
-              valid_symbols, holes, ctx->k, m_available,
-              scan_capacity, sparse_mode);
+    feed_count = fec_build_feed_order(symbols,
+                                      scan_capacity,
+                                      ctx->k,
+                                      feed_order,
+                                      &repair_available);
 
     decoder = wirehair_decoder_create(NULL,
                                       (uint64_t)ctx->block_bytes,
                                       (uint32_t)ctx->symbol_size);
     if (decoder == NULL) {
         LOG_ERROR("[FEC] fec_decode_block: wirehair_decoder_create() failed");
-        return FEC_DECODE_ERR;
-    }
-
-    /*
-     * 2 × scan_capacity so build_feed_order() can use the upper half as
-     * a temporary repair-symbol scratch buffer.
-     */
-    feed_order = (int *)malloc(sizeof(int) * (size_t)scan_capacity * 2);
-    if (feed_order == NULL) {
-        LOG_ERROR("[FEC] fec_decode_block: malloc(feed_order) failed");
         goto cleanup;
     }
 
-    feed_count = build_feed_order(ctx, symbols, scan_capacity,
-                                  sparse_mode, feed_order);
-    if (feed_count < 0) {
-        LOG_ERROR("[FEC] fec_decode_block: build_feed_order() failed");
-        goto cleanup;
-    }
-
-    for (pos_index = 0; pos_index < feed_count; ++pos_index) {
-        int            pos = feed_order[pos_index];
-        WirehairResult wr;
+    for (fed = 0; fed < feed_count; ++fed) {
+        const symbol_t   *sym = &symbols[feed_order[fed]];
+        WirehairResult    wr;
 
         wr = wirehair_decode(decoder,
-                             symbols[pos].fec_id,
-                             symbols[pos].data,
-                             (uint32_t)ctx->symbol_size);
-        fed++;
+                             sym->fec_id,
+                             sym->data,
+                             (uint32_t)sym->payload_len);
+
+        if ((int)sym->fec_id >= ctx->k) {
+            repair_used++;
+        }
 
         if (wr == Wirehair_Success) {
-            decoder_ready = 1;
-            LOG_DEBUG("[FEC] decoder success at fed=%d fec_id=%u holes=%d",
-                      fed, (unsigned)symbols[pos].fec_id, holes);
-            break;   /* MUST break — re-calling after success segfaults */
+            decode_success = 1;
+            break;
         }
 
-        if (wr != Wirehair_NeedMore) {
-            LOG_ERROR("[FEC] wirehair_decode() error "
-                      "pos=%d fec_id=%u wr=%d fed=%d",
-                      pos, (unsigned)symbols[pos].fec_id, (int)wr, fed);
-            goto cleanup;
+        if (wr == Wirehair_NeedMore) {
+            continue;
         }
-    }
 
-    if (!decoder_ready) {
-        LOG_ERROR("[FEC] decoder never reached success "
-                  "(fed=%d valid=%d holes=%d k=%d scan=%d)",
-                  fed, valid_symbols, holes, ctx->k, scan_capacity);
+        LOG_ERROR("[FEC] fec_decode_block: block=%llu wirehair_decode failed "
+                  "fec_id=%u wr=%d after fed=%d",
+                  (unsigned long long)g_current_decode_block_id,
+                  (unsigned)sym->fec_id,
+                  (int)wr,
+                  fed + 1);
         goto cleanup;
     }
 
-    memset(out_reconstructed, 0, ctx->block_bytes);
+    if (!decode_success) {
+        LOG_WARN("[FEC] fec_decode_block: block=%llu decode incomplete "
+                 "received=%d missing=%d repair_avail=%d repair_used=%d",
+                 (unsigned long long)g_current_decode_block_id,
+                 valid_received,
+                 missing_count,
+                 repair_available,
+                 repair_used);
+        goto cleanup;
+    }
+
+    memset(out_reconstructed, 0, (size_t)ctx->block_bytes);
 
     {
-        WirehairResult wr = wirehair_recover(decoder, out_reconstructed,
-                                             (uint64_t)ctx->block_bytes);
+        WirehairResult wr;
+
+        wr = wirehair_recover(decoder,
+                              out_reconstructed,
+                              (uint64_t)ctx->block_bytes);
         if (wr != Wirehair_Success) {
-            LOG_ERROR("[FEC] wirehair_recover() failed wr=%d", (int)wr);
+            LOG_ERROR("[FEC] fec_decode_block: block=%llu wirehair_recover failed wr=%d",
+                      (unsigned long long)g_current_decode_block_id,
+                      (int)wr);
             goto cleanup;
         }
     }
 
-    LOG_DEBUG("[FEC] recovered OK (fed=%d valid=%d holes=%d)",
-              fed, valid_symbols, holes);
+    g_last_decode_telemetry.number_of_repair_symbols_used = repair_used;
+    g_last_decode_telemetry.decode_success                = 1;
+
+    LOG_INFO("[FEC] decode telemetry: block=%llu received=%d missing=%d repair=%d success=YES",
+             (unsigned long long)g_last_decode_telemetry.block_id,
+             g_last_decode_telemetry.number_of_symbols_received,
+             g_last_decode_telemetry.number_of_missing_symbols,
+             g_last_decode_telemetry.number_of_repair_symbols_used);
 
     result = FEC_DECODE_OK;
 
 cleanup:
+    if (result != FEC_DECODE_OK) {
+        g_last_decode_telemetry.number_of_repair_symbols_used = repair_used;
+        g_last_decode_telemetry.decode_success                = 0;
+
+        LOG_INFO("[FEC] decode telemetry: block=%llu received=%d missing=%d repair=%d success=NO",
+                 (unsigned long long)g_last_decode_telemetry.block_id,
+                 g_last_decode_telemetry.number_of_symbols_received,
+                 g_last_decode_telemetry.number_of_missing_symbols,
+                 g_last_decode_telemetry.number_of_repair_symbols_used);
+    }
+
+    if (decoder != NULL) {
+        wirehair_free(decoder);
+    }
     free(feed_order);
-    if (decoder != NULL) { wirehair_free(decoder); }
     return result;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Self-test                                                                   */
-/* -------------------------------------------------------------------------- */
-
 int fec_run_self_test(void)
 {
-    return FEC_DECODE_OK;
+    enum {
+        TEST_K = 8,
+        TEST_M = 2,
+        TEST_SYMBOL_SIZE = 128
+    };
+
+    fec_handle_t   fec = NULL;
+    unsigned char *source = NULL;
+    unsigned char *recon  = NULL;
+    symbol_t       repairs[TEST_M];
+    symbol_t       received[TEST_K + TEST_M];
+    int            i;
+    int            rc = -1;
+
+    fec = fec_create(TEST_K, TEST_SYMBOL_SIZE);
+    if (fec == NULL) {
+        return -1;
+    }
+
+    source = (unsigned char *)calloc((size_t)TEST_K * TEST_SYMBOL_SIZE, sizeof(unsigned char));
+    recon  = (unsigned char *)calloc((size_t)TEST_K * TEST_SYMBOL_SIZE, sizeof(unsigned char));
+    if (source == NULL || recon == NULL) {
+        goto cleanup;
+    }
+
+    for (i = 0; i < TEST_K * TEST_SYMBOL_SIZE; ++i) {
+        source[i] = (unsigned char)((i * 17 + 3) & 0xFF);
+    }
+
+    if (fec_encode_block(fec, source, repairs, TEST_M) != FEC_DECODE_OK) {
+        goto cleanup;
+    }
+
+    memset(received, 0, sizeof(received));
+
+    for (i = 0; i < TEST_K; ++i) {
+        received[i].fec_id      = (uint32_t)i;
+        received[i].payload_len = TEST_SYMBOL_SIZE;
+        memcpy(received[i].data,
+               source + (size_t)i * TEST_SYMBOL_SIZE,
+               TEST_SYMBOL_SIZE);
+    }
+
+    for (i = 0; i < TEST_M; ++i) {
+        received[TEST_K + i] = repairs[i];
+    }
+
+    memset(&received[3], 0, sizeof(symbol_t));
+
+    fec_set_current_decode_block_id(0U);
+
+    if (fec_decode_block(fec,
+                         received,
+                         TEST_K + TEST_M - 1,
+                         TEST_K + TEST_M,
+                         recon) != FEC_DECODE_OK) {
+        goto cleanup;
+    }
+
+    if (memcmp(source, recon, (size_t)TEST_K * TEST_SYMBOL_SIZE) != 0) {
+        LOG_ERROR("[FEC] fec_run_self_test: reconstructed payload mismatch");
+        goto cleanup;
+    }
+
+    rc = 0;
+
+cleanup:
+    free(source);
+    free(recon);
+    fec_destroy(fec);
+    return rc;
 }
 
-
---- FILE: src/fso_protocol.c ---
+----- FILE: src/fso_protocol.c -----
 /**
  * @file fso_protocol.c
  * @brief Implementation of FSO protocol header helpers.
@@ -3367,8 +3412,7 @@ void fso_protocol_print_header(const struct fso_header *header)
     printf("  crc32       = 0x%08X\n", crc32_host);
     printf("}\n");
 }
-
---- FILE: src/interleaver.c ---
+----- FILE: src/interleaver.c -----
 /*
  * src/interleaver.c — Symbol-level matrix interleaver implementation.
  *
@@ -3691,8 +3735,7 @@ int interleaver_symbols_pending(const interleaver_t *il)
     drained = il->pop_col * il->depth + il->pop_row;
     return il->depth * il->n - drained;
 }
-
---- FILE: src/logging.c ---
+----- FILE: src/logging.c -----
 /**
  * @file logging.c
  * @brief Implementation of the FSO Gateway logging module.
@@ -3741,6 +3784,15 @@ static pthread_mutex_t g_log_mutex;
  * accidental double shutdown.
  */
 static int g_log_initialized = 0;
+
+/**
+ * @brief Current minimum severity threshold for emitted messages.
+ *
+ * Messages with a level numerically lower than this threshold are suppressed.
+ * The default remains DEBUG so existing workflows preserve current verbosity
+ * unless a caller explicitly raises the threshold.
+ */
+static log_level g_log_min_level = DEBUG;
 
 /**
  * @brief Convert a log level enum value to a printable string.
@@ -3856,6 +3908,7 @@ int log_init(void)
     }
 
     g_log_initialized = 1;
+    g_log_min_level = DEBUG;
     return 0;
 }
 
@@ -3880,6 +3933,33 @@ int log_shutdown(void)
 
     g_log_initialized = 0;
     return 0;
+}
+
+/**
+ * @brief Set the minimum severity level that will be emitted.
+ *
+ * @param level The new threshold.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int log_set_level(log_level level)
+{
+    if (level < DEBUG || level > ERROR) {
+        return -1;
+    }
+
+    g_log_min_level = level;
+    return 0;
+}
+
+/**
+ * @brief Get the current minimum severity threshold.
+ *
+ * @return The active threshold.
+ */
+log_level log_get_level(void)
+{
+    return g_log_min_level;
 }
 
 /**
@@ -3914,6 +3994,10 @@ int log_msg(log_level level, const char *fmt, ...)
 
     if (!g_log_initialized || fmt == NULL) {
         return -1;
+    }
+
+    if (level < g_log_min_level) {
+        return 0;
     }
 
     if (format_timestamp(timestamp, sizeof(timestamp)) != 0) {
@@ -3966,8 +4050,7 @@ int log_msg(log_level level, const char *fmt, ...)
 
     return 0;
 }
-
---- FILE: src/main.c ---
+----- FILE: src/main.c -----
 /*
  * main.c — FSO Gateway entry point.
  *
@@ -4449,8 +4532,7 @@ int main(int argc, char *argv[])
 
     return exit_code;
 }
-
---- FILE: src/network.c ---
+----- FILE: src/network.c -----
 /**
  * @file network.c
  * @brief Raw socket operations for the FSO Gateway.
@@ -4646,8 +4728,7 @@ void net_sniff_loop(int sockfd, int max_packets)
 
     LOG_INFO("Sniff loop finished after capturing %d packets", packets_received);
 }
-
---- FILE: src/packet_fragmenter.c ---
+----- FILE: src/packet_fragmenter.c -----
 #include "packet_fragmenter.h"
 
 #include <string.h>
@@ -4761,8 +4842,7 @@ int fragment_packet(const unsigned char *packet_data,
 
     return (int)total_symbols;
 }
-
---- FILE: src/packet_reassembler.c ---
+----- FILE: src/packet_reassembler.c -----
 #include "packet_reassembler.h"
 
 #include <string.h>
@@ -4909,8 +4989,7 @@ int reassemble_packet(const symbol_t *in_symbols,
 
     return (int)reconstructed_len;
 }
-
---- FILE: src/stats.c ---
+----- FILE: src/stats.c -----
 /**
  * @file stats.c
  * @brief Lock-free runtime statistics for the FSO Gateway.
@@ -5546,8 +5625,7 @@ void stats_report(void)
 
     LOG_INFO("================================");
 }
-
---- FILE: src/symbol.c ---
+----- FILE: src/symbol.c -----
 /**
  * @file symbol.c
  * @brief Implementation of symbol lifecycle and debug helpers.
@@ -5612,8 +5690,11 @@ void symbol_dump(const symbol_t *sym)
         sym->payload_len
     );
 }
+======================
+DIR: tests
+======================
 
---- FILE: tests/burst_sim_test.c ---
+----- FILE: tests/burst_sim_test.c -----
 /*
  * tests/burst_sim_test.c — Automated Stress Testing Framework
  *
@@ -6474,8 +6555,1090 @@ int main(int argc, char **argv)
     return (failures == 0) ? 0 : 1;
 }
 
+----- FILE: tests/channel_campaign_test.c -----
 
---- FILE: tests/deinterleaver_test.c ---
+/*
+ * tests/channel_campaign_test.c — FSO Channel Campaign Test (Task 21).
+ *
+ * Runs many channel scenarios over the real TX→channel→RX pipeline via
+ * sim_run_campaign_case(). All results are from real pipeline execution.
+ *
+ * Build:  make ctest
+ * Output: build/channel_campaign_results.csv
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <inttypes.h>
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "logging.h"
+#include "stats.h"
+#include "sim_runner.h"
+
+/* =========================================================================
+ * Campaign geometry
+ * =========================================================================*/
+
+#define CAMP_K            16
+#define CAMP_M             8
+#define CAMP_DEPTH         8
+#define CAMP_SYMBOL_SIZE 1500
+#define CAMP_NUM_WINDOWS   32
+#define CAMP_BASE_SEED     0x12345678U
+
+#define CAMP_N          (CAMP_K + CAMP_M)
+#define CAMP_TOTAL_SYMS (CAMP_NUM_WINDOWS * CAMP_DEPTH * CAMP_N)
+
+#define CAMP_FEC_SPAN   (CAMP_DEPTH * CAMP_M)
+
+/* 10 Gbps symbol time in microseconds. */
+#define SYM_TIME_US     ((double)CAMP_SYMBOL_SIZE * 8.0 / (10.0 * 1000.0))
+
+#define CAMP_BURST_START_DEFAULT 30
+#define DEFAULT_REPEATS 8
+
+/* =========================================================================
+ * sim_runner reporting API
+ * =========================================================================*/
+
+enum {
+    SR_FAIL_NONE = 0,
+    SR_FAIL_TOO_MANY_HOLES = 1,
+    SR_FAIL_INSUFFICIENT_SYMBOLS = 2,
+    SR_FAIL_PACKET_AFTER_BLOCK_DECODE = 3
+};
+
+typedef struct {
+    uint64_t blocks_attempted;
+    uint64_t blocks_passed;
+    uint64_t blocks_failed;
+
+    uint64_t fail_too_many_holes;
+    uint64_t fail_insufficient_symbols;
+
+    uint64_t packet_fail_missing;
+    uint64_t packet_fail_corrupted;
+    uint64_t packet_fail_after_successful_block_decode;
+
+    uint64_t max_missing_symbols_in_block;
+    double   avg_missing_symbols_in_failed_blocks;
+
+    uint64_t failed_missing_sum;
+    uint64_t failed_missing_count;
+} sr_run_report_t;
+
+extern void sim_runner_get_last_run_report(sr_run_report_t *out);
+extern const char *sim_runner_failure_reason_name(int reason);
+
+/* =========================================================================
+ * Scenario descriptor
+ * =========================================================================*/
+
+typedef struct {
+    const char *group;
+    const char *name;
+
+    sim_config_t config;
+
+    channel_event_t events[16];
+    int             num_events;
+
+    int      repeats;
+    uint32_t base_seed;
+
+    int contributes_to_contiguous_boundary;
+} scenario_t;
+
+/* =========================================================================
+ * Scenario aggregate
+ * =========================================================================*/
+
+typedef struct {
+    uint64_t runs;
+    uint64_t pass_runs;
+    uint64_t failed_runs;
+    uint64_t pipeline_errors;
+
+    uint64_t total_blocks_attempted;
+    uint64_t total_blocks_passed;
+    uint64_t total_blocks_failed;
+
+    uint64_t fail_too_many_holes;
+    uint64_t fail_insufficient_symbols;
+
+    uint64_t packet_fail_missing;
+    uint64_t packet_fail_corrupted;
+    uint64_t packet_fail_after_successful_block_decode;
+
+    uint64_t worst_missing_symbols_seen;
+    double   failed_blocks_sum_per_run;
+    double   recovery_rate_sum;
+    double   exact_match_rate_sum;
+
+    int      contributes_to_contiguous_boundary;
+    uint64_t characterization_burst_symbols;
+} scenario_agg_t;
+
+/* =========================================================================
+ * Global scenario list
+ * =========================================================================*/
+
+#define MAX_SCENARIOS 512
+static int        g_num_scenarios = 0;
+static scenario_t g_scenarios[MAX_SCENARIOS];
+
+/* =========================================================================
+ * Helpers
+ * =========================================================================*/
+
+static int us_to_symbols(double us)
+{
+    double syms = us / SYM_TIME_US;
+    int    n    = (int)ceil(syms);
+
+    return (n < 1) ? 1 : n;
+}
+
+static sim_config_t default_cfg(void)
+{
+    sim_config_t c;
+
+    memset(&c, 0, sizeof(c));
+    c.k           = CAMP_K;
+    c.m           = CAMP_M;
+    c.depth       = CAMP_DEPTH;
+    c.symbol_size = CAMP_SYMBOL_SIZE;
+    c.num_windows = CAMP_NUM_WINDOWS;
+    c.seed        = CAMP_BASE_SEED;
+
+    return c;
+}
+
+static void add_scenario(const scenario_t *s)
+{
+    if (g_num_scenarios >= MAX_SCENARIOS) {
+        return;
+    }
+
+    g_scenarios[g_num_scenarios++] = *s;
+}
+
+static int clamp_len(int start, int len)
+{
+    int available = CAMP_TOTAL_SYMS - start;
+
+    if (available <= 0) {
+        return 0;
+    }
+
+    return (len > available) ? available : len;
+}
+
+static uint64_t symbols_to_equiv_1500_packets(uint64_t symbols)
+{
+    uint64_t bytes = symbols * (uint64_t)CAMP_SYMBOL_SIZE;
+    return (bytes + 1499U) / 1500U;
+}
+
+static int scenario_is_exactly_one_contiguous_erasure_event(const scenario_t *sc)
+{
+    return (sc->contributes_to_contiguous_boundary &&
+            sc->num_events == 1 &&
+            sc->events[0].type == CHANNEL_EVENT_ERASURE &&
+            sc->events[0].length_symbols > 0);
+}
+
+static const char *log_level_name(log_level level)
+{
+    switch (level) {
+        case DEBUG: return "DEBUG";
+        case INFO:  return "INFO";
+        case WARN:  return "WARN";
+        case ERROR: return "ERROR";
+        default:    return "UNKNOWN";
+    }
+}
+
+static const char *dominant_failure_reason_name(const scenario_agg_t *agg)
+{
+    uint64_t block_failures =
+        agg->fail_too_many_holes + agg->fail_insufficient_symbols;
+    uint64_t packet_after =
+        agg->packet_fail_after_successful_block_decode;
+
+    if (block_failures == 0U && packet_after == 0U) {
+        return "none";
+    }
+
+    if (agg->fail_too_many_holes >= agg->fail_insufficient_symbols &&
+        agg->fail_too_many_holes >= packet_after) {
+        return "too_many_holes";
+    }
+
+    if (agg->fail_insufficient_symbols >= agg->fail_too_many_holes &&
+        agg->fail_insufficient_symbols >= packet_after) {
+        return "insufficient_symbols";
+    }
+
+    return "packet_fail_after_block_decode";
+}
+
+static void format_event_description(const sim_run_request_t *req,
+                                     char                    *buf,
+                                     size_t                   buf_sz)
+{
+    int    e;
+    size_t used = 0U;
+
+    if (buf == NULL || buf_sz == 0U) {
+        return;
+    }
+
+    buf[0] = '\0';
+
+    for (e = 0; e < req->num_events; ++e) {
+        const channel_event_t *ev = &req->events[e];
+        int written;
+
+        written = snprintf(buf + used,
+                           (used < buf_sz) ? (buf_sz - used) : 0U,
+                           "%s%s:%d-%d(len=%d)",
+                           (e == 0) ? "" : "|",
+                           (ev->type == CHANNEL_EVENT_ERASURE) ? "E" : "C",
+                           ev->start_symbol,
+                           ev->start_symbol + ev->length_symbols - 1,
+                           ev->length_symbols);
+
+        if (written < 0) {
+            break;
+        }
+
+        if ((size_t)written >= buf_sz - used) {
+            used = buf_sz - 1U;
+            break;
+        }
+
+        used += (size_t)written;
+    }
+}
+
+static int parse_campaign_log_level(int argc, char **argv, log_level *level_out)
+{
+    int i;
+
+    if (level_out == NULL) {
+        return -1;
+    }
+
+    *level_out = WARN;
+
+    for (i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--quiet") == 0) {
+            *level_out = WARN;
+        } else if (strcmp(argv[i], "--verbose") == 0) {
+            *level_out = INFO;
+        } else if (strcmp(argv[i], "--debug") == 0) {
+            *level_out = DEBUG;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            printf("Usage: %s [--quiet] [--verbose] [--debug]\n", argv[0]);
+            printf("  --quiet   Default. Show campaign summaries plus warnings/errors.\n");
+            printf("  --verbose Enable module INFO/WARN/ERROR logs.\n");
+            printf("  --debug   Enable full DEBUG/INFO/WARN/ERROR logs.\n");
+            return 1;
+        } else {
+            fprintf(stderr, "[campaign] ERROR: unknown argument '%s'\n", argv[i]);
+            fprintf(stderr, "Usage: %s [--quiet] [--verbose] [--debug]\n", argv[0]);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+/* =========================================================================
+ * Scenario builders
+ * =========================================================================*/
+
+static void build_very_short_bursts(void)
+{
+    static const int lens[] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    int n = (int)(sizeof(lens) / sizeof(lens[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+        static char names[10][32];
+
+        memset(&s, 0, sizeof(s));
+        s.group   = "A_VeryShort";
+        snprintf(names[i], sizeof(names[i]), "burst_%d", lens[i]);
+        s.name    = names[i];
+        s.config  = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + (uint32_t)(i * 7);
+        s.contributes_to_contiguous_boundary = 1;
+
+        s.events[0].type           = CHANNEL_EVENT_ERASURE;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, lens[i]);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_single_burst_sweep(void)
+{
+    static const int lens[] = {
+        16, 32, 48, 56, 60, 63, 64, 65,
+        72, 80, 96, 128, 192, 256, 384, 512, 768, 1024
+    };
+    int n = (int)(sizeof(lens) / sizeof(lens[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+        static char names[18][32];
+
+        memset(&s, 0, sizeof(s));
+        s.group   = "B_SingleBurst";
+        snprintf(names[i], sizeof(names[i]), "burst_%d", lens[i]);
+        s.name    = names[i];
+        s.config  = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 1000U + (uint32_t)(i * 13);
+        s.contributes_to_contiguous_boundary = 1;
+
+        s.events[0].type           = CHANNEL_EVENT_ERASURE;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, lens[i]);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_boundary_bursts(void)
+{
+    static const int offsets[] = { -4, -2, -1, 0, 1, 2, 4, 8, 16 };
+    int n = (int)(sizeof(offsets) / sizeof(offsets[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+        static char names[9][40];
+        int len = CAMP_FEC_SPAN + offsets[i];
+
+        if (len < 1) {
+            len = 1;
+        }
+
+        memset(&s, 0, sizeof(s));
+        s.group = "C_Boundary";
+        snprintf(names[i], sizeof(names[i]), "span%+d_%d", offsets[i], len);
+        s.name  = names[i];
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 2000U + (uint32_t)(i * 11);
+        s.contributes_to_contiguous_boundary = 1;
+
+        s.events[0].type           = CHANNEL_EVENT_ERASURE;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, len);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_time_fades(void)
+{
+    static const double fade_us[] = { 100.0, 250.0, 500.0, 1000.0, 2000.0 };
+    static const char  *fade_names[] = { "100us", "250us", "500us", "1ms", "2ms" };
+    int n = (int)(sizeof(fade_us) / sizeof(fade_us[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+        int sym_len = us_to_symbols(fade_us[i]);
+
+        memset(&s, 0, sizeof(s));
+        s.group   = "D_TimeFade";
+        s.name    = fade_names[i];
+        s.config  = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 3000U + (uint32_t)(i * 17);
+        s.contributes_to_contiguous_boundary = 1;
+
+        s.events[0].type           = CHANNEL_EVENT_ERASURE;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, sym_len);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_multi_burst(void)
+{
+    {
+        scenario_t s;
+        memset(&s, 0, sizeof(s));
+        s.group = "E_MultiBurst";
+        s.name  = "2x16_sep100";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 4000U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 16 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 140, 16 };
+        s.num_events = 2;
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+        memset(&s, 0, sizeof(s));
+        s.group = "E_MultiBurst";
+        s.name  = "4x8_sep50";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 4100U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 8 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 78, 8 };
+        s.events[2] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 136, 8 };
+        s.events[3] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 194, 8 };
+        s.num_events = 4;
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+        int ei;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "E_MultiBurst";
+        s.name  = "10x4_sep30";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 4200U;
+        s.num_events = 10;
+
+        for (ei = 0; ei < 10; ++ei) {
+            s.events[ei].type           = CHANNEL_EVENT_ERASURE;
+            s.events[ei].start_symbol   = 20 + ei * 34;
+            s.events[ei].length_symbols = 4;
+        }
+
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+        memset(&s, 0, sizeof(s));
+        s.group = "E_MultiBurst";
+        s.name  = "2x32_nearoverlap";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 4300U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 32 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 60, 32 };
+        s.num_events = 2;
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+        int ei;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "E_MultiBurst";
+        s.name  = "8x16_spread";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 4400U;
+        s.num_events = 8;
+
+        for (ei = 0; ei < 8; ++ei) {
+            s.events[ei].type           = CHANNEL_EVENT_ERASURE;
+            s.events[ei].start_symbol   = 20 + ei * 700;
+            s.events[ei].length_symbols = clamp_len(20 + ei * 700, 16);
+        }
+
+        add_scenario(&s);
+    }
+}
+
+static void build_blackout(void)
+{
+    static const int lens[] = { 192, 384, 768, 1536, 3072 };
+    static const char *names[] = {
+        "blackout_192", "blackout_384", "blackout_768",
+        "blackout_1536", "blackout_3072"
+    };
+    int n = (int)(sizeof(lens) / sizeof(lens[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "F_Blackout";
+        s.name  = names[i];
+        s.config = default_cfg();
+        s.repeats = 5;
+        s.base_seed = CAMP_BASE_SEED + 5000U + (uint32_t)(i * 23);
+
+        s.events[0].type           = CHANNEL_EVENT_ERASURE;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, lens[i]);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_corruption_only(void)
+{
+    static const int lens[] = { 4, 8, 16, 32, 64 };
+    static const char *names[] = {
+        "corrupt_4", "corrupt_8", "corrupt_16", "corrupt_32", "corrupt_64"
+    };
+    int n = (int)(sizeof(lens) / sizeof(lens[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "G_Corruption";
+        s.name  = names[i];
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 6000U + (uint32_t)(i * 19);
+
+        s.events[0].type           = CHANNEL_EVENT_CORRUPTION;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, lens[i]);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "G_Corruption";
+        s.name  = "2x16_corrupt_sep100";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 6500U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 20, 16 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 140, 16 };
+        s.num_events = 2;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_mixed(void)
+{
+    {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "H_Mixed";
+        s.name  = "erase8_corrupt8_same_win";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 7000U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 8 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 30, 8 };
+        s.num_events = 2;
+
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "H_Mixed";
+        s.name  = "erase64_corrupt4";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 7100U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 64 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 200, 4 };
+        s.num_events = 2;
+
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "H_Mixed";
+        s.name  = "erase16_corrupt16_erase16";
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 7200U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 16 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 80, 16 };
+        s.events[2] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 150, 16 };
+        s.num_events = 3;
+
+        add_scenario(&s);
+    }
+
+    {
+        scenario_t s;
+
+        memset(&s, 0, sizeof(s));
+        s.group = "H_Mixed";
+        s.name  = "heavy_mixed";
+        s.config = default_cfg();
+        s.repeats = 5;
+        s.base_seed = CAMP_BASE_SEED + 7300U;
+        s.events[0] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 20, 32 };
+        s.events[1] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 70, 16 };
+        s.events[2] = (channel_event_t){ CHANNEL_EVENT_ERASURE, 200, 32 };
+        s.events[3] = (channel_event_t){ CHANNEL_EVENT_CORRUPTION, 400, 16 };
+        s.num_events = 4;
+
+        add_scenario(&s);
+    }
+}
+
+static void build_failure_edge(void)
+{
+    static const int overshoot[] = { 1, 2, 4, 8, 16, 32, 64 };
+    int n = (int)(sizeof(overshoot) / sizeof(overshoot[0]));
+    int i;
+
+    for (i = 0; i < n; ++i) {
+        scenario_t s;
+        static char names[7][40];
+        int len = CAMP_FEC_SPAN + overshoot[i];
+
+        memset(&s, 0, sizeof(s));
+        s.group = "I_FailureEdge";
+        snprintf(names[i], sizeof(names[i]), "span_plus%d_%d", overshoot[i], len);
+        s.name  = names[i];
+        s.config = default_cfg();
+        s.repeats = DEFAULT_REPEATS;
+        s.base_seed = CAMP_BASE_SEED + 8000U + (uint32_t)(i * 29);
+        s.contributes_to_contiguous_boundary = 1;
+
+        s.events[0].type           = CHANNEL_EVENT_ERASURE;
+        s.events[0].start_symbol   = CAMP_BURST_START_DEFAULT;
+        s.events[0].length_symbols = clamp_len(CAMP_BURST_START_DEFAULT, len);
+        s.num_events = 1;
+
+        add_scenario(&s);
+    }
+}
+
+/* =========================================================================
+ * CSV output
+ * =========================================================================*/
+
+static void csv_write_header(FILE *f)
+{
+    fprintf(f,
+            "group,name,repeat,seed,"
+            "event_description,"
+            "transmitted_packets,recovered_packets,exact_match_packets,"
+            "blocks_attempted,blocks_passed,blocks_failed,"
+            "fail_too_many_holes,fail_insufficient_symbols,"
+            "packet_fail_missing,packet_fail_corrupted,packet_fail_after_successful_block_decode,"
+            "worst_missing_symbols_seen,pass_fail\n");
+}
+
+static void csv_write_row(FILE                     *f,
+                          const char               *group,
+                          const char               *name,
+                          int                       repeat,
+                          uint32_t                  seed,
+                          const sim_run_request_t  *req,
+                          const sim_result_t       *r,
+                          const sr_run_report_t    *rr)
+{
+    char event_desc[256];
+    int  pass;
+
+    format_event_description(req, event_desc, sizeof(event_desc));
+    pass = (r->missing_packets == 0U && r->corrupted_packets == 0U) ? 1 : 0;
+
+    fprintf(f,
+            "%s,%s,%d,%u,"
+            "\"%s\","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%s\n",
+            group,
+            name,
+            repeat,
+            seed,
+            event_desc,
+            r->transmitted_packets,
+            r->recovered_packets,
+            r->exact_match_packets,
+            rr->blocks_attempted,
+            rr->blocks_passed,
+            rr->blocks_failed,
+            rr->fail_too_many_holes,
+            rr->fail_insufficient_symbols,
+            rr->packet_fail_missing,
+            rr->packet_fail_corrupted,
+            rr->packet_fail_after_successful_block_decode,
+            rr->max_missing_symbols_in_block,
+            pass ? "PASS" : "FAIL");
+}
+
+/* =========================================================================
+ * Reporting
+ * =========================================================================*/
+
+static void print_run_line(const char               *group,
+                           const char               *name,
+                           int                       repeat,
+                           const sim_result_t       *r,
+                           const sr_run_report_t    *rr)
+{
+    const char *status =
+        (r->missing_packets == 0U && r->corrupted_packets == 0U) ? "PASS" : "FAIL";
+
+    printf("  [%s/%s] rep=%d status=%s "
+           "pkts=%" PRIu64 "/%" PRIu64 " "
+           "blocks=%" PRIu64 "/%" PRIu64 " "
+           "holes=%" PRIu64 " insufficient=%" PRIu64 " packet_after=%" PRIu64
+           " worst_missing=%" PRIu64 "\n",
+           group,
+           name,
+           repeat,
+           status,
+           r->recovered_packets,
+           r->transmitted_packets,
+           rr->blocks_passed,
+           rr->blocks_attempted,
+           rr->fail_too_many_holes,
+           rr->fail_insufficient_symbols,
+           rr->packet_fail_after_successful_block_decode,
+           rr->max_missing_symbols_in_block);
+}
+
+static void print_run_summary(const sr_run_report_t *rr)
+{
+    printf("    [RUN SUMMARY]\n");
+    printf("      blocks_attempted=%" PRIu64 "\n", rr->blocks_attempted);
+    printf("      blocks_passed=%" PRIu64 "\n", rr->blocks_passed);
+    printf("      blocks_failed=%" PRIu64 "\n", rr->blocks_failed);
+    printf("      fail_too_many_holes=%" PRIu64 "\n", rr->fail_too_many_holes);
+    printf("      fail_insufficient_symbols=%" PRIu64 "\n", rr->fail_insufficient_symbols);
+    printf("      packet_fail_missing=%" PRIu64 "\n", rr->packet_fail_missing);
+    printf("      packet_fail_corrupted=%" PRIu64 "\n", rr->packet_fail_corrupted);
+    printf("      packet_fail_after_successful_block_decode=%" PRIu64 "\n",
+           rr->packet_fail_after_successful_block_decode);
+    printf("      packet_level_failure_after_successful_block_decode=%s\n",
+           (rr->packet_fail_after_successful_block_decode > 0U) ? "YES" : "NO");
+    printf("      max_missing_symbols_in_block=%" PRIu64 "\n",
+           rr->max_missing_symbols_in_block);
+    printf("      avg_missing_symbols_in_failed_blocks=%.2f\n",
+           rr->avg_missing_symbols_in_failed_blocks);
+}
+
+static void print_scenario_summary(const scenario_t     *sc,
+                                   const scenario_agg_t *agg)
+{
+    printf("  [SCENARIO SUMMARY] %s/%s\n", sc->group, sc->name);
+    printf("    runs=%" PRIu64 "\n", agg->runs);
+    printf("    pass_runs=%" PRIu64 "\n", agg->pass_runs);
+    printf("    failed_runs=%" PRIu64 "\n", agg->failed_runs);
+    printf("    total_failed_blocks=%" PRIu64 "\n", agg->total_blocks_failed);
+    printf("    avg_failed_blocks_per_run=%.2f\n",
+           (agg->runs > 0U) ? (agg->failed_blocks_sum_per_run / (double)agg->runs) : 0.0);
+    printf("    dominant_failure_reason=%s\n", dominant_failure_reason_name(agg));
+    printf("    worst_missing_symbols_seen=%" PRIu64 "\n", agg->worst_missing_symbols_seen);
+}
+
+static void print_campaign_summary(const scenario_agg_t *aggs, int n)
+{
+    uint64_t total_scenarios                     = (uint64_t)n;
+    uint64_t total_runs                          = 0U;
+    uint64_t run_pass                            = 0U;
+    uint64_t run_fail                            = 0U;
+    uint64_t total_blocks_attempted              = 0U;
+    uint64_t total_blocks_passed                 = 0U;
+    uint64_t total_blocks_failed                 = 0U;
+    uint64_t fail_too_many_holes                 = 0U;
+    uint64_t fail_insufficient_symbols           = 0U;
+    uint64_t packet_fail_after_successful_decode = 0U;
+    uint64_t longest_recoverable_burst           = 0U;
+    uint64_t first_failing_burst                 = 0U;
+    uint64_t worst_missing_symbols_seen          = 0U;
+    double   failed_blocks_weighted_sum          = 0.0;
+    uint64_t failed_blocks_weighted_count        = 0U;
+    int      have_longest                        = 0;
+    int      have_first_fail                     = 0;
+    int      i;
+
+    for (i = 0; i < n; ++i) {
+        const scenario_agg_t *a = &aggs[i];
+
+        total_runs                          += a->runs;
+        run_pass                            += a->pass_runs;
+        run_fail                            += a->failed_runs;
+        total_blocks_attempted              += a->total_blocks_attempted;
+        total_blocks_passed                 += a->total_blocks_passed;
+        total_blocks_failed                 += a->total_blocks_failed;
+        fail_too_many_holes                 += a->fail_too_many_holes;
+        fail_insufficient_symbols           += a->fail_insufficient_symbols;
+        packet_fail_after_successful_decode += a->packet_fail_after_successful_block_decode;
+
+        if (a->worst_missing_symbols_seen > worst_missing_symbols_seen) {
+            worst_missing_symbols_seen = a->worst_missing_symbols_seen;
+        }
+
+        failed_blocks_weighted_sum   += a->failed_blocks_sum_per_run;
+        failed_blocks_weighted_count += a->runs;
+
+        if (a->contributes_to_contiguous_boundary && a->runs > 0U) {
+            if (a->failed_runs == 0U) {
+                if (!have_longest || a->characterization_burst_symbols > longest_recoverable_burst) {
+                    longest_recoverable_burst = a->characterization_burst_symbols;
+                    have_longest = 1;
+                }
+            } else {
+                if (!have_first_fail || a->characterization_burst_symbols < first_failing_burst) {
+                    first_failing_burst = a->characterization_burst_symbols;
+                    have_first_fail = 1;
+                }
+            }
+        }
+    }
+
+    printf("\n=== CAMPAIGN ANALYSIS SUMMARY ===\n");
+    printf("- total_scenarios: %" PRIu64 "\n", total_scenarios);
+    printf("- total_runs: %" PRIu64 "\n", total_runs);
+    printf("- run_pass: %" PRIu64 "\n", run_pass);
+    printf("- run_fail: %" PRIu64 "\n", run_fail);
+    printf("- total_blocks_attempted: %" PRIu64 "\n", total_blocks_attempted);
+    printf("- total_blocks_passed: %" PRIu64 "\n", total_blocks_passed);
+    printf("- total_blocks_failed: %" PRIu64 "\n", total_blocks_failed);
+    printf("Failure breakdown:\n");
+    printf("Block-level:\n");
+    printf("- too_many_holes: %" PRIu64 "\n", fail_too_many_holes);
+    printf("- insufficient_symbols: %" PRIu64 "\n", fail_insufficient_symbols);
+    printf("Packet-level:\n");
+    printf("- packet_fail_after_successful_block_decode: %" PRIu64 "\n",
+           packet_fail_after_successful_decode);
+    printf("Burst characterization:\n");
+    printf("- longest_recoverable_burst: ");
+    if (have_longest) {
+        printf("%" PRIu64 " symbols | %.2f us | %" PRIu64 " x 1500B-packets\n",
+               longest_recoverable_burst,
+               (double)longest_recoverable_burst * SYM_TIME_US,
+               symbols_to_equiv_1500_packets(longest_recoverable_burst));
+    } else {
+        printf("none\n");
+    }
+    printf("- first_failing_burst: ");
+    if (have_first_fail) {
+        printf("%" PRIu64 " symbols | %.2f us | %" PRIu64 " x 1500B-packets\n",
+               first_failing_burst,
+               (double)first_failing_burst * SYM_TIME_US,
+               symbols_to_equiv_1500_packets(first_failing_burst));
+    } else {
+        printf("none\n");
+    }
+    printf("Decoder stress:\n");
+    printf("- worst_missing_symbols_seen: %" PRIu64 "\n", worst_missing_symbols_seen);
+    printf("- average_missing_symbols_on_failed_blocks: %.2f\n",
+           (failed_blocks_weighted_count > 0U)
+               ? (failed_blocks_weighted_sum / (double)failed_blocks_weighted_count)
+               : 0.0);
+}
+
+/* =========================================================================
+ * Run one scenario
+ * =========================================================================*/
+
+static void run_scenario(const scenario_t *sc,
+                         FILE             *csv,
+                         scenario_agg_t   *agg)
+{
+    int r;
+
+    memset(agg, 0, sizeof(*agg));
+    agg->contributes_to_contiguous_boundary = scenario_is_exactly_one_contiguous_erasure_event(sc);
+    agg->characterization_burst_symbols =
+        (agg->contributes_to_contiguous_boundary != 0)
+            ? (uint64_t)sc->events[0].length_symbols
+            : 0U;
+
+    printf("\n[%s/%s] %d repeat(s)\n", sc->group, sc->name, sc->repeats);
+
+    for (r = 0; r < sc->repeats; ++r) {
+        sim_run_request_t      req;
+        sim_result_t           result;
+        channel_apply_result_t ch;
+        sr_run_report_t        report;
+        uint32_t               seed = sc->base_seed + (uint32_t)r;
+
+        memset(&req, 0, sizeof(req));
+        memcpy(req.events,
+               sc->events,
+               sizeof(channel_event_t) * (size_t)sc->num_events);
+        req.num_events    = sc->num_events;
+        req.seed_override = seed;
+
+        if (sim_run_campaign_case(&sc->config, &req, &result, &ch) != 0) {
+            fprintf(stderr,
+                    "  [ERROR] pipeline failure: %s/%s rep=%d\n",
+                    sc->group,
+                    sc->name,
+                    r);
+            agg->pipeline_errors++;
+            continue;
+        }
+
+        memset(&report, 0, sizeof(report));
+        sim_runner_get_last_run_report(&report);
+
+        print_run_line(sc->group, sc->name, r, &result, &report);
+        print_run_summary(&report);
+        csv_write_row(csv, sc->group, sc->name, r, seed, &req, &result, &report);
+
+        agg->runs++;
+        agg->total_blocks_attempted              += report.blocks_attempted;
+        agg->total_blocks_passed                 += report.blocks_passed;
+        agg->total_blocks_failed                 += report.blocks_failed;
+        agg->fail_too_many_holes                 += report.fail_too_many_holes;
+        agg->fail_insufficient_symbols           += report.fail_insufficient_symbols;
+        agg->packet_fail_missing                 += report.packet_fail_missing;
+        agg->packet_fail_corrupted               += report.packet_fail_corrupted;
+        agg->packet_fail_after_successful_block_decode += report.packet_fail_after_successful_block_decode;
+        agg->failed_blocks_sum_per_run           += (double)report.blocks_failed;
+        agg->recovery_rate_sum                   += result.recovery_rate;
+        agg->exact_match_rate_sum                += result.exact_match_rate;
+
+        if (report.max_missing_symbols_in_block > agg->worst_missing_symbols_seen) {
+            agg->worst_missing_symbols_seen = report.max_missing_symbols_in_block;
+        }
+
+        if (result.missing_packets == 0U && result.corrupted_packets == 0U) {
+            agg->pass_runs++;
+        } else {
+            agg->failed_runs++;
+        }
+    }
+
+    print_scenario_summary(sc, agg);
+}
+
+/* =========================================================================
+ * main
+ * =========================================================================*/
+
+int main(int argc, char **argv)
+{
+    FILE           *csv  = NULL;
+    scenario_agg_t *aggs = NULL;
+    int             i;
+    int             exit_code = 0;
+    int             parse_rc;
+    log_level       campaign_log_level = WARN;
+    const char     *csv_path  = "build/channel_campaign_results.csv";
+
+    parse_rc = parse_campaign_log_level(argc, argv, &campaign_log_level);
+    if (parse_rc != 0) {
+        return (parse_rc > 0) ? 0 : 1;
+    }
+
+    if (log_init() != 0) {
+        fprintf(stderr, "[campaign] FATAL: log_init failed\n");
+        return 1;
+    }
+
+    if (log_set_level(campaign_log_level) != 0) {
+        fprintf(stderr, "[campaign] FATAL: log_set_level failed\n");
+        return 1;
+    }
+
+    if (sim_runner_global_init() != 0) {
+        fprintf(stderr, "[campaign] FATAL: sim_runner_global_init failed\n");
+        return 1;
+    }
+
+    build_very_short_bursts();
+    build_single_burst_sweep();
+    build_boundary_bursts();
+    build_time_fades();
+    build_multi_burst();
+    build_blackout();
+    build_corruption_only();
+    build_mixed();
+    build_failure_edge();
+
+    printf("================================================================\n");
+    printf("  FSO Channel Campaign Test\n");
+    printf("  Scenarios : %d\n", g_num_scenarios);
+    printf("  K=%d M=%d Depth=%d SymSize=%d Windows=%d\n",
+           CAMP_K, CAMP_M, CAMP_DEPTH, CAMP_SYMBOL_SIZE, CAMP_NUM_WINDOWS);
+    printf("  Total TX symbols per run: %d\n", CAMP_TOTAL_SYMS);
+    printf("  FEC recovery span: %d symbols (%.1f us at 10 Gbps)\n",
+           CAMP_FEC_SPAN, (double)CAMP_FEC_SPAN * SYM_TIME_US);
+    printf("  Symbol time: %.4f us\n", SYM_TIME_US);
+    printf("  Log mode : %s\n", log_level_name(campaign_log_level));
+    printf("================================================================\n");
+
+    csv = fopen(csv_path, "w");
+    if (!csv) {
+        fprintf(stderr, "[campaign] FATAL: cannot open CSV '%s': ", csv_path);
+        perror(NULL);
+        return 1;
+    }
+
+    csv_write_header(csv);
+    printf("  CSV output : %s\n", csv_path);
+    printf("================================================================\n");
+
+    aggs = (scenario_agg_t *)calloc((size_t)g_num_scenarios, sizeof(scenario_agg_t));
+    if (!aggs) {
+        fprintf(stderr, "[campaign] FATAL: calloc aggs failed\n");
+        fclose(csv);
+        return 1;
+    }
+
+    for (i = 0; i < g_num_scenarios; ++i) {
+        run_scenario(&g_scenarios[i], csv, &aggs[i]);
+        fflush(csv);
+    }
+
+    print_campaign_summary(aggs, g_num_scenarios);
+
+    for (i = 0; i < g_num_scenarios; ++i) {
+        if (aggs[i].pipeline_errors > 0U) {
+            exit_code = 1;
+            break;
+        }
+    }
+
+    free(aggs);
+    fclose(csv);
+    return exit_code;
+}
+
+----- FILE: tests/deinterleaver_test.c -----
 /*
  * tests/deinterleaver_test.c — Deinterleaver Round-Trip Verification.
  *
@@ -6937,8 +8100,7 @@ int main(void)
     return (r.failed == 0) ? 0 : 1;
 }
 
-
---- FILE: tests/end_to_end_sim_test.c ---
+----- FILE: tests/end_to_end_sim_test.c -----
 /*
  * tests/end_to_end_sim_test.c — Task 20: Full End-to-End Simulation.
  *
@@ -7012,6 +8174,7 @@ int main(void)
 #include "fec_wrapper.h"
 #include "interleaver.h"
 #include "logging.h"
+#include "sim_runner.h"
 #include "packet_fragmenter.h"
 #include "packet_reassembler.h"
 #include "stats.h"
@@ -7988,6 +9151,24 @@ static void finalize_packet_stats(sim_t *ctx)
 }
 
 /* ==========================================================================
+ * sim_runner integration glue
+ *
+ * Task 20 remains source-of-truth and still executes its original internal
+ * TX/RX pipeline.  We initialize shared runtime state through sim_runner so
+ * campaign and Task 20 tests use the same global setup path.
+ * ==========================================================================*/
+
+static int init_task20_runtime(void)
+{
+    if (sim_runner_global_init() != 0) {
+        return -1;
+    }
+
+    stats_set_burst_fec_span((uint64_t)(SIM_M * SIM_DEPTH));
+    return 0;
+}
+
+/* ==========================================================================
  * main
  * ==========================================================================*/
 
@@ -8001,8 +9182,6 @@ int main(void)
     memset(&ctx, 0, sizeof(ctx));
 
     log_init();
-    stats_init();
-    stats_set_burst_fec_span((uint64_t)(SIM_M * SIM_DEPTH));
 
     printf("================================================================\n");
     printf("  FSO Gateway — Task 20: Full End-to-End Simulation\n");
@@ -8012,8 +9191,8 @@ int main(void)
            SIM_NUM_BLOCKS, SIM_NUM_WINDOWS, SIM_BURST_LEN, SIM_BURST_START);
     printf("================================================================\n\n");
 
-    if (wirehair_init() != Wirehair_Success) {
-        fprintf(stderr, "[E2E] FATAL: wirehair_init() failed\n");
+    if (init_task20_runtime() != 0) {
+        fprintf(stderr, "[E2E] FATAL: sim_runner_global_init() failed\n");
         return 1;
     }
 
@@ -8088,8 +9267,7 @@ done:
     free(ctx.tx_buf);
     return exit_code;
 }
-
---- FILE: tests/fec_stress_test.c ---
+----- FILE: tests/fec_stress_test.c -----
 /*
  * tests/fec_stress_test.c — FEC Recovery Threshold Stress Test
  *
@@ -8418,8 +9596,7 @@ int main(void)
 
     return (run_stress_test() == 0) ? 0 : 1;
 }
-
---- FILE: tests/interleaver_test.c ---
+----- FILE: tests/interleaver_test.c -----
 /*
  * src/interleaver_test.c — Deterministic order verification for the
  * FSO Gateway matrix interleaver.
@@ -9033,8 +10210,7 @@ int main(void)
 
     return (r.failed == 0) ? 0 : 1;
 }
-
---- FILE: tests/receiver_robustness_test.c ---
+----- FILE: tests/receiver_robustness_test.c -----
 /*
  * tests/receiver_robustness_test.c — Block Lifecycle FSM Robustness Suite.
  *
@@ -9972,8 +11148,1499 @@ int main(void)
 
     return (r.failed == 0) ? 0 : 1;
 }
+----- FILE: tests/sim_runner.c -----
 
---- FILE: Makefile ---
+/* tests/sim_runner.c — Reusable FSO pipeline engine.
+ *
+ * Implements sim_run_campaign_case().
+ * Logic extracted and parameterised from end_to_end_sim_test.c (Task 20).
+ *
+ * Stats integration:
+ *   TX:      stats_inc_ingress(), stats_inc_transmitted()
+ *   Channel: stats_record_symbol(), stats_finalize_burst()
+ *   RX:      stats_inc_recovered(), stats_inc_failed_packet(),
+ *            stats_inc_block_attempt(), stats_inc_block_success(),
+ *            stats_inc_block_failure(), stats_record_block()
+ *
+ * All metrics in sim_result_t come from real pipeline execution only.
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
+
+#include <wirehair/wirehair.h>
+
+#include "block_builder.h"
+#include "deinterleaver.h"
+#include "fec_wrapper.h"
+#include "interleaver.h"
+#include "logging.h"
+#include "packet_fragmenter.h"
+#include "packet_reassembler.h"
+#include "stats.h"
+#include "types.h"
+
+#include "sim_runner.h"
+
+/* extra telemetry hooks implemented in src/fec_wrapper.c */
+typedef struct fec_decode_telemetry_t {
+    uint64_t block_id;
+    int      number_of_symbols_received;
+    int      number_of_missing_symbols;
+    int      number_of_repair_symbols_used;
+    int      decode_success;
+} fec_decode_telemetry_t;
+
+extern void fec_set_current_decode_block_id(uint64_t block_id);
+extern void fec_get_last_decode_telemetry(fec_decode_telemetry_t *out);
+
+#define SR_MAX_FRAGS_PER_PKT   8
+#define SR_MAX_ACCUM_FACTOR    4
+#define SR_DIL_HEADROOM_FACTOR 2
+
+enum {
+    SR_FAIL_NONE = 0,
+    SR_FAIL_TOO_MANY_HOLES = 1,
+    SR_FAIL_INSUFFICIENT_SYMBOLS = 2,
+    SR_FAIL_PACKET_AFTER_BLOCK_DECODE = 3
+};
+
+typedef struct {
+    uint64_t blocks_attempted;
+    uint64_t blocks_passed;
+    uint64_t blocks_failed;
+
+    uint64_t fail_too_many_holes;
+    uint64_t fail_insufficient_symbols;
+
+    uint64_t packet_fail_missing;
+    uint64_t packet_fail_corrupted;
+    uint64_t packet_fail_after_successful_block_decode;
+
+    uint64_t max_missing_symbols_in_block;
+    double   avg_missing_symbols_in_failed_blocks;
+
+    uint64_t failed_missing_sum;
+    uint64_t failed_missing_count;
+} sr_run_report_t;
+
+static sr_run_report_t g_last_run_report;
+
+void sim_runner_get_last_run_report(sr_run_report_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+
+    *out = g_last_run_report;
+}
+
+const char *sim_runner_failure_reason_name(int reason)
+{
+    switch (reason) {
+        case SR_FAIL_TOO_MANY_HOLES:
+            return "too_many_holes";
+        case SR_FAIL_INSUFFICIENT_SYMBOLS:
+            return "insufficient_symbols";
+        case SR_FAIL_PACKET_AFTER_BLOCK_DECODE:
+            return "packet_fail_after_block_decode";
+        default:
+            return "none";
+    }
+}
+
+typedef struct {
+    uint32_t       packet_id;
+    size_t         packet_len;
+    unsigned char *data;
+    int            transmitted;
+    int            recovered;
+    int            exact_match;
+} sr_pkt_record_t;
+
+typedef struct {
+    uint32_t orig_packet_id;
+    uint16_t symbol_index;
+    uint16_t total_symbols;
+    uint16_t payload_len;
+} sr_slot_meta_t;
+
+typedef struct {
+    uint64_t        block_id;
+    sr_slot_meta_t *slots;
+} sr_block_meta_t;
+
+typedef struct {
+    int      active;
+    uint32_t packet_id;
+    int      expected;
+    int      count;
+    symbol_t frags[SR_MAX_FRAGS_PER_PKT];
+} sr_pkt_accum_t;
+
+typedef struct {
+    int k;
+    int m;
+    int n;
+    int depth;
+    int symbol_size;
+    int num_blocks;
+    int total_syms;
+    int total_src_slots;
+
+    sr_pkt_record_t *pkts;
+    int              num_generated;
+    int              num_transmitted;
+
+    sr_block_meta_t *block_meta;
+    int              num_blocks_encoded;
+
+    symbol_t *tx_buf;
+    int       tx_count;
+
+    uint64_t stat_symbols_erased;
+    uint64_t stat_symbols_corrupted;
+    uint64_t stat_blocks_attempted;
+    uint64_t stat_blocks_ok;
+    uint64_t stat_blocks_failed;
+
+    uint64_t packet_fail_after_successful_block_decode_runtime;
+} sr_ctx_t;
+
+/* packet size table used by sr_generate_packets() */
+static const size_t sr_pkt_sizes[] = {
+    64, 128, 512, 1500, 2048, 4096, 9000, 256, 1024, 3000
+};
+
+#define SR_NUM_PKT_SIZES \
+    ((int)(sizeof(sr_pkt_sizes) / sizeof(sr_pkt_sizes[0])))
+
+static void sr_reset_run_report(void)
+{
+    memset(&g_last_run_report, 0, sizeof(g_last_run_report));
+}
+
+static void *sr_alloc_aligned(size_t n)
+{
+    void *p = NULL;
+
+    if (n == 0) {
+        return NULL;
+    }
+
+    if (posix_memalign(&p, 64U, n) != 0) {
+        return NULL;
+    }
+
+    memset(p, 0, n);
+    return p;
+}
+
+static int sr_max_packets(const sr_ctx_t *ctx)
+{
+    return ctx->total_src_slots + 8;
+}
+
+static void sr_pkt_accum_reset(sr_pkt_accum_t *pa)
+{
+    if (pa == NULL) {
+        return;
+    }
+
+    memset(pa, 0, sizeof(*pa));
+}
+
+static int sr_pkt_accum_find(const sr_pkt_accum_t *accum,
+                             int                   accum_count,
+                             uint32_t              packet_id)
+{
+    int i;
+
+    for (i = 0; i < accum_count; ++i) {
+        if (accum[i].active && accum[i].packet_id == packet_id) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int sr_pkt_accum_has_symbol_index(const sr_pkt_accum_t *pa,
+                                         uint16_t              symbol_index)
+{
+    int i;
+
+    if (pa == NULL || !pa->active) {
+        return 0;
+    }
+
+    for (i = 0; i < pa->count; ++i) {
+        if (pa->frags[i].symbol_index == symbol_index) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void sr_pkt_accum_remove(sr_pkt_accum_t *accum,
+                                int            *accum_count,
+                                int             remove_idx)
+{
+    int count;
+
+    if (accum == NULL || accum_count == NULL) {
+        return;
+    }
+
+    count = *accum_count;
+
+    if (remove_idx < 0 || remove_idx >= count) {
+        return;
+    }
+
+    if (remove_idx < count - 1) {
+        memmove(&accum[remove_idx],
+                &accum[remove_idx + 1],
+                sizeof(sr_pkt_accum_t) * (size_t)(count - remove_idx - 1));
+    }
+
+    sr_pkt_accum_reset(&accum[count - 1]);
+    *accum_count = count - 1;
+}
+
+static sr_pkt_record_t *sr_find_packet_record(sr_ctx_t *ctx, uint32_t packet_id)
+{
+    int p;
+
+    if (ctx == NULL) {
+        return NULL;
+    }
+
+    for (p = 0; p < ctx->num_generated; ++p) {
+        if (ctx->pkts[p].packet_id == packet_id) {
+            return &ctx->pkts[p];
+        }
+    }
+
+    return NULL;
+}
+
+static int sr_classify_block_failure(const sr_ctx_t *ctx,
+                                     const fec_decode_telemetry_t *telemetry)
+{
+    if (telemetry == NULL) {
+        return SR_FAIL_INSUFFICIENT_SYMBOLS;
+    }
+
+    if (telemetry->number_of_missing_symbols > ctx->m) {
+        return SR_FAIL_TOO_MANY_HOLES;
+    }
+
+    return SR_FAIL_INSUFFICIENT_SYMBOLS;
+}
+
+static void sr_update_run_report_for_block(const sr_ctx_t *ctx,
+                                           const fec_decode_telemetry_t *telemetry,
+                                           int decode_success)
+{
+    uint64_t missing = 0U;
+    int failure_reason;
+
+    g_last_run_report.blocks_attempted++;
+
+    if (telemetry != NULL && telemetry->number_of_missing_symbols > 0) {
+        missing = (uint64_t)telemetry->number_of_missing_symbols;
+    }
+
+    if (missing > g_last_run_report.max_missing_symbols_in_block) {
+        g_last_run_report.max_missing_symbols_in_block = missing;
+    }
+
+    if (decode_success) {
+        g_last_run_report.blocks_passed++;
+        return;
+    }
+
+    g_last_run_report.blocks_failed++;
+    g_last_run_report.failed_missing_sum += missing;
+    g_last_run_report.failed_missing_count++;
+
+    failure_reason = sr_classify_block_failure(ctx, telemetry);
+
+    if (failure_reason == SR_FAIL_TOO_MANY_HOLES) {
+        g_last_run_report.fail_too_many_holes++;
+    } else {
+        g_last_run_report.fail_insufficient_symbols++;
+    }
+}
+
+static void sr_finalize_run_report(const sr_ctx_t *ctx)
+{
+    if (g_last_run_report.failed_missing_count > 0U) {
+        g_last_run_report.avg_missing_symbols_in_failed_blocks =
+            (double)g_last_run_report.failed_missing_sum /
+            (double)g_last_run_report.failed_missing_count;
+    } else {
+        g_last_run_report.avg_missing_symbols_in_failed_blocks = 0.0;
+    }
+
+    g_last_run_report.packet_fail_after_successful_block_decode =
+        ctx->packet_fail_after_successful_block_decode_runtime;
+}
+
+static void sr_print_channel_events(const sim_run_request_t *req, int total_symbols)
+{
+    int e;
+
+    printf("[CHANNEL EVENTS]\n");
+    printf("- event_count: %d\n", req->num_events);
+
+    for (e = 0; e < req->num_events; ++e) {
+        const channel_event_t *ev = &req->events[e];
+        int end_index = ev->start_symbol + ev->length_symbols - 1;
+
+        if (end_index >= total_symbols) {
+            end_index = total_symbols - 1;
+        }
+
+        printf("- event[%d]: type=%s start_index=%d end_index=%d length=%d\n",
+               e,
+               (ev->type == CHANNEL_EVENT_ERASURE) ? "ERASURE" : "CORRUPTION",
+               ev->start_symbol,
+               end_index,
+               ev->length_symbols);
+    }
+}
+
+static void sr_print_decoder_telemetry(uint64_t block_id,
+                                       const fec_decode_telemetry_t *telemetry,
+                                       int m_limit)
+{
+    printf("[REAL DECODER TELEMETRY]\n");
+    printf("Block %" PRIu64 ":\n", block_id);
+    printf("- received: %d\n", telemetry->number_of_symbols_received);
+    printf("- missing: %d\n", telemetry->number_of_missing_symbols);
+    printf("- repair: %d\n", telemetry->number_of_repair_symbols_used);
+    printf("- success: %s\n", telemetry->decode_success ? "YES" : "NO");
+
+    if (!telemetry->decode_success) {
+        printf("[REAL ROOT CAUSE]\n");
+        printf("Block %" PRIu64 " failed:\n", block_id);
+        printf("missing=%d, M=%d -> %s capacity\n",
+               telemetry->number_of_missing_symbols,
+               m_limit,
+               (telemetry->number_of_missing_symbols > m_limit) ? "exceeded" : "within");
+    }
+}
+
+static void sr_print_block_analysis(uint64_t block_id,
+                                    int expected_symbols,
+                                    const fec_decode_telemetry_t *telemetry,
+                                    int failure_reason)
+{
+    printf("[BLOCK ANALYSIS]\n");
+    printf("Block %" PRIu64 ":\n", block_id);
+    printf("- expected_symbols: %d\n", expected_symbols);
+    printf("- received_symbols: %d\n", telemetry->number_of_symbols_received);
+    printf("- missing_symbols: %d\n", telemetry->number_of_missing_symbols);
+    printf("- repair_symbols_used: %d\n", telemetry->number_of_repair_symbols_used);
+    printf("- decode_success: %s\n", telemetry->decode_success ? "YES" : "NO");
+    printf("- result: %s\n", telemetry->decode_success ? "PASS" : "FAIL");
+
+    if (!telemetry->decode_success) {
+        printf("- reason: %s\n", sim_runner_failure_reason_name(failure_reason));
+    }
+}
+
+static void sr_print_run_summary(void)
+{
+    printf("[RUN SUMMARY]\n");
+    printf("- total_blocks_attempted: %" PRIu64 "\n", g_last_run_report.blocks_attempted);
+    printf("- total_blocks_passed: %" PRIu64 "\n", g_last_run_report.blocks_passed);
+    printf("- total_blocks_failed: %" PRIu64 "\n", g_last_run_report.blocks_failed);
+    printf("- fail_too_many_holes: %" PRIu64 "\n", g_last_run_report.fail_too_many_holes);
+    printf("- fail_insufficient_symbols: %" PRIu64 "\n", g_last_run_report.fail_insufficient_symbols);
+    printf("Packet-level failures:\n");
+    printf("- packet_fail_missing: %" PRIu64 "\n", g_last_run_report.packet_fail_missing);
+    printf("- packet_fail_corrupted: %" PRIu64 "\n", g_last_run_report.packet_fail_corrupted);
+    printf("- packet_fail_after_successful_block_decode: %" PRIu64 "\n",
+           g_last_run_report.packet_fail_after_successful_block_decode);
+    printf("- packet_level_failure_after_successful_block_decode: %s\n",
+           (g_last_run_report.packet_fail_after_successful_block_decode > 0U) ? "YES" : "NO");
+    printf("- max_missing_symbols_in_block: %" PRIu64 "\n",
+           g_last_run_report.max_missing_symbols_in_block);
+    printf("- avg_missing_symbols_in_failed_blocks: %.2f\n",
+           g_last_run_report.avg_missing_symbols_in_failed_blocks);
+}
+
+/* =========================================================================
+ * Packet generation
+ * =========================================================================*/
+
+static int sr_generate_packets(sr_ctx_t *ctx, uint32_t seed)
+{
+    int    slots_remaining = ctx->total_src_slots;
+    int    size_idx        = 0;
+    int    unique_id       = 1;
+    int    max_pkts        = sr_max_packets(ctx);
+
+    ctx->num_generated = 0;
+
+    while (slots_remaining > 0 && ctx->num_generated < max_pkts) {
+        size_t           sz = sr_pkt_sizes[size_idx % SR_NUM_PKT_SIZES];
+        sr_pkt_record_t *pr = &ctx->pkts[ctx->num_generated];
+        int              nf = (int)((sz + (size_t)ctx->symbol_size - 1U) /
+                                    (size_t)ctx->symbol_size);
+        size_t           j;
+
+        size_idx++;
+
+        if (nf > slots_remaining) {
+            continue;
+        }
+
+        pr->packet_id   = (uint32_t)unique_id++;
+        pr->packet_len  = sz;
+        pr->transmitted = 0;
+        pr->recovered   = 0;
+        pr->exact_match = 0;
+
+        pr->data = (unsigned char *)malloc(sz);
+        if (!pr->data) {
+            return -1;
+        }
+
+        for (j = 0; j < sz; ++j) {
+            pr->data[j] = (unsigned char)(
+                (pr->packet_id * 251U +
+                 (uint32_t)j * 37U +
+                 (uint32_t)(j >> 8) +
+                 seed) & 0xFFU
+            );
+        }
+
+        stats_inc_ingress(sz);
+
+        slots_remaining -= nf;
+        ctx->num_generated++;
+    }
+
+    return 0;
+}
+
+/* =========================================================================
+ * Encode one full/padded block and drain ready interleaver output
+ * =========================================================================*/
+
+static int sr_encode_one_block(sr_ctx_t        *ctx,
+                               block_builder_t *bb,
+                               fec_handle_t     fec,
+                               interleaver_t   *il,
+                               unsigned char   *src_data,
+                               symbol_t        *repair_buf)
+{
+    int blk_idx = ctx->num_blocks_encoded;
+    int s;
+    int m;
+
+    if (blk_idx >= ctx->num_blocks) {
+        return -1;
+    }
+
+    ctx->block_meta[blk_idx].block_id = bb->block_id;
+
+    for (s = 0; s < ctx->k; ++s) {
+        memcpy(src_data + (size_t)s * (size_t)ctx->symbol_size,
+               bb->symbols[s].data,
+               (size_t)ctx->symbol_size);
+    }
+
+    memset(repair_buf, 0, (size_t)ctx->m * sizeof(symbol_t));
+    if (fec_encode_block(fec, src_data, repair_buf, ctx->m) != FEC_DECODE_OK) {
+        return -1;
+    }
+
+    for (s = 0; s < ctx->k; ++s) {
+        symbol_t sym = bb->symbols[s];
+
+        sym.packet_id     = (uint32_t)blk_idx;
+        sym.fec_id        = (uint32_t)s;
+        sym.total_symbols = (uint16_t)ctx->n;
+        sym.payload_len   = (uint16_t)ctx->symbol_size;
+
+        if (interleaver_push_symbol(il, &sym) < 0) {
+            return -1;
+        }
+    }
+
+    for (m = 0; m < ctx->m; ++m) {
+        repair_buf[m].packet_id     = (uint32_t)blk_idx;
+        repair_buf[m].fec_id        = (uint32_t)(ctx->k + m);
+        repair_buf[m].total_symbols = (uint16_t)ctx->n;
+        repair_buf[m].payload_len   = (uint16_t)ctx->symbol_size;
+
+        if (interleaver_push_symbol(il, &repair_buf[m]) < 0) {
+            return -1;
+        }
+    }
+
+    ctx->num_blocks_encoded++;
+    block_builder_reset(bb);
+
+    while (interleaver_is_ready(il)) {
+        int pr;
+
+        if (ctx->tx_count >= ctx->total_syms) {
+            return -1;
+        }
+
+        pr = interleaver_pop_ready_symbol(il, &ctx->tx_buf[ctx->tx_count]);
+        if (pr < 0) {
+            break;
+        }
+
+        ctx->tx_count++;
+
+        if (pr == 1) {
+            break;
+        }
+    }
+
+    return 0;
+}
+
+/* =========================================================================
+ * TX pipeline
+ * =========================================================================*/
+
+static int sr_run_tx_pipeline(sr_ctx_t *ctx)
+{
+    symbol_t       *frag_buf   = NULL;
+    symbol_t       *repair_buf = NULL;
+    unsigned char  *src_data   = NULL;
+    interleaver_t  *il         = NULL;
+    fec_handle_t    fec        = NULL;
+    block_builder_t bb;
+    int             result     = -1;
+    int             block_slot = 0;
+    int             pi;
+
+    ctx->num_blocks_encoded = 0;
+    ctx->tx_count           = 0;
+
+    frag_buf = (symbol_t *)calloc((size_t)SR_MAX_FRAGS_PER_PKT, sizeof(symbol_t));
+    repair_buf = (symbol_t *)calloc((size_t)ctx->m, sizeof(symbol_t));
+    src_data = (unsigned char *)sr_alloc_aligned(
+        (size_t)ctx->k * (size_t)ctx->symbol_size
+    );
+    ctx->tx_buf = (symbol_t *)calloc((size_t)ctx->total_syms, sizeof(symbol_t));
+
+    if (!frag_buf || !repair_buf || !src_data || !ctx->tx_buf) {
+        goto cleanup;
+    }
+
+    memset(&bb, 0, sizeof(bb));
+    if (block_builder_init(&bb, ctx->k) != 0) {
+        goto cleanup;
+    }
+
+    il = interleaver_create(ctx->depth, ctx->n, ctx->symbol_size);
+    if (!il) {
+        goto cleanup_bb;
+    }
+
+    fec = fec_create(ctx->k, ctx->symbol_size);
+    if (!fec) {
+        goto cleanup_il;
+    }
+
+    for (pi = 0; pi < ctx->num_generated; ++pi) {
+        sr_pkt_record_t *pr = &ctx->pkts[pi];
+        int              nf;
+        int              fi;
+
+        if (ctx->num_blocks_encoded >= ctx->num_blocks) {
+            break;
+        }
+
+        memset(frag_buf, 0, (size_t)SR_MAX_FRAGS_PER_PKT * sizeof(symbol_t));
+
+        nf = fragment_packet(pr->data,
+                             pr->packet_len,
+                             pr->packet_id,
+                             (uint16_t)ctx->symbol_size,
+                             frag_buf,
+                             (uint16_t)SR_MAX_FRAGS_PER_PKT);
+        if (nf < 0) {
+            goto cleanup_fec;
+        }
+
+        for (fi = 0; fi < nf; ++fi) {
+            symbol_t        *sym = &frag_buf[fi];
+            sr_block_meta_t *bm;
+            sr_slot_meta_t  *sm;
+            int              rc;
+
+            if (ctx->num_blocks_encoded >= ctx->num_blocks) {
+                goto tx_done;
+            }
+
+            sym->fec_id = (uint32_t)block_slot;
+
+            if (sym->payload_len < (uint16_t)ctx->symbol_size) {
+                memset(sym->data + sym->payload_len,
+                       0,
+                       (size_t)(ctx->symbol_size - sym->payload_len));
+            }
+
+            bm = &ctx->block_meta[ctx->num_blocks_encoded];
+            sm = &bm->slots[block_slot];
+
+            sm->orig_packet_id = sym->packet_id;
+            sm->symbol_index   = sym->symbol_index;
+            sm->total_symbols  = sym->total_symbols;
+            sm->payload_len    = sym->payload_len;
+
+            rc = block_builder_add_symbol(&bb, sym);
+            if (rc < 0) {
+                goto cleanup_fec;
+            }
+
+            block_slot++;
+
+            if (rc == 1) {
+                if (sr_encode_one_block(ctx, &bb, fec, il, src_data, repair_buf) != 0) {
+                    goto cleanup_fec;
+                }
+                block_slot = 0;
+            }
+        }
+    }
+
+tx_done:
+    if (block_slot > 0 && ctx->num_blocks_encoded < ctx->num_blocks) {
+        block_builder_finalize_with_padding(&bb);
+        if (sr_encode_one_block(ctx, &bb, fec, il, src_data, repair_buf) != 0) {
+            goto cleanup_fec;
+        }
+    }
+
+    while (interleaver_is_ready(il)) {
+        int pr2;
+
+        if (ctx->tx_count >= ctx->total_syms) {
+            goto cleanup_fec;
+        }
+
+        pr2 = interleaver_pop_ready_symbol(il, &ctx->tx_buf[ctx->tx_count]);
+        if (pr2 < 0) {
+            break;
+        }
+
+        ctx->tx_count++;
+
+        if (pr2 == 1) {
+            break;
+        }
+    }
+
+    result = 0;
+
+cleanup_fec:
+    fec_destroy(fec);
+cleanup_il:
+    interleaver_destroy(il);
+cleanup_bb:
+    block_builder_destroy(&bb);
+cleanup:
+    free(frag_buf);
+    free(repair_buf);
+    free(src_data);
+    return result;
+}
+
+static void sr_recount_transmitted(sr_ctx_t *ctx)
+{
+    int b;
+    int s;
+    int p;
+
+    for (p = 0; p < ctx->num_generated; ++p) {
+        ctx->pkts[p].transmitted = 0;
+    }
+
+    for (b = 0; b < ctx->num_blocks_encoded; ++b) {
+        sr_block_meta_t *bm = &ctx->block_meta[b];
+
+        for (s = 0; s < ctx->k; ++s) {
+            sr_slot_meta_t *sm = &bm->slots[s];
+
+            if (sm->payload_len == 0) {
+                continue;
+            }
+
+            for (p = 0; p < ctx->num_generated; ++p) {
+                if (ctx->pkts[p].packet_id == sm->orig_packet_id) {
+                    ctx->pkts[p].transmitted = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    ctx->num_transmitted = 0;
+    for (p = 0; p < ctx->num_generated; ++p) {
+        if (ctx->pkts[p].transmitted) {
+            ctx->num_transmitted++;
+            stats_inc_transmitted(ctx->pkts[p].packet_len);
+        }
+    }
+}
+
+static void sr_apply_channel_events(sr_ctx_t                *ctx,
+                                    const sim_run_request_t *req,
+                                    channel_apply_result_t  *out_ch)
+{
+    int e;
+
+    ctx->stat_symbols_erased    = 0U;
+    ctx->stat_symbols_corrupted = 0U;
+
+    sr_print_channel_events(req, ctx->total_syms);
+
+    for (e = 0; e < req->num_events; ++e) {
+        const channel_event_t *ev = &req->events[e];
+        int start = ev->start_symbol;
+        int end   = start + ev->length_symbols;
+        int i;
+
+        if (start >= ctx->tx_count) {
+            continue;
+        }
+
+        if (end > ctx->tx_count) {
+            end = ctx->tx_count;
+        }
+
+        if (ev->type == CHANNEL_EVENT_ERASURE) {
+            for (i = start; i < end; ++i) {
+                if (ctx->tx_buf[i].payload_len != 0) {
+                    memset(&ctx->tx_buf[i], 0, sizeof(symbol_t));
+                    ctx->stat_symbols_erased++;
+                }
+            }
+        } else if (ev->type == CHANNEL_EVENT_CORRUPTION) {
+            for (i = start; i < end; ++i) {
+                symbol_t *sym = &ctx->tx_buf[i];
+
+                if (sym->payload_len > 0) {
+                    size_t j;
+
+                    for (j = 0;
+                         j < (size_t)sym->payload_len && j < MAX_SYMBOL_DATA_SIZE;
+                         ++j) {
+                        sym->data[j] ^= 0xA5U;
+                    }
+
+                    ctx->stat_symbols_corrupted++;
+                }
+            }
+        }
+    }
+
+    {
+        int i;
+
+        for (i = 0; i < ctx->tx_count; ++i) {
+            bool lost = (ctx->tx_buf[i].payload_len == 0);
+            stats_record_symbol(lost);
+        }
+
+        stats_finalize_burst();
+    }
+
+    if (out_ch) {
+        out_ch->total_tx_symbols  = (uint64_t)ctx->tx_count;
+        out_ch->lost_symbols      = ctx->stat_symbols_erased;
+        out_ch->corrupted_symbols = ctx->stat_symbols_corrupted;
+    }
+}
+
+/* =========================================================================
+ * Deliver one decoded block into packet accumulators
+ * =========================================================================*/
+
+static void sr_deliver_block(sr_ctx_t       *ctx,
+                             int             blk_idx,
+                             unsigned char  *recon,
+                             sr_pkt_accum_t *accum,
+                             int            *accum_count,
+                             int             max_accum)
+{
+    sr_block_meta_t *bm = &ctx->block_meta[blk_idx];
+    int              s;
+
+    for (s = 0; s < ctx->k; ++s) {
+        sr_slot_meta_t  *sm = &bm->slots[s];
+        sr_pkt_record_t *pr;
+        int              idx;
+        sr_pkt_accum_t  *pa;
+        symbol_t         sym;
+        int              recon_len;
+        unsigned char    recon_pkt[9000];
+
+        if (sm->payload_len == 0) {
+            continue;
+        }
+
+        pr = sr_find_packet_record(ctx, sm->orig_packet_id);
+        if (pr == NULL) {
+            continue;
+        }
+
+        if (!pr->transmitted) {
+            continue;
+        }
+
+        if (pr->recovered) {
+            continue;
+        }
+
+        idx = sr_pkt_accum_find(accum, *accum_count, sm->orig_packet_id);
+        if (idx < 0) {
+            if (*accum_count >= max_accum) {
+                continue;
+            }
+
+            idx = *accum_count;
+            pa  = &accum[idx];
+            sr_pkt_accum_reset(pa);
+            pa->active    = 1;
+            pa->packet_id = sm->orig_packet_id;
+            pa->expected  = (int)sm->total_symbols;
+            pa->count     = 0;
+            (*accum_count)++;
+        } else {
+            pa = &accum[idx];
+        }
+
+        if (!pa->active) {
+            sr_pkt_accum_reset(pa);
+            pa->active    = 1;
+            pa->packet_id = sm->orig_packet_id;
+            pa->expected  = (int)sm->total_symbols;
+            pa->count     = 0;
+        }
+
+        if (pa->expected != (int)sm->total_symbols) {
+            sr_pkt_accum_remove(accum, accum_count, idx);
+            if (*accum_count >= max_accum) {
+                continue;
+            }
+
+            idx = *accum_count;
+            pa  = &accum[idx];
+            sr_pkt_accum_reset(pa);
+            pa->active    = 1;
+            pa->packet_id = sm->orig_packet_id;
+            pa->expected  = (int)sm->total_symbols;
+            pa->count     = 0;
+            (*accum_count)++;
+        }
+
+        if (pa->expected <= 0 || pa->expected > SR_MAX_FRAGS_PER_PKT) {
+            sr_pkt_accum_remove(accum, accum_count, idx);
+            continue;
+        }
+
+        if (sr_pkt_accum_has_symbol_index(pa, sm->symbol_index)) {
+            continue;
+        }
+
+        if (pa->count >= SR_MAX_FRAGS_PER_PKT || pa->count >= pa->expected) {
+            sr_pkt_accum_remove(accum, accum_count, idx);
+            continue;
+        }
+
+        memset(&sym, 0, sizeof(sym));
+        sym.packet_id     = sm->orig_packet_id;
+        sym.fec_id        = (uint32_t)s;
+        sym.symbol_index  = sm->symbol_index;
+        sym.total_symbols = sm->total_symbols;
+        sym.payload_len   = sm->payload_len;
+
+        memcpy(sym.data,
+               recon + (size_t)s * (size_t)ctx->symbol_size,
+               sm->payload_len);
+
+        pa->frags[pa->count] = sym;
+        pa->count++;
+
+        if (pa->count != pa->expected) {
+            continue;
+        }
+
+        memset(recon_pkt, 0, sizeof(recon_pkt));
+        recon_len = reassemble_packet(pa->frags,
+                                      (uint16_t)pa->count,
+                                      recon_pkt,
+                                      sizeof(recon_pkt));
+
+        if (!pr->recovered) {
+            if (recon_len > 0) {
+                pr->recovered = 1;
+
+                if ((size_t)recon_len == pr->packet_len &&
+                    memcmp(recon_pkt, pr->data, pr->packet_len) == 0) {
+                    pr->exact_match = 1;
+                } else {
+                    ctx->packet_fail_after_successful_block_decode_runtime++;
+                }
+
+                stats_inc_recovered(pr->packet_len);
+            } else {
+                ctx->packet_fail_after_successful_block_decode_runtime++;
+                stats_inc_failed_packet();
+            }
+        }
+
+        sr_pkt_accum_remove(accum, accum_count, idx);
+    }
+}
+
+/* =========================================================================
+ * RX pipeline
+ * =========================================================================*/
+
+static int sr_run_rx_pipeline(sr_ctx_t *ctx)
+{
+    deinterleaver_t        *dil         = NULL;
+    fec_handle_t            fec         = NULL;
+    unsigned char          *recon       = NULL;
+    sr_pkt_accum_t         *accum       = NULL;
+    int                     accum_count = 0;
+    int                     max_accum   = ctx->k * SR_MAX_ACCUM_FACTOR;
+    int                     dil_slots;
+    int                     result      = -1;
+    int                     i;
+
+    dil_slots = ctx->num_blocks_encoded * SR_DIL_HEADROOM_FACTOR;
+    if (dil_slots < ctx->depth + 4) {
+        dil_slots = ctx->depth + 4;
+    }
+
+    dil = deinterleaver_create(dil_slots,
+                               ctx->n,
+                               ctx->k,
+                               (size_t)ctx->symbol_size,
+                               0.0,
+                               0.0);
+    if (!dil) {
+        return -1;
+    }
+
+    fec = fec_create(ctx->k, ctx->symbol_size);
+    if (!fec) {
+        goto cleanup;
+    }
+
+    recon = (unsigned char *)sr_alloc_aligned(
+        (size_t)ctx->k * (size_t)ctx->symbol_size
+    );
+    if (!recon) {
+        goto cleanup;
+    }
+
+    accum = (sr_pkt_accum_t *)calloc((size_t)max_accum, sizeof(sr_pkt_accum_t));
+    if (!accum) {
+        goto cleanup;
+    }
+
+    for (i = 0; i < ctx->tx_count; ++i) {
+        symbol_t *sym = &ctx->tx_buf[i];
+        int       rc;
+        block_t   blk;
+
+        if (sym->payload_len == 0) {
+            continue;
+        }
+
+        rc = deinterleaver_push_symbol(dil, sym);
+
+        if (rc < 0) {
+            while (deinterleaver_get_ready_block(dil, &blk) == 0) {
+                int                     blk_idx = (int)blk.block_id;
+                uint64_t                holes   = 0U;
+                fec_decode_telemetry_t  telemetry;
+                int                     decode_rc;
+                int                     failure_reason = SR_FAIL_NONE;
+
+                if (blk.symbols_per_block > blk.symbol_count) {
+                    holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+                }
+
+                ctx->stat_blocks_attempted++;
+                stats_inc_block_attempt();
+                stats_record_block(holes);
+
+                memset(recon, 0, (size_t)ctx->k * (size_t)ctx->symbol_size);
+
+                fec_set_current_decode_block_id((uint64_t)blk.block_id);
+                decode_rc = fec_decode_block(fec,
+                                             blk.symbols,
+                                             blk.symbol_count,
+                                             blk.symbols_per_block,
+                                             recon);
+                fec_get_last_decode_telemetry(&telemetry);
+
+                if (decode_rc != FEC_DECODE_OK) {
+                    failure_reason = sr_classify_block_failure(ctx, &telemetry);
+                }
+
+                sr_update_run_report_for_block(ctx, &telemetry, decode_rc == FEC_DECODE_OK);
+                sr_print_decoder_telemetry((uint64_t)blk.block_id, &telemetry, ctx->m);
+                sr_print_block_analysis((uint64_t)blk.block_id,
+                                        blk.symbols_per_block,
+                                        &telemetry,
+                                        failure_reason);
+
+                if (decode_rc == FEC_DECODE_OK) {
+                    ctx->stat_blocks_ok++;
+                    stats_inc_block_success();
+
+                    if (blk_idx >= 0 && blk_idx < ctx->num_blocks_encoded) {
+                        sr_deliver_block(ctx, blk_idx, recon, accum, &accum_count, max_accum);
+                    }
+
+                    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+                } else {
+                    ctx->stat_blocks_failed++;
+                    stats_inc_block_failure();
+                    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 0);
+                }
+            }
+
+            rc = deinterleaver_push_symbol(dil, sym);
+            (void)rc;
+        }
+    }
+
+    deinterleaver_tick(dil, 0.0);
+
+    {
+        block_t blk;
+
+        while (deinterleaver_get_ready_block(dil, &blk) == 0) {
+            int                     blk_idx = (int)blk.block_id;
+            uint64_t                holes   = 0U;
+            fec_decode_telemetry_t  telemetry;
+            int                     decode_rc;
+            int                     failure_reason = SR_FAIL_NONE;
+
+            if (blk.symbols_per_block > blk.symbol_count) {
+                holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+            }
+
+            ctx->stat_blocks_attempted++;
+            stats_inc_block_attempt();
+            stats_record_block(holes);
+
+            memset(recon, 0, (size_t)ctx->k * (size_t)ctx->symbol_size);
+
+            fec_set_current_decode_block_id((uint64_t)blk.block_id);
+            decode_rc = fec_decode_block(fec,
+                                         blk.symbols,
+                                         blk.symbol_count,
+                                         blk.symbols_per_block,
+                                         recon);
+            fec_get_last_decode_telemetry(&telemetry);
+
+            if (decode_rc != FEC_DECODE_OK) {
+                failure_reason = sr_classify_block_failure(ctx, &telemetry);
+            }
+
+            sr_update_run_report_for_block(ctx, &telemetry, decode_rc == FEC_DECODE_OK);
+            sr_print_decoder_telemetry((uint64_t)blk.block_id, &telemetry, ctx->m);
+            sr_print_block_analysis((uint64_t)blk.block_id,
+                                    blk.symbols_per_block,
+                                    &telemetry,
+                                    failure_reason);
+
+            if (decode_rc == FEC_DECODE_OK) {
+                ctx->stat_blocks_ok++;
+                stats_inc_block_success();
+
+                if (blk_idx >= 0 && blk_idx < ctx->num_blocks_encoded) {
+                    sr_deliver_block(ctx, blk_idx, recon, accum, &accum_count, max_accum);
+                }
+
+                deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+            } else {
+                ctx->stat_blocks_failed++;
+                stats_inc_block_failure();
+                deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 0);
+            }
+        }
+    }
+
+    {
+        int p;
+
+        for (p = 0; p < ctx->num_generated; ++p) {
+            sr_pkt_record_t *pr = &ctx->pkts[p];
+
+            if (!pr->transmitted) {
+                continue;
+            }
+
+            if (!pr->recovered) {
+                g_last_run_report.packet_fail_missing++;
+                if (ctx->stat_blocks_failed == 0U) {
+                    ctx->packet_fail_after_successful_block_decode_runtime++;
+                }
+                stats_inc_failed_packet();
+            } else if (!pr->exact_match) {
+                g_last_run_report.packet_fail_corrupted++;
+            }
+        }
+    }
+
+    sr_finalize_run_report(ctx);
+    sr_print_run_summary();
+
+    result = 0;
+
+cleanup:
+    free(accum);
+    free(recon);
+    fec_destroy(fec);
+    deinterleaver_destroy(dil);
+    return result;
+}
+
+/* =========================================================================
+ * Public API
+ * =========================================================================*/
+
+int sim_runner_global_init(void)
+{
+    stats_init();
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "[sim_runner] FATAL: wirehair_init() failed\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+int sim_run_campaign_case(const sim_config_t      *cfg,
+                          const sim_run_request_t *req,
+                          sim_result_t            *out_result,
+                          channel_apply_result_t  *out_channel)
+{
+    sr_ctx_t ctx;
+    int      rc      = -1;
+    int      p;
+    int      b;
+    uint32_t seed;
+    int      max_pkts;
+
+    if (!cfg || !req || !out_result) {
+        return -1;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    memset(out_result, 0, sizeof(*out_result));
+    sr_reset_run_report();
+
+    if (out_channel) {
+        memset(out_channel, 0, sizeof(*out_channel));
+    }
+
+    stats_reset();
+    stats_set_burst_fec_span((uint64_t)(cfg->m * cfg->depth));
+
+    ctx.k               = cfg->k;
+    ctx.m               = cfg->m;
+    ctx.n               = cfg->k + cfg->m;
+    ctx.depth           = cfg->depth;
+    ctx.symbol_size     = cfg->symbol_size;
+    ctx.num_blocks      = cfg->num_windows * cfg->depth;
+    ctx.total_syms      = ctx.num_blocks * ctx.n;
+    ctx.total_src_slots = ctx.num_blocks * ctx.k;
+
+    seed     = (req->seed_override != 0U) ? req->seed_override : cfg->seed;
+    max_pkts = ctx.total_src_slots + 8;
+
+    ctx.pkts = (sr_pkt_record_t *)calloc((size_t)max_pkts, sizeof(sr_pkt_record_t));
+    if (!ctx.pkts) {
+        goto done;
+    }
+
+    ctx.block_meta = (sr_block_meta_t *)calloc((size_t)ctx.num_blocks, sizeof(sr_block_meta_t));
+    if (!ctx.block_meta) {
+        goto done;
+    }
+
+    for (b = 0; b < ctx.num_blocks; ++b) {
+        ctx.block_meta[b].slots = (sr_slot_meta_t *)calloc((size_t)ctx.k, sizeof(sr_slot_meta_t));
+        if (!ctx.block_meta[b].slots) {
+            goto done;
+        }
+    }
+
+    if (sr_generate_packets(&ctx, seed) != 0) {
+        goto done;
+    }
+
+    if (sr_run_tx_pipeline(&ctx) != 0) {
+        goto done;
+    }
+
+    sr_recount_transmitted(&ctx);
+
+    sr_apply_channel_events(&ctx, req, out_channel);
+
+    if (sr_run_rx_pipeline(&ctx) != 0) {
+        goto done;
+    }
+
+    {
+        uint64_t recovered   = 0U;
+        uint64_t exact_match = 0U;
+        uint64_t corrupted   = 0U;
+        uint64_t missing     = 0U;
+
+        for (p = 0; p < ctx.num_generated; ++p) {
+            const sr_pkt_record_t *pr = &ctx.pkts[p];
+
+            if (!pr->transmitted) {
+                continue;
+            }
+
+            if (pr->recovered) {
+                recovered++;
+                if (pr->exact_match) {
+                    exact_match++;
+                } else {
+                    corrupted++;
+                }
+            } else {
+                missing++;
+            }
+        }
+
+        out_result->generated_packets   = (uint64_t)ctx.num_generated;
+        out_result->transmitted_packets = (uint64_t)ctx.num_transmitted;
+        out_result->recovered_packets   = recovered;
+        out_result->exact_match_packets = exact_match;
+        out_result->corrupted_packets   = corrupted;
+        out_result->missing_packets     = missing;
+
+        out_result->total_tx_symbols  = (uint64_t)ctx.tx_count;
+        out_result->lost_symbols      = ctx.stat_symbols_erased;
+        out_result->corrupted_symbols = ctx.stat_symbols_corrupted;
+
+        out_result->blocks_attempted = ctx.stat_blocks_attempted;
+        out_result->blocks_recovered = ctx.stat_blocks_ok;
+        out_result->blocks_failed    = ctx.stat_blocks_failed;
+
+        out_result->lost_bytes = ctx.stat_symbols_erased * (uint64_t)cfg->symbol_size;
+        out_result->lost_equiv_1500_pkts =
+            (out_result->lost_bytes + 1499U) / 1500U;
+
+        {
+            double sym_time_us = (double)cfg->symbol_size * 8.0 / 10000.0;
+            out_result->fade_duration_us = (double)ctx.stat_symbols_erased * sym_time_us;
+        }
+
+        out_result->recovery_rate =
+            (ctx.num_transmitted > 0)
+                ? (double)recovered / (double)ctx.num_transmitted
+                : 1.0;
+
+        out_result->exact_match_rate =
+            (ctx.num_transmitted > 0)
+                ? (double)exact_match / (double)ctx.num_transmitted
+                : 1.0;
+    }
+
+    rc = 0;
+
+done:
+    if (ctx.block_meta) {
+        for (b = 0; b < ctx.num_blocks; ++b) {
+            free(ctx.block_meta[b].slots);
+        }
+        free(ctx.block_meta);
+    }
+
+    if (ctx.pkts) {
+        for (p = 0; p < ctx.num_generated; ++p) {
+            free(ctx.pkts[p].data);
+        }
+        free(ctx.pkts);
+    }
+
+    free(ctx.tx_buf);
+
+    return rc;
+}
+
+----- FILE: tests/sim_runner.h -----
+/* tests/sim_runner.h — Reusable FSO pipeline engine for campaign testing.
+ *
+ * Extracted from end_to_end_sim_test.c (Task 20).
+ * Drives the full real TX→channel→RX pipeline and returns only real measured
+ * metrics from the existing implementation:
+ *
+ *   packet → fragmentation → symbolization → block builder → FEC encode
+ *          → interleaving → channel impairments → deinterleaving
+ *          → FEC decode → packet reassembly
+ */
+
+#ifndef SIM_RUNNER_H
+#define SIM_RUNNER_H
+
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* =========================================================================
+ * Channel event types
+ * =========================================================================*/
+
+typedef enum {
+    CHANNEL_EVENT_ERASURE    = 0, /* zero out symbol: payload_len = 0         */
+    CHANNEL_EVENT_CORRUPTION = 1  /* XOR payload bytes, keep payload_len > 0  */
+} channel_event_type_t;
+
+typedef struct {
+    channel_event_type_t type;
+    int                  start_symbol;    /* index into TX symbol stream       */
+    int                  length_symbols;  /* number of symbols affected        */
+} channel_event_t;
+
+/* =========================================================================
+ * Simulation configuration
+ * =========================================================================*/
+
+typedef struct {
+    int      k;            /* source symbols per FEC block                  */
+    int      m;            /* repair symbols per FEC block                  */
+    int      depth;        /* interleaver depth (blocks per window)         */
+    int      symbol_size;  /* bytes per symbol                              */
+    int      num_windows;  /* number of complete interleave windows         */
+    uint32_t seed;         /* deterministic packet-generation seed          */
+} sim_config_t;
+
+/* =========================================================================
+ * Run request
+ * =========================================================================*/
+
+#define SIM_MAX_EVENTS 32
+
+typedef struct {
+    channel_event_t events[SIM_MAX_EVENTS];
+    int             num_events;
+    uint32_t        seed_override; /* 0 = use cfg->seed                      */
+} sim_run_request_t;
+
+/* =========================================================================
+ * Channel apply result
+ * =========================================================================*/
+
+typedef struct {
+    uint64_t total_tx_symbols;
+    uint64_t lost_symbols;
+    uint64_t corrupted_symbols;
+} channel_apply_result_t;
+
+/* =========================================================================
+ * Simulation result — all values are produced by real pipeline execution
+ * =========================================================================*/
+
+typedef struct {
+    /* Packet-level */
+    uint64_t generated_packets;
+    uint64_t transmitted_packets;
+    uint64_t recovered_packets;
+    uint64_t exact_match_packets;
+    uint64_t corrupted_packets;
+    uint64_t missing_packets;
+
+    /* Symbol-level */
+    uint64_t total_tx_symbols;
+    uint64_t lost_symbols;
+    uint64_t corrupted_symbols;
+
+    /* Block-level */
+    uint64_t blocks_attempted;
+    uint64_t blocks_recovered;
+    uint64_t blocks_failed;
+
+    /* Derived */
+    uint64_t lost_bytes;
+    uint64_t lost_equiv_1500_pkts;
+    double   fade_duration_us;   /* contiguous erasure duration at 10 Gbps   */
+    double   recovery_rate;      /* recovered_packets   / transmitted_packets */
+    double   exact_match_rate;   /* exact_match_packets / transmitted_packets */
+} sim_result_t;
+
+/* =========================================================================
+ * Public API
+ * =========================================================================*/
+
+/*
+ * sim_runner_global_init()
+ *
+ * Call once before any sim_run_campaign_case().
+ * Initializes Wirehair and the stats subsystem.
+ *
+ * Returns 0 on success, -1 on failure.
+ */
+int sim_runner_global_init(void);
+
+/*
+ * sim_run_campaign_case()
+ *
+ * Runs one full real pipeline case using the existing implementation.
+ *
+ *   cfg         : geometry and default seed
+ *   req         : channel events to apply on the real TX symbol stream
+ *   out_result  : filled with real measured metrics on success
+ *   out_channel : optional raw channel counts
+ *
+ * stats_reset() is called at entry.
+ *
+ * Returns 0 on success, -1 on pipeline error.
+ */
+int sim_run_campaign_case(const sim_config_t      *cfg,
+                          const sim_run_request_t *req,
+                          sim_result_t            *out_result,
+                          channel_apply_result_t  *out_channel);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* SIM_RUNNER_H */
+======================
+FILE: Makefile
+======================
 # =============================================================================
 # Makefile — FSO Gateway
 # =============================================================================
@@ -9994,6 +12661,7 @@ int main(void)
 #   make rtest        — run receiver_robustness_test
 #   make ftest        — run fec_stress_test
 #   make e2etest      — build and run end_to_end_sim_test (Task 20)
+#   make ctest        — build and run channel_campaign_test
 #   make alltest      — build and run all tests
 #   make clean        — remove build directory
 #
@@ -10187,6 +12855,7 @@ $(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_OBJ) $(FEC_STRESS_TEST_DEPS) | $(BIN_D
 # ---- end_to_end_sim_test  (Task 20) ----------------------------------------
 E2E_TEST_BIN  := $(BIN_DIR)/end_to_end_sim_test
 E2E_TEST_OBJ  := $(TEST_OBJS_DIR)/end_to_end_sim_test.o
+SIM_RUNNER_OBJ := $(TEST_OBJS_DIR)/sim_runner.o
 E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
                   $(OBJ_DIR)/deinterleaver.o \
                   $(OBJ_DIR)/fec_wrapper.o \
@@ -10196,9 +12865,29 @@ E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
                   $(OBJ_DIR)/packet_reassembler.o \
                   $(OBJ_DIR)/stats.o \
                   $(OBJ_DIR)/symbol.o \
+                  $(SIM_RUNNER_OBJ) \
                   $(WIREHAIR_OBJS)
 
 $(E2E_TEST_BIN): $(E2E_TEST_OBJ) $(E2E_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- channel_campaign_test --------------------------------------------------
+CHANNEL_CAMPAIGN_TEST_BIN  := $(BIN_DIR)/channel_campaign_test
+CHANNEL_CAMPAIGN_TEST_OBJ  := $(TEST_OBJS_DIR)/channel_campaign_test.o
+CHANNEL_CAMPAIGN_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
+                               $(OBJ_DIR)/deinterleaver.o \
+                               $(OBJ_DIR)/fec_wrapper.o \
+                               $(OBJ_DIR)/interleaver.o \
+                               $(OBJ_DIR)/logging.o \
+                               $(OBJ_DIR)/packet_fragmenter.o \
+                               $(OBJ_DIR)/packet_reassembler.o \
+                               $(OBJ_DIR)/stats.o \
+                               $(OBJ_DIR)/symbol.o \
+                               $(SIM_RUNNER_OBJ) \
+                               $(WIREHAIR_OBJS)
+
+$(CHANNEL_CAMPAIGN_TEST_BIN): $(CHANNEL_CAMPAIGN_TEST_OBJ) $(CHANNEL_CAMPAIGN_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
 	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
@@ -10212,7 +12901,8 @@ tests: $(INTERLEAVER_TEST_BIN) \
        $(BURST_TEST_BIN) \
        $(ROBUSTNESS_TEST_BIN) \
        $(FEC_STRESS_TEST_BIN) \
-       $(E2E_TEST_BIN)
+       $(E2E_TEST_BIN) \
+       $(CHANNEL_CAMPAIGN_TEST_BIN)
 
 # =============================================================================
 # Run targets
@@ -10254,8 +12944,14 @@ e2etest: $(E2E_TEST_BIN)
 	$(Q)echo "Running end_to_end_sim_test (Task 20)..."
 	$(Q)$(E2E_TEST_BIN)
 
+.PHONY: ctest
+ctest: $(CHANNEL_CAMPAIGN_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running channel_campaign_test..."
+	$(Q)$(CHANNEL_CAMPAIGN_TEST_BIN)
+
 .PHONY: alltest
-alltest: tests itest dtest btest rtest ftest e2etest
+alltest: tests itest dtest btest rtest ftest e2etest ctest
 
 # =============================================================================
 # Clean
@@ -10266,7 +12962,333 @@ clean:
 	$(Q)echo "  CLEAN $(BUILD_DIR)"
 	$(Q)rm -rf $(BUILD_DIR)
 
---- FILE: README.md ---
+======================
+FILE: Makefile
+======================
+# =============================================================================
+# Makefile — FSO Gateway
+# =============================================================================
+#
+# Automatic source discovery:  all *.c under src/ are compiled.
+# Include paths:               include/  third_party/wirehair/include/
+# Wirehair:                    compiled from third_party/wirehair/*.cpp
+#                              (no system libwirehair required)
+# Build output:                build/
+#
+# Targets
+# -------
+#   make              — build the main gateway binary
+#   make tests        — build all test binaries
+#   make itest        — run interleaver_test
+#   make dtest        — run deinterleaver_test
+#   make btest        — run burst_sim_test (all modes)
+#   make rtest        — run receiver_robustness_test
+#   make ftest        — run fec_stress_test
+#   make e2etest      — build and run end_to_end_sim_test (Task 20)
+#   make ctest        — build and run channel_campaign_test
+#   make alltest      — build and run all tests
+#   make clean        — remove build directory
+#
+# Flags
+# -----
+#   make DEBUG=1      — add -g -fsanitize=address,undefined
+#   make VERBOSE=1    — echo full compiler commands
+
+# =============================================================================
+# Toolchain
+# =============================================================================
+
+CC  := gcc
+CXX := g++
+AR  := ar
+
+# =============================================================================
+# Directories
+# =============================================================================
+
+SRC_DIR           := src
+INC_DIR           := include
+TEST_DIR          := tests
+WIREHAIR_DIR      := third_party/wirehair
+WIREHAIR_INC      := $(WIREHAIR_DIR)/include
+BUILD_DIR         := build
+OBJ_DIR           := $(BUILD_DIR)/obj
+BIN_DIR           := $(BUILD_DIR)/bin
+WIREHAIR_OBJS_DIR := $(OBJ_DIR)/wirehair
+TEST_OBJS_DIR     := $(OBJ_DIR)/tests
+
+# =============================================================================
+# Source files
+# =============================================================================
+
+SRCS         := $(wildcard $(SRC_DIR)/*.c)
+SRCS_NO_MAIN := $(filter-out $(SRC_DIR)/main.c, $(SRCS))
+
+OBJS         := $(patsubst $(SRC_DIR)/%.c,         $(OBJ_DIR)/%.o,           $(SRCS))
+OBJS_NO_MAIN := $(patsubst $(SRC_DIR)/%.c,         $(OBJ_DIR)/%.o,           $(SRCS_NO_MAIN))
+
+WIREHAIR_SRCS := $(wildcard $(WIREHAIR_DIR)/*.cpp)
+WIREHAIR_OBJS := $(patsubst $(WIREHAIR_DIR)/%.cpp, $(WIREHAIR_OBJS_DIR)/%.o, $(WIREHAIR_SRCS))
+
+TEST_SRCS := $(wildcard $(TEST_DIR)/*.c)
+TEST_OBJS := $(patsubst $(TEST_DIR)/%.c,           $(TEST_OBJS_DIR)/%.o,     $(TEST_SRCS))
+
+# =============================================================================
+# Compiler flags
+# =============================================================================
+
+CFLAGS_BASE := -std=c11 \
+               -I$(INC_DIR) \
+               -I$(WIREHAIR_INC) \
+               -Wall \
+               -Wextra \
+               -Wpedantic \
+               -D_POSIX_C_SOURCE=200112L
+
+CXXFLAGS_BASE := -std=c++11 \
+                 -I$(INC_DIR) \
+                 -I$(WIREHAIR_INC) \
+                 -O2
+
+# gf256.cpp uses _mm_shuffle_epi8 which is an SSSE3 intrinsic.
+# Applied only to the Wirehair compilation rule.
+WIREHAIR_CXXFLAGS_EXTRA := -mssse3
+
+ifeq ($(DEBUG),1)
+    CFLAGS_EXTRA   := -g -O0 -fsanitize=address,undefined
+    CXXFLAGS_EXTRA := -g -O0 -fsanitize=address,undefined
+    LDFLAGS_EXTRA  := -fsanitize=address,undefined
+else
+    CFLAGS_EXTRA   := -O2
+    CXXFLAGS_EXTRA :=
+    LDFLAGS_EXTRA  :=
+endif
+
+CFLAGS   := $(CFLAGS_BASE)   $(CFLAGS_EXTRA)
+CXXFLAGS := $(CXXFLAGS_BASE) $(CXXFLAGS_EXTRA)
+
+# Link with g++ so C++ objects (Wirehair) resolve correctly.
+LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++
+
+ifeq ($(VERBOSE),1)
+    Q :=
+else
+    Q := @
+endif
+
+# =============================================================================
+# Main binary
+# =============================================================================
+
+TARGET := $(BIN_DIR)/fso_gateway
+
+.PHONY: all
+all: $(TARGET)
+
+$(TARGET): $(OBJS) $(WIREHAIR_OBJS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# =============================================================================
+# Object file rules
+# =============================================================================
+
+# C sources under src/
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
+	$(Q)echo "  CC    $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+# Wirehair C++ sources — SSSE3 required for gf256.cpp
+$(WIREHAIR_OBJS_DIR)/%.o: $(WIREHAIR_DIR)/%.cpp | $(WIREHAIR_OBJS_DIR)
+	$(Q)echo "  CXX   $<"
+	$(Q)$(CXX) $(CXXFLAGS) $(WIREHAIR_CXXFLAGS_EXTRA) -c -o $@ $<
+
+# Test C sources
+$(TEST_OBJS_DIR)/%.o: $(TEST_DIR)/%.c | $(TEST_OBJS_DIR)
+	$(Q)echo "  CC    $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+# =============================================================================
+# Directory creation
+# =============================================================================
+
+$(BUILD_DIR) $(OBJ_DIR) $(BIN_DIR) $(WIREHAIR_OBJS_DIR) $(TEST_OBJS_DIR):
+	$(Q)mkdir -p $@
+
+# =============================================================================
+# Test binaries
+# =============================================================================
+
+# ---- interleaver_test -------------------------------------------------------
+INTERLEAVER_TEST_BIN  := $(BIN_DIR)/interleaver_test
+INTERLEAVER_TEST_OBJ  := $(TEST_OBJS_DIR)/interleaver_test.o
+INTERLEAVER_TEST_DEPS := $(OBJ_DIR)/interleaver.o \
+                          $(OBJ_DIR)/logging.o
+
+$(INTERLEAVER_TEST_BIN): $(INTERLEAVER_TEST_OBJ) $(INTERLEAVER_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- deinterleaver_test -----------------------------------------------------
+DEINTERLEAVER_TEST_BIN  := $(BIN_DIR)/deinterleaver_test
+DEINTERLEAVER_TEST_OBJ  := $(TEST_OBJS_DIR)/deinterleaver_test.o
+DEINTERLEAVER_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
+                            $(OBJ_DIR)/interleaver.o \
+                            $(OBJ_DIR)/logging.o
+
+$(DEINTERLEAVER_TEST_BIN): $(DEINTERLEAVER_TEST_OBJ) $(DEINTERLEAVER_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- burst_sim_test ---------------------------------------------------------
+BURST_TEST_BIN  := $(BIN_DIR)/burst_sim_test
+BURST_TEST_OBJ  := $(TEST_OBJS_DIR)/burst_sim_test.o
+BURST_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
+                   $(OBJ_DIR)/fec_wrapper.o \
+                   $(OBJ_DIR)/interleaver.o \
+                   $(OBJ_DIR)/logging.o \
+                   $(WIREHAIR_OBJS)
+
+$(BURST_TEST_BIN): $(BURST_TEST_OBJ) $(BURST_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- receiver_robustness_test -----------------------------------------------
+ROBUSTNESS_TEST_BIN  := $(BIN_DIR)/receiver_robustness_test
+ROBUSTNESS_TEST_OBJ  := $(TEST_OBJS_DIR)/receiver_robustness_test.o
+ROBUSTNESS_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
+                         $(OBJ_DIR)/fec_wrapper.o \
+                         $(OBJ_DIR)/logging.o \
+                         $(WIREHAIR_OBJS)
+
+$(ROBUSTNESS_TEST_BIN): $(ROBUSTNESS_TEST_OBJ) $(ROBUSTNESS_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- fec_stress_test --------------------------------------------------------
+FEC_STRESS_TEST_BIN  := $(BIN_DIR)/fec_stress_test
+FEC_STRESS_TEST_OBJ  := $(TEST_OBJS_DIR)/fec_stress_test.o
+FEC_STRESS_TEST_DEPS := $(OBJ_DIR)/fec_wrapper.o \
+                         $(OBJ_DIR)/logging.o \
+                         $(WIREHAIR_OBJS)
+
+$(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_OBJ) $(FEC_STRESS_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- end_to_end_sim_test  (Task 20) ----------------------------------------
+E2E_TEST_BIN  := $(BIN_DIR)/end_to_end_sim_test
+E2E_TEST_OBJ  := $(TEST_OBJS_DIR)/end_to_end_sim_test.o
+SIM_RUNNER_OBJ := $(TEST_OBJS_DIR)/sim_runner.o
+E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
+                  $(OBJ_DIR)/deinterleaver.o \
+                  $(OBJ_DIR)/fec_wrapper.o \
+                  $(OBJ_DIR)/interleaver.o \
+                  $(OBJ_DIR)/logging.o \
+                  $(OBJ_DIR)/packet_fragmenter.o \
+                  $(OBJ_DIR)/packet_reassembler.o \
+                  $(OBJ_DIR)/stats.o \
+                  $(OBJ_DIR)/symbol.o \
+                  $(SIM_RUNNER_OBJ) \
+                  $(WIREHAIR_OBJS)
+
+$(E2E_TEST_BIN): $(E2E_TEST_OBJ) $(E2E_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- channel_campaign_test --------------------------------------------------
+CHANNEL_CAMPAIGN_TEST_BIN  := $(BIN_DIR)/channel_campaign_test
+CHANNEL_CAMPAIGN_TEST_OBJ  := $(TEST_OBJS_DIR)/channel_campaign_test.o
+CHANNEL_CAMPAIGN_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
+                               $(OBJ_DIR)/deinterleaver.o \
+                               $(OBJ_DIR)/fec_wrapper.o \
+                               $(OBJ_DIR)/interleaver.o \
+                               $(OBJ_DIR)/logging.o \
+                               $(OBJ_DIR)/packet_fragmenter.o \
+                               $(OBJ_DIR)/packet_reassembler.o \
+                               $(OBJ_DIR)/stats.o \
+                               $(OBJ_DIR)/symbol.o \
+                               $(SIM_RUNNER_OBJ) \
+                               $(WIREHAIR_OBJS)
+
+$(CHANNEL_CAMPAIGN_TEST_BIN): $(CHANNEL_CAMPAIGN_TEST_OBJ) $(CHANNEL_CAMPAIGN_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# =============================================================================
+# Grouped test target
+# =============================================================================
+
+.PHONY: tests
+tests: $(INTERLEAVER_TEST_BIN) \
+       $(DEINTERLEAVER_TEST_BIN) \
+       $(BURST_TEST_BIN) \
+       $(ROBUSTNESS_TEST_BIN) \
+       $(FEC_STRESS_TEST_BIN) \
+       $(E2E_TEST_BIN) \
+       $(CHANNEL_CAMPAIGN_TEST_BIN)
+
+# =============================================================================
+# Run targets
+# =============================================================================
+
+.PHONY: itest
+itest: $(INTERLEAVER_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running interleaver_test..."
+	$(Q)$(INTERLEAVER_TEST_BIN)
+
+.PHONY: dtest
+dtest: $(DEINTERLEAVER_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running deinterleaver_test..."
+	$(Q)$(DEINTERLEAVER_TEST_BIN)
+
+.PHONY: btest
+btest: $(BURST_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running burst_sim_test (all modes)..."
+	$(Q)$(BURST_TEST_BIN) all
+
+.PHONY: rtest
+rtest: $(ROBUSTNESS_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running receiver_robustness_test..."
+	$(Q)$(ROBUSTNESS_TEST_BIN)
+
+.PHONY: ftest
+ftest: $(FEC_STRESS_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running fec_stress_test..."
+	$(Q)$(FEC_STRESS_TEST_BIN)
+
+.PHONY: e2etest
+e2etest: $(E2E_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running end_to_end_sim_test (Task 20)..."
+	$(Q)$(E2E_TEST_BIN)
+
+.PHONY: ctest
+ctest: $(CHANNEL_CAMPAIGN_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running channel_campaign_test..."
+	$(Q)$(CHANNEL_CAMPAIGN_TEST_BIN)
+
+.PHONY: alltest
+alltest: tests itest dtest btest rtest ftest e2etest ctest
+
+# =============================================================================
+# Clean
+# =============================================================================
+
+.PHONY: clean
+clean:
+	$(Q)echo "  CLEAN $(BUILD_DIR)"
+	$(Q)rm -rf $(BUILD_DIR)
+
+======================
+FILE: README.md
+======================
 FSO Gateway POC - High-Performance Packet Recovery System
 Overview
 
@@ -10380,3 +13402,470 @@ Roadmap - Upcoming Milestones
 Phase 6: End-to-End Integration – Connecting all modules into a unified real-time data plane
 Phase 7: Real-World Networking – Integration with libpcap and raw sockets (10Gbps target)
 Phase 8: Atmospheric Simulation – Testing under realistic FSO turbulence models
+
+
+
+
+D. Channel Campaign Test Suite (Phase 6 Validation) – NEW
+
+A large-scale statistical simulation framework was introduced to evaluate system performance under realistic burst-loss conditions across many scenarios and repetitions.
+
+Purpose
+
+Unlike deterministic tests (Task 19 / Task 20), this campaign:
+
+Sweeps multiple burst patterns, lengths, and offsets
+Executes hundreds of runs per configuration
+Produces statistical summaries (pass/fail rates, failure modes)
+Identifies real system limits under stochastic conditions
+Test Structure
+
+Each campaign consists of:
+
+Multiple scenarios (burst profiles)
+Multiple runs per scenario (randomized repetitions)
+Per-run:
+Full pipeline execution
+Block-level analysis
+Packet-level validation
+Execution
+
+Run the full campaign:
+
+make clean
+make ctest > build/ctest_full.log 2>&1
+
+Check result:
+
+echo $?
+tail -n 120 build/ctest_full.log
+Output Metrics
+Block-Level Metrics
+total_blocks_attempted
+total_blocks_passed
+total_blocks_failed
+fail_too_many_holes
+fail_insufficient_symbols
+Packet-Level Metrics (NEW)
+packet_fail_missing
+packet_fail_corrupted
+packet_fail_after_successful_block_decode
+packet_level_failure_after_successful_block_decode
+Key Finding (Critical Insight)
+
+The campaign revealed a previously hidden failure mode:
+
+❗ Packets fail even when all FEC blocks decode successfully
+
+Example:
+
+blocks_passed = 100%
+blocks_failed = 0
+BUT:
+packet_fail_after_successful_block_decode > 0
+Root Cause Hypothesis
+
+This indicates a failure after FEC decoding, specifically in:
+
+Packet reconstruction logic
+Symbol-to-packet mapping
+Fragment accumulation
+Completion criteria
+
+In other words:
+
+FEC works perfectly, but packets are not fully reassembled.
+
+Updated Failure Classification
+
+Failures are now clearly separated into:
+
+Block-Level Failures
+Too many holes (> M)
+Insufficient symbols
+Decoder failure
+Packet-Level Failures (NEW)
+Missing fragments after decode
+Packet not completed despite valid blocks
+Campaign Results (Current State)
+
+From latest run:
+
+total_scenarios: 69
+total_runs: 534
+
+Block-level:
+
+total_blocks_failed: 0
+
+Packet-level:
+
+packet_fail_after_successful_block_decode: 37,563
+Burst Recovery Capability
+longest_recoverable_burst: 64 symbols
+first_failing_burst: 65 symbols
+
+This matches theoretical expectations.
+
+Interpretation
+
+The system has reached:
+
+✔ FEC-Level Maturity
+Correct decoding behavior
+Proper interleaving gain
+Accurate burst spreading
+❗ Remaining Issue
+Packet reassembly layer is not yet lossless
+Why This Is Important
+
+This is a major milestone:
+
+The system is no longer limited by FEC
+The remaining gap is purely logical (software layer)
+Debugging scope is now significantly reduced
+Next Focus (Phase 6 Continuation)
+
+The next development effort should focus on:
+
+Packet accumulator correctness
+Fragment tracking (symbol_index / total_symbols)
+Completion detection
+Handling of duplicates / late arrivals
+Ensuring no premature packet discard
+Summary
+
+The campaign test suite transformed validation from:
+
+deterministic correctness → statistical robustness
+
+And revealed:
+
+The system is FEC-correct but not yet packet-complete
+======================
+DIR: third_party/wirehair/include
+======================
+
+----- FILE: third_party/wirehair/include/wirehair/wirehair.h -----
+/*
+    Copyright (c) 2012-2018 Christopher A. Taylor.  All rights reserved.
+
+    Redistribution and use in source and binary forms, with or without
+    modification, are permitted provided that the following conditions are met:
+
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimer in the documentation
+      and/or other materials provided with the distribution.
+    * Neither the name of Wirehair nor the names of its contributors may be
+      used to endorse or promote products derived from this software without
+      specific prior written permission.
+
+    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+    AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+    IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+    ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+    LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+    CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+    SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+    INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+    CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+    ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+    POSSIBILITY OF SUCH DAMAGE.
+*/
+
+#ifndef WIREHAIR_H
+#define WIREHAIR_H
+
+/** \mainpage
+    Wirehair : Fountain Codes in C++
+
+    Wirehair produces a stream of error correction blocks from a data source
+    using an erasure code.  When enough of these blocks are received,
+    the original data can be recovered.  It supports up to 64000 blocks.
+
+    This codec provides full-message reconstruction using the
+    wirehair_recover() function, and can also
+    reconstruct single missing blocks using the
+    wirehair_recover_block() function.
+    It also accelerates retransmission in a store-and-forward system
+    with the wirehair_decoder_becomes_encoder() function.
+*/
+
+#define WIREHAIR_VERSION 2
+
+// Tweak if the functions are exported or statically linked
+//#define WIREHAIR_DLL /* Defined when building/linking as DLL */
+//#define WIREHAIR_BUILDING /* Defined by the library makefile */
+
+#if defined(WIREHAIR_BUILDING)
+# if defined(WIREHAIR_DLL) && defined(_WIN32)
+    #define WIREHAIR_EXPORT __declspec(dllexport)
+# else
+    #define WIREHAIR_EXPORT
+# endif
+#else
+# if defined(WIREHAIR_DLL) && defined(_WIN32)
+    #define WIREHAIR_EXPORT __declspec(dllimport)
+# else
+    #define WIREHAIR_EXPORT extern
+# endif
+#endif
+
+#include <stdint.h>
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+
+//------------------------------------------------------------------------------
+// Shared Constants/Datatypes
+
+/// These are the result codes that can be returned from the API functions
+typedef enum WirehairResult_t
+{
+    /// Success code
+    Wirehair_Success             = 0,
+
+    /// More data is needed to decode.  This is normal and does not indicate a failure
+    Wirehair_NeedMore            = 1,
+
+    // Other values are failure codes:
+
+    /// A function parameter was invalid
+    Wirehair_InvalidInput        = 2,
+
+    /// Encoder needs a better dense seed
+    Wirehair_BadDenseSeed        = 3,
+
+    /// Encoder needs a better peel seed
+    Wirehair_BadPeelSeed         = 4,
+
+    /// N = ceil(messageBytes / blockBytes) is too small.
+    /// Try reducing block_size or use a larger message
+    Wirehair_BadInput_SmallN     = 5,
+
+    /// N = ceil(messageBytes / blockBytes) is too large.
+    /// Try increasing block_size or use a smaller message
+    Wirehair_BadInput_LargeN     = 6,
+
+    /// Not enough extra rows to solve it, must give up
+    Wirehair_ExtraInsufficient   = 7,
+
+    /// An error occurred during the request
+    Wirehair_Error               = 8,
+
+    /// Out of memory
+    Wirehair_OOM                 = 9,
+
+    /// Platform is not supported yet
+    Wirehair_UnsupportedPlatform = 10,
+
+    WirehairResult_Count, /* for asserts */
+    WirehairResult_Padding = 0x7fffffff /* int32_t padding */
+} WirehairResult;
+
+/// Get WirehairResult string function
+WIREHAIR_EXPORT const char *wirehair_result_string(
+    WirehairResult result ///< Result code to convert to string
+);
+
+
+//------------------------------------------------------------------------------
+// Wirehair API
+
+/**
+    wirehair_init()
+
+    Verify binary compatibility with the API on startup.
+
+    Example:
+        if (wirehair_init()) {
+            exit(1);
+        }
+
+    Returns Wirehair_Success on success.
+    Returns other codes on error.
+*/
+WIREHAIR_EXPORT WirehairResult wirehair_init_(int expected_version);
+#define wirehair_init() wirehair_init_(WIREHAIR_VERSION)
+
+/// WirehairCodec: From wirehair_encoder_create() or wirehair_decoder_create()
+typedef struct WirehairCodec_t { char impl; }* WirehairCodec;
+
+
+/**
+    wirehair_encoder_create()
+
+    Encode the given message into blocks of size blockBytes.
+
+    The number of blocks in the message:
+        N = (bytes + (blockBytes-1)) / blockBytes
+
+    If N is too high or too low this function will fail.  In particular if N = 1, then
+    using this type of error correction does not make sense: Sending the same message
+    over and over is just as good.  And if N > 64000 then some internal variables will
+    start to overflow, so too many blocks is unsupported.  The most efficient values
+    for N are around 1000.
+
+    Preconditions:
+        N >= 2
+        N <= 64000
+
+    Pass 0 for reuseOpt if you do not want to reuse a WirehairCodec object.
+
+    Returns a non-zero object pointer on success.
+    Returns nullptr(0) on failure.
+*/
+WIREHAIR_EXPORT WirehairCodec wirehair_encoder_create(
+    WirehairCodec reuseOpt, ///< [Optional] Pointer to prior codec object
+    const void*    message, ///< Pointer to message
+    uint64_t  messageBytes, ///< Bytes in the message
+    uint32_t    blockBytes  ///< Bytes in an output block
+);
+
+/**
+    wirehair_encode()
+
+    Write an error correction block.
+
+    The first `blockId` < N blocks are the same as the input data.
+    This "systematic" property can be used to run the encoder
+    in parallel with sending original data.
+    The `blockId` >= N blocks are generated on demand.
+
+    Preconditions:
+       Block is at least `blockBytes` in size
+
+    Returns Wirehair_Success on success.
+    Returns other codes on error.
+*/
+WIREHAIR_EXPORT WirehairResult wirehair_encode(
+    WirehairCodec    codec, ///< Pointer to codec from wirehair_encoder_init()
+    unsigned       blockId, ///< Identifier of block to generate
+    void*     blockDataOut, ///< Pointer to output block data
+    uint32_t      outBytes, ///< Bytes in the output buffer
+    uint32_t* dataBytesOut  ///< Number of bytes written <= blockBytes
+);
+
+/**
+    wirehair_decoder_create()
+
+    Initialize a decoder for a message of size bytes with blockBytes bytes
+    per received block.  These parameters should match the ones passed to
+    the corresponding wirehair_encoder_create() call.
+
+    Pass 0 for reuseOpt if you do not want to reuse a WirehairCodec object.
+
+    Returns a non-zero object pointer on success.
+    Returns nullptr(0) on failure.
+*/
+WIREHAIR_EXPORT WirehairCodec wirehair_decoder_create(
+    WirehairCodec reuseOpt, ///< Codec object to reuse
+    uint64_t  messageBytes, ///< Bytes in the message to decode
+    uint32_t    blockBytes  ///< Bytes in each encoded block
+);
+
+/**
+    wirehair_decode()
+
+    Provide the decoder with a block from the wirehair_encode() function.
+
+    Preconditions:
+    The application must not provide duplicate data for the same packet.
+    In other words, blockId values cannot be used twice.
+
+    Returns Wirehair_Success if data recovery is complete.
+    + Use wirehair_recover() or wirehair_recover_block()
+      to reconstruct the recovered data.
+    Returns Wirehair_NeedsMoreData if more data is needed to decode.
+    Returns other codes on error.
+*/
+WIREHAIR_EXPORT WirehairResult wirehair_decode(
+    WirehairCodec   codec, ///< Codec object
+    unsigned      blockId, ///< ID number of received block
+    const void* blockData, ///< Pointer to block data
+    uint32_t    dataBytes  ///< Number of bytes in the data block
+);
+
+/**
+    wirehair_recover()
+
+    Reconstruct the message after reading is complete.
+
+    Preconditions:
+    Message contains enough space to store the entire decoded message (bytes)
+
+    Returns Wirehair_Success if the message was recovered.
+    Returns other codes on error.
+*/
+WIREHAIR_EXPORT WirehairResult wirehair_recover(
+    WirehairCodec    codec, ///< Codec object
+    void*       messageOut, ///< Buffer where reconstructed message will be written
+    uint64_t  messageBytes  ///< Bytes in the message
+);
+
+/**
+    wirehair_recover_block()
+
+    Reconstruct a single block of the message after reading is complete.
+    It is much slower than wirehair_recover() for original data, so it
+    is better to avoid calling this function for blockId < N.
+
+    Preconditions:
+    Block ptr buffer contains enough space to hold the block (blockBytes)
+
+    May return non-zero to indicate a failure.
+
+    Returns Wirehair_Success if the block was recovered.
+    Returns other codes on error.
+*/
+WIREHAIR_EXPORT WirehairResult wirehair_recover_block(
+    WirehairCodec codec, ///< Codec object
+    unsigned    blockId, ///< ID of the block to reconstruct between 0..N-1
+    void*     blockData, ///< Pointer to block data
+    uint32_t*  bytesOut  ///< Set to the number of data bytes in the block
+);
+
+/**
+    wirehair_decoder_becomes_encoder()
+
+    Convert a decoder WirehairCodec into an encoder WirehairCodec
+    after recovery is complete.  This enables the application to
+    receive a message and then retransmit it without reinitializing
+    the encoder from scratch.
+
+    Note that after converting the codec to an encoder, calling the
+    wirehair_encode() function to retrieve original data will be
+    much slower than accessing the original data directly on the
+    application side.
+
+    Preconditions:
+    wirehair_decoder_read() returned Wirehair_Success
+
+    Returns Wirehair_Success if the operation was successful.
+    Returns other codes on error.
+*/
+WIREHAIR_EXPORT WirehairResult wirehair_decoder_becomes_encoder(
+    WirehairCodec codec ///< Codec to change
+);
+
+/**
+    wirehair_free()
+
+    Free memory associated with a WirehairCodec object.
+*/
+WIREHAIR_EXPORT void wirehair_free(
+    WirehairCodec codec ///< Codec object to free
+);
+
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // WIREHAIR_H
+

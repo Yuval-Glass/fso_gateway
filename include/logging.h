@@ -56,6 +56,26 @@ int log_init(void);
 int log_shutdown(void);
 
 /**
+ * @brief Set the minimum log level that will be emitted.
+ *
+ * Messages with a severity below this threshold are suppressed.
+ * For example, setting INFO will suppress DEBUG messages while keeping
+ * INFO/WARN/ERROR visible.
+ *
+ * @param level The minimum severity that should be printed.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int log_set_level(log_level level);
+
+/**
+ * @brief Get the current minimum log level threshold.
+ *
+ * @return The currently active minimum log level.
+ */
+log_level log_get_level(void);
+
+/**
  * @brief Emit a formatted log message in a thread-safe manner.
  *
  * This function creates a timestamp, resolves the current thread ID,

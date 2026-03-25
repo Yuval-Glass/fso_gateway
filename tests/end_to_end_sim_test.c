@@ -71,6 +71,7 @@
 #include "fec_wrapper.h"
 #include "interleaver.h"
 #include "logging.h"
+#include "sim_runner.h"
 #include "packet_fragmenter.h"
 #include "packet_reassembler.h"
 #include "stats.h"
@@ -1047,6 +1048,24 @@ static void finalize_packet_stats(sim_t *ctx)
 }
 
 /* ==========================================================================
+ * sim_runner integration glue
+ *
+ * Task 20 remains source-of-truth and still executes its original internal
+ * TX/RX pipeline.  We initialize shared runtime state through sim_runner so
+ * campaign and Task 20 tests use the same global setup path.
+ * ==========================================================================*/
+
+static int init_task20_runtime(void)
+{
+    if (sim_runner_global_init() != 0) {
+        return -1;
+    }
+
+    stats_set_burst_fec_span((uint64_t)(SIM_M * SIM_DEPTH));
+    return 0;
+}
+
+/* ==========================================================================
  * main
  * ==========================================================================*/
 
@@ -1060,8 +1079,6 @@ int main(void)
     memset(&ctx, 0, sizeof(ctx));
 
     log_init();
-    stats_init();
-    stats_set_burst_fec_span((uint64_t)(SIM_M * SIM_DEPTH));
 
     printf("================================================================\n");
     printf("  FSO Gateway — Task 20: Full End-to-End Simulation\n");
@@ -1071,8 +1088,8 @@ int main(void)
            SIM_NUM_BLOCKS, SIM_NUM_WINDOWS, SIM_BURST_LEN, SIM_BURST_START);
     printf("================================================================\n\n");
 
-    if (wirehair_init() != Wirehair_Success) {
-        fprintf(stderr, "[E2E] FATAL: wirehair_init() failed\n");
+    if (init_task20_runtime() != 0) {
+        fprintf(stderr, "[E2E] FATAL: sim_runner_global_init() failed\n");
         return 1;
     }
 

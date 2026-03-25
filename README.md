@@ -111,3 +111,143 @@ Roadmap - Upcoming Milestones
 Phase 6: End-to-End Integration – Connecting all modules into a unified real-time data plane
 Phase 7: Real-World Networking – Integration with libpcap and raw sockets (10Gbps target)
 Phase 8: Atmospheric Simulation – Testing under realistic FSO turbulence models
+
+
+
+
+D. Channel Campaign Test Suite (Phase 6 Validation) – NEW
+
+A large-scale statistical simulation framework was introduced to evaluate system performance under realistic burst-loss conditions across many scenarios and repetitions.
+
+Purpose
+
+Unlike deterministic tests (Task 19 / Task 20), this campaign:
+
+Sweeps multiple burst patterns, lengths, and offsets
+Executes hundreds of runs per configuration
+Produces statistical summaries (pass/fail rates, failure modes)
+Identifies real system limits under stochastic conditions
+Test Structure
+
+Each campaign consists of:
+
+Multiple scenarios (burst profiles)
+Multiple runs per scenario (randomized repetitions)
+Per-run:
+Full pipeline execution
+Block-level analysis
+Packet-level validation
+Execution
+
+Run the full campaign:
+
+make clean
+make ctest > build/ctest_full.log 2>&1
+
+Check result:
+
+echo $?
+tail -n 120 build/ctest_full.log
+Output Metrics
+Block-Level Metrics
+total_blocks_attempted
+total_blocks_passed
+total_blocks_failed
+fail_too_many_holes
+fail_insufficient_symbols
+Packet-Level Metrics (NEW)
+packet_fail_missing
+packet_fail_corrupted
+packet_fail_after_successful_block_decode
+packet_level_failure_after_successful_block_decode
+Key Finding (Critical Insight)
+
+The campaign revealed a previously hidden failure mode:
+
+❗ Packets fail even when all FEC blocks decode successfully
+
+Example:
+
+blocks_passed = 100%
+blocks_failed = 0
+BUT:
+packet_fail_after_successful_block_decode > 0
+Root Cause Hypothesis
+
+This indicates a failure after FEC decoding, specifically in:
+
+Packet reconstruction logic
+Symbol-to-packet mapping
+Fragment accumulation
+Completion criteria
+
+In other words:
+
+FEC works perfectly, but packets are not fully reassembled.
+
+Updated Failure Classification
+
+Failures are now clearly separated into:
+
+Block-Level Failures
+Too many holes (> M)
+Insufficient symbols
+Decoder failure
+Packet-Level Failures (NEW)
+Missing fragments after decode
+Packet not completed despite valid blocks
+Campaign Results (Current State)
+
+From latest run:
+
+total_scenarios: 69
+total_runs: 534
+
+Block-level:
+
+total_blocks_failed: 0
+
+Packet-level:
+
+packet_fail_after_successful_block_decode: 37,563
+Burst Recovery Capability
+longest_recoverable_burst: 64 symbols
+first_failing_burst: 65 symbols
+
+This matches theoretical expectations.
+
+Interpretation
+
+The system has reached:
+
+✔ FEC-Level Maturity
+Correct decoding behavior
+Proper interleaving gain
+Accurate burst spreading
+❗ Remaining Issue
+Packet reassembly layer is not yet lossless
+Why This Is Important
+
+This is a major milestone:
+
+The system is no longer limited by FEC
+The remaining gap is purely logical (software layer)
+Debugging scope is now significantly reduced
+Next Focus (Phase 6 Continuation)
+
+The next development effort should focus on:
+
+Packet accumulator correctness
+Fragment tracking (symbol_index / total_symbols)
+Completion detection
+Handling of duplicates / late arrivals
+Ensuring no premature packet discard
+Summary
+
+The campaign test suite transformed validation from:
+
+deterministic correctness → statistical robustness
+
+And revealed:
+
+The system is FEC-correct but not yet packet-complete

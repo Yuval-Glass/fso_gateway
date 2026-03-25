@@ -18,6 +18,7 @@
 #   make rtest        — run receiver_robustness_test
 #   make ftest        — run fec_stress_test
 #   make e2etest      — build and run end_to_end_sim_test (Task 20)
+#   make ctest        — build and run channel_campaign_test
 #   make alltest      — build and run all tests
 #   make clean        — remove build directory
 #
@@ -211,6 +212,7 @@ $(FEC_STRESS_TEST_BIN): $(FEC_STRESS_TEST_OBJ) $(FEC_STRESS_TEST_DEPS) | $(BIN_D
 # ---- end_to_end_sim_test  (Task 20) ----------------------------------------
 E2E_TEST_BIN  := $(BIN_DIR)/end_to_end_sim_test
 E2E_TEST_OBJ  := $(TEST_OBJS_DIR)/end_to_end_sim_test.o
+SIM_RUNNER_OBJ := $(TEST_OBJS_DIR)/sim_runner.o
 E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
                   $(OBJ_DIR)/deinterleaver.o \
                   $(OBJ_DIR)/fec_wrapper.o \
@@ -220,9 +222,29 @@ E2E_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
                   $(OBJ_DIR)/packet_reassembler.o \
                   $(OBJ_DIR)/stats.o \
                   $(OBJ_DIR)/symbol.o \
+                  $(SIM_RUNNER_OBJ) \
                   $(WIREHAIR_OBJS)
 
 $(E2E_TEST_BIN): $(E2E_TEST_OBJ) $(E2E_TEST_DEPS) | $(BIN_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+# ---- channel_campaign_test --------------------------------------------------
+CHANNEL_CAMPAIGN_TEST_BIN  := $(BIN_DIR)/channel_campaign_test
+CHANNEL_CAMPAIGN_TEST_OBJ  := $(TEST_OBJS_DIR)/channel_campaign_test.o
+CHANNEL_CAMPAIGN_TEST_DEPS := $(OBJ_DIR)/block_builder.o \
+                               $(OBJ_DIR)/deinterleaver.o \
+                               $(OBJ_DIR)/fec_wrapper.o \
+                               $(OBJ_DIR)/interleaver.o \
+                               $(OBJ_DIR)/logging.o \
+                               $(OBJ_DIR)/packet_fragmenter.o \
+                               $(OBJ_DIR)/packet_reassembler.o \
+                               $(OBJ_DIR)/stats.o \
+                               $(OBJ_DIR)/symbol.o \
+                               $(SIM_RUNNER_OBJ) \
+                               $(WIREHAIR_OBJS)
+
+$(CHANNEL_CAMPAIGN_TEST_BIN): $(CHANNEL_CAMPAIGN_TEST_OBJ) $(CHANNEL_CAMPAIGN_TEST_DEPS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
 	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
 
@@ -236,7 +258,8 @@ tests: $(INTERLEAVER_TEST_BIN) \
        $(BURST_TEST_BIN) \
        $(ROBUSTNESS_TEST_BIN) \
        $(FEC_STRESS_TEST_BIN) \
-       $(E2E_TEST_BIN)
+       $(E2E_TEST_BIN) \
+       $(CHANNEL_CAMPAIGN_TEST_BIN)
 
 # =============================================================================
 # Run targets
@@ -278,8 +301,14 @@ e2etest: $(E2E_TEST_BIN)
 	$(Q)echo "Running end_to_end_sim_test (Task 20)..."
 	$(Q)$(E2E_TEST_BIN)
 
+.PHONY: ctest
+ctest: $(CHANNEL_CAMPAIGN_TEST_BIN)
+	$(Q)echo ""
+	$(Q)echo "Running channel_campaign_test..."
+	$(Q)$(CHANNEL_CAMPAIGN_TEST_BIN)
+
 .PHONY: alltest
-alltest: tests itest dtest btest rtest ftest e2etest
+alltest: tests itest dtest btest rtest ftest e2etest ctest
 
 # =============================================================================
 # Clean

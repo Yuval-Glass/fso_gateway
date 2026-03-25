@@ -358,7 +358,7 @@ static int maybe_freeze_slot(slot_t                *s,
         if (s->valid_symbols >= K && holes <= M) {
             s->state = BLOCK_READY_TO_DECODE;
             stats->blocks_ready++;
-            LOG_WARN("[DIL] Block %u → READY_TO_DECODE "
+            LOG_INFO("[DIL] Block %u → READY_TO_DECODE "
                      "(timeout %.1f ms: valid=%d/%d holes=%d)",
                      (unsigned)s->block_id,
                      timeout_ms, s->valid_symbols, N, holes);

@@ -48,6 +48,15 @@ static pthread_mutex_t g_log_mutex;
 static int g_log_initialized = 0;
 
 /**
+ * @brief Current minimum severity threshold for emitted messages.
+ *
+ * Messages with a level numerically lower than this threshold are suppressed.
+ * The default remains DEBUG so existing workflows preserve current verbosity
+ * unless a caller explicitly raises the threshold.
+ */
+static log_level g_log_min_level = DEBUG;
+
+/**
  * @brief Convert a log level enum value to a printable string.
  *
  * @param level The log level to convert.
@@ -161,6 +170,7 @@ int log_init(void)
     }
 
     g_log_initialized = 1;
+    g_log_min_level = DEBUG;
     return 0;
 }
 
@@ -185,6 +195,33 @@ int log_shutdown(void)
 
     g_log_initialized = 0;
     return 0;
+}
+
+/**
+ * @brief Set the minimum severity level that will be emitted.
+ *
+ * @param level The new threshold.
+ *
+ * @return 0 on success, -1 on failure.
+ */
+int log_set_level(log_level level)
+{
+    if (level < DEBUG || level > ERROR) {
+        return -1;
+    }
+
+    g_log_min_level = level;
+    return 0;
+}
+
+/**
+ * @brief Get the current minimum severity threshold.
+ *
+ * @return The active threshold.
+ */
+log_level log_get_level(void)
+{
+    return g_log_min_level;
 }
 
 /**
@@ -219,6 +256,10 @@ int log_msg(log_level level, const char *fmt, ...)
 
     if (!g_log_initialized || fmt == NULL) {
         return -1;
+    }
+
+    if (level < g_log_min_level) {
+        return 0;
     }
 
     if (format_timestamp(timestamp, sizeof(timestamp)) != 0) {

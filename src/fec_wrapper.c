@@ -15,21 +15,19 @@
  *
  * Source-First Feeding
  * --------------------
- *   build_feed_order() partitions valid symbols into:
- *     source  (fec_id < K)  — fed first
- *     repair  (fec_id >= K) — fed second
- *   This minimises iterations in the common no-loss / low-loss case.
- *   It uses the upper half of a 2×scan_capacity buffer as scratch space
- *   for the repair partition, avoiding an extra allocation.
+ *   Valid source symbols (fec_id < K) are fed first.
+ *   Valid repair symbols (fec_id >= K) are fed second.
  *
- * Return codes
- * ------------
- *   FEC_DECODE_OK              (0)  — success.
- *   FEC_DECODE_ERR            (-1)  — generic failure.
- *   FEC_DECODE_TOO_MANY_HOLES (-2)  — holes > M; block is irrecoverable.
+ * Runtime telemetry
+ * -----------------
+ *   The decoder records telemetry for the last decode attempt:
+ *     - block_id
+ *     - number_of_symbols_received
+ *     - number_of_missing_symbols
+ *     - number_of_repair_symbols_used
+ *     - decode_success
  *
- *   All three symbols are defined in include/fec_wrapper.h (public API).
- *   No magic integers are used in this file.
+ *   sim_runner.c reads this via local extern declarations.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -44,204 +42,145 @@
 #include "logging.h"
 #include "types.h"
 
-/* -------------------------------------------------------------------------- */
-/* Internal constants                                                          */
-/* -------------------------------------------------------------------------- */
-
-#define FEC_ALIGNMENT_BYTES 64U
-
-/* -------------------------------------------------------------------------- */
-/* Internal context                                                            */
-/* -------------------------------------------------------------------------- */
-
 struct fec_ctx {
-    int    k;
-    int    symbol_size;
-    size_t block_bytes;   /* k * symbol_size */
+    int k;
+    int symbol_size;
+    int block_bytes;
 };
 
-/* -------------------------------------------------------------------------- */
-/* Private helpers                                                             */
-/* -------------------------------------------------------------------------- */
+typedef struct fec_decode_telemetry_t {
+    uint64_t block_id;
+    int      number_of_symbols_received;
+    int      number_of_missing_symbols;
+    int      number_of_repair_symbols_used;
+    int      decode_success;
+} fec_decode_telemetry_t;
 
-static void *alloc_aligned(size_t size)
+static uint64_t                g_current_decode_block_id = 0U;
+static fec_decode_telemetry_t  g_last_decode_telemetry;
+
+static void fec_clear_last_decode_telemetry(void)
 {
-    void *ptr = NULL;
-
-    if (size == 0U) { return NULL; }
-
-    if (posix_memalign(&ptr, FEC_ALIGNMENT_BYTES, size) != 0) { return NULL; }
-
-    memset(ptr, 0, size);
-    return ptr;
+    memset(&g_last_decode_telemetry, 0, sizeof(g_last_decode_telemetry));
+    g_last_decode_telemetry.block_id = g_current_decode_block_id;
 }
 
-static int is_aligned_64(const void *ptr)
+void fec_set_current_decode_block_id(uint64_t block_id)
 {
-    return (((uintptr_t)ptr & (uintptr_t)(FEC_ALIGNMENT_BYTES - 1U)) == 0U);
+    g_current_decode_block_id = block_id;
 }
 
-/*
- * symbol_slot_is_valid() — true if symbols[pos] is a usable decoding input.
- *
- * Conditions:
- *   - pos in [0, scan_capacity).
- *   - payload_len > 0  (not an erasure hole).
- *   - payload_len == ctx->symbol_size  (full-size; no partial symbols).
- *   - fec_id in [0, scan_capacity).
- *   - sparse mode: fec_id == pos  (slot is indexed by its own fec_id).
- */
-static int symbol_slot_is_valid(const struct fec_ctx *ctx,
-                                const symbol_t       *symbols,
-                                int                   pos,
-                                int                   scan_capacity,
-                                int                   sparse_mode)
+void fec_get_last_decode_telemetry(fec_decode_telemetry_t *out)
 {
-    const symbol_t *sym;
-
-    if (ctx == NULL || symbols == NULL || pos < 0 || pos >= scan_capacity) {
-        return 0;
+    if (out == NULL) {
+        return;
     }
 
-    sym = &symbols[pos];
-
-    if (sym->payload_len == 0) { return 0; }
-    if ((int)sym->payload_len != ctx->symbol_size) { return 0; }
-    if ((int)sym->fec_id < 0 || (int)sym->fec_id >= scan_capacity) { return 0; }
-    if (sparse_mode && (int)sym->fec_id != pos) { return 0; }
-
-    return 1;
+    *out = g_last_decode_telemetry;
 }
 
-static int count_valid_symbols(const struct fec_ctx *ctx,
-                               const symbol_t       *symbols,
-                               int                   scan_capacity,
-                               int                   sparse_mode)
+static int fec_count_valid_symbols(const symbol_t *symbols, int scan_capacity)
 {
-    int pos, valid = 0;
+    int i;
+    int count = 0;
 
-    for (pos = 0; pos < scan_capacity; ++pos) {
-        if (symbol_slot_is_valid(ctx, symbols, pos, scan_capacity,
-                                 sparse_mode)) {
-            valid++;
+    for (i = 0; i < scan_capacity; ++i) {
+        if (symbols[i].payload_len > 0U) {
+            count++;
         }
     }
 
-    return valid;
+    return count;
 }
 
-/*
- * build_feed_order() — populate out_order with valid-symbol positions,
- * source symbols (fec_id < K) first, then repair symbols (fec_id >= K).
- *
- * out_order must have capacity of at least 2 * scan_capacity ints.
- * The upper half is used as temporary storage for the repair partition
- * before the final memmove concatenation.
- *
- * Returns total count of valid symbols, or -1 on error.
- */
-static int build_feed_order(const struct fec_ctx *ctx,
-                            symbol_t             *symbols,
-                            int                   scan_capacity,
-                            int                   sparse_mode,
-                            int                  *out_order)
+static int fec_build_feed_order(const symbol_t *symbols,
+                                int             scan_capacity,
+                                int             k,
+                                int            *order_out,
+                                int            *repair_available_out)
 {
-    int *src_buf;
-    int *rep_buf;
-    int  src_count = 0, repair_count = 0;
-    int  pos;
+    int i;
+    int pos = 0;
+    int repair_available = 0;
 
-    if (ctx == NULL || symbols == NULL || out_order == NULL ||
-        scan_capacity < 1) {
-        return -1;
-    }
-
-    src_buf = out_order;
-    rep_buf = out_order + scan_capacity;   /* upper half — temporary */
-
-    for (pos = 0; pos < scan_capacity; ++pos) {
-        if (!symbol_slot_is_valid(ctx, symbols, pos, scan_capacity,
-                                  sparse_mode)) {
+    for (i = 0; i < scan_capacity; ++i) {
+        if (symbols[i].payload_len == 0U) {
             continue;
         }
 
-        if ((int)symbols[pos].fec_id < ctx->k) {
-            src_buf[src_count++] = pos;
-        } else {
-            rep_buf[repair_count++] = pos;
+        if ((int)symbols[i].fec_id < k) {
+            order_out[pos++] = i;
         }
     }
 
-    /* Concatenate: repair portion follows source portion */
-    memmove(out_order + src_count, rep_buf,
-            (size_t)repair_count * sizeof(int));
+    for (i = 0; i < scan_capacity; ++i) {
+        if (symbols[i].payload_len == 0U) {
+            continue;
+        }
 
-    return src_count + repair_count;
+        if ((int)symbols[i].fec_id >= k) {
+            order_out[pos++] = i;
+            repair_available++;
+        }
+    }
+
+    if (repair_available_out != NULL) {
+        *repair_available_out = repair_available;
+    }
+
+    return pos;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Lifecycle                                                                   */
-/* -------------------------------------------------------------------------- */
 
 fec_handle_t fec_create(int k, int symbol_size)
 {
     struct fec_ctx *ctx;
 
     if (k < 2 || symbol_size <= 0) {
-        LOG_ERROR("[FEC] fec_create: invalid k=%d symbol_size=%d",
+        LOG_ERROR("[FEC] fec_create: invalid parameters k=%d symbol_size=%d",
                   k, symbol_size);
         return NULL;
     }
 
-    ctx = (struct fec_ctx *)malloc(sizeof(struct fec_ctx));
+    ctx = (struct fec_ctx *)calloc(1U, sizeof(*ctx));
     if (ctx == NULL) {
-        LOG_ERROR("[FEC] fec_create: malloc failed");
+        LOG_ERROR("[FEC] fec_create: calloc failed");
         return NULL;
     }
 
     ctx->k           = k;
     ctx->symbol_size = symbol_size;
-    ctx->block_bytes = (size_t)k * (size_t)symbol_size;
+    ctx->block_bytes = k * symbol_size;
 
-    LOG_INFO("[FEC] Context: k=%d symbol_size=%d block_bytes=%zu",
-             k, symbol_size, ctx->block_bytes);
+    LOG_INFO("[FEC] Created: k=%d symbol_size=%d block_bytes=%d",
+             ctx->k, ctx->symbol_size, ctx->block_bytes);
 
     return ctx;
 }
 
 void fec_destroy(fec_handle_t handle)
 {
-    if (handle != NULL) { free(handle); }
+    free(handle);
 }
 
-/* -------------------------------------------------------------------------- */
-/* Encoding                                                                    */
-/* -------------------------------------------------------------------------- */
-
-int fec_encode_block(fec_handle_t         handle,
-                     const unsigned char *source_data,
-                     symbol_t            *out_repair_symbols,
-                     int                  m)
+int fec_encode_block(fec_handle_t          handle,
+                     const unsigned char  *source_data,
+                     symbol_t             *out_repair_symbols,
+                     int                   m)
 {
-    struct fec_ctx *ctx        = (struct fec_ctx *)handle;
-    WirehairCodec   encoder    = NULL;
-    unsigned char  *symbol_buf = NULL;
-    int             result     = FEC_DECODE_ERR;
-    int             i;
+    struct fec_ctx   *ctx = handle;
+    WirehairCodec    encoder = NULL;
+    unsigned char    *symbol_buf = NULL;
+    int               result = FEC_DECODE_ERR;
+    int               i;
 
-    if (ctx == NULL || source_data == NULL ||
-        out_repair_symbols == NULL || m < 1) {
-        LOG_ERROR("[FEC] fec_encode_block: invalid argument");
+    if (ctx == NULL || source_data == NULL || out_repair_symbols == NULL || m < 1) {
+        LOG_ERROR("[FEC] fec_encode_block: invalid arguments");
         return FEC_DECODE_ERR;
     }
 
-    if (!is_aligned_64(source_data)) {
-        LOG_WARN("[FEC] fec_encode_block: source_data not 64-byte aligned");
-    }
-
-    symbol_buf = (unsigned char *)alloc_aligned((size_t)ctx->symbol_size);
+    symbol_buf = (unsigned char *)calloc((size_t)ctx->symbol_size, sizeof(unsigned char));
     if (symbol_buf == NULL) {
-        LOG_ERROR("[FEC] fec_encode_block: alloc_aligned failed");
+        LOG_ERROR("[FEC] fec_encode_block: symbol buffer allocation failed");
         return FEC_DECODE_ERR;
     }
 
@@ -255,40 +194,45 @@ int fec_encode_block(fec_handle_t         handle,
     }
 
     for (i = 0; i < m; ++i) {
-        uint32_t       bytes_out     = 0;
+        uint32_t       bytes_out     = 0U;
         uint32_t       repair_fec_id = (uint32_t)(ctx->k + i);
         WirehairResult wr;
 
         memset(symbol_buf, 0, (size_t)ctx->symbol_size);
 
-        wr = wirehair_encode(encoder, repair_fec_id, symbol_buf,
-                             (uint32_t)ctx->symbol_size, &bytes_out);
+        wr = wirehair_encode(encoder,
+                             repair_fec_id,
+                             symbol_buf,
+                             (uint32_t)ctx->symbol_size,
+                             &bytes_out);
 
         if (wr != Wirehair_Success ||
             bytes_out != (uint32_t)ctx->symbol_size) {
             LOG_ERROR("[FEC] fec_encode_block: wirehair_encode() failed "
                       "fec_id=%u wr=%d bytes_out=%u",
-                      (unsigned)repair_fec_id, (int)wr, (unsigned)bytes_out);
+                      (unsigned)repair_fec_id,
+                      (int)wr,
+                      (unsigned)bytes_out);
             goto cleanup;
         }
 
+        memset(&out_repair_symbols[i], 0, sizeof(symbol_t));
         out_repair_symbols[i].fec_id      = repair_fec_id;
         out_repair_symbols[i].payload_len = (uint16_t)bytes_out;
-        memcpy(out_repair_symbols[i].data, symbol_buf,
+        memcpy(out_repair_symbols[i].data,
+               symbol_buf,
                (size_t)ctx->symbol_size);
     }
 
     result = FEC_DECODE_OK;
 
 cleanup:
-    if (encoder != NULL) { wirehair_free(encoder); }
+    if (encoder != NULL) {
+        wirehair_free(encoder);
+    }
     free(symbol_buf);
     return result;
 }
-
-/* -------------------------------------------------------------------------- */
-/* Decoding                                                                    */
-/* -------------------------------------------------------------------------- */
 
 int fec_decode_block(fec_handle_t   handle,
                      symbol_t      *symbols,
@@ -296,151 +240,241 @@ int fec_decode_block(fec_handle_t   handle,
                      int            scan_capacity,
                      unsigned char *out_reconstructed)
 {
-    struct fec_ctx  *ctx           = (struct fec_ctx *)handle;
-    WirehairCodec    decoder       = NULL;
-    int             *feed_order    = NULL;
-    int              feed_count;
-    int              valid_symbols;
-    int              holes;
-    int              m_available;
-    int              sparse_mode;
-    int              fed           = 0;
-    int              pos_index;
-    int              decoder_ready = 0;
-    int              result        = FEC_DECODE_ERR;
+    struct fec_ctx    *ctx = handle;
+    WirehairCodec      decoder = NULL;
+    int               *feed_order = NULL;
+    int                valid_received;
+    int                repair_available = 0;
+    int                feed_count;
+    int                effective_n;
+    int                missing_count;
+    int                m_limit;
+    int                result = FEC_DECODE_ERR;
+    int                repair_used = 0;
+    int                fed;
+    int                decode_success = 0;
 
-    if (ctx == NULL || symbols == NULL || out_reconstructed == NULL) {
-        LOG_ERROR("[FEC] fec_decode_block: NULL argument");
+    fec_clear_last_decode_telemetry();
+
+    if (ctx == NULL || symbols == NULL || out_reconstructed == NULL ||
+        symbol_count < 0 || scan_capacity < 0) {
+        LOG_ERROR("[FEC] fec_decode_block: invalid arguments");
         return FEC_DECODE_ERR;
     }
 
-    if (symbol_count < 0 ||
-        scan_capacity < 1 ||
-        scan_capacity > MAX_SYMBOLS_PER_BLOCK) {
-        LOG_ERROR("[FEC] fec_decode_block: invalid counts "
-                  "symbol_count=%d scan_capacity=%d",
-                  symbol_count, scan_capacity);
+    if (scan_capacity < symbol_count) {
+        scan_capacity = symbol_count;
+    }
+
+    valid_received = fec_count_valid_symbols(symbols, scan_capacity);
+    effective_n    = scan_capacity;
+    missing_count  = (effective_n > valid_received) ? (effective_n - valid_received) : 0;
+    m_limit        = (effective_n > ctx->k) ? (effective_n - ctx->k) : 0;
+
+    g_last_decode_telemetry.block_id                    = g_current_decode_block_id;
+    g_last_decode_telemetry.number_of_symbols_received  = valid_received;
+    g_last_decode_telemetry.number_of_missing_symbols   = missing_count;
+    g_last_decode_telemetry.number_of_repair_symbols_used = 0;
+    g_last_decode_telemetry.decode_success              = 0;
+
+    if (valid_received < ctx->k) {
+        LOG_WARN("[FEC] fec_decode_block: block=%llu insufficient symbols "
+                 "received=%d required=%d",
+                 (unsigned long long)g_current_decode_block_id,
+                 valid_received,
+                 ctx->k);
         return FEC_DECODE_ERR;
     }
 
-    sparse_mode   = (scan_capacity > symbol_count);
-    valid_symbols = count_valid_symbols(ctx, symbols, scan_capacity,
-                                        sparse_mode);
-    holes         = scan_capacity - valid_symbols;
-    m_available   = scan_capacity - ctx->k;
-    if (m_available < 0) { m_available = 0; }
-
-    /*
-     * holes > M: irrecoverable.
-     * Return FEC_DECODE_TOO_MANY_HOLES (-2) so callers can distinguish
-     * this from a generic internal failure (FEC_DECODE_ERR = -1).
-     */
-    if (holes > m_available) {
-        LOG_ERROR("[FEC] fec_decode_block: FEC_DECODE_TOO_MANY_HOLES "
-                  "holes=%d > M=%d (valid=%d k=%d scan_capacity=%d)",
-                  holes, m_available, valid_symbols, ctx->k, scan_capacity);
+    if (effective_n > ctx->k && missing_count > m_limit) {
+        LOG_WARN("[FEC] fec_decode_block: block=%llu too many holes "
+                 "received=%d missing=%d m=%d",
+                 (unsigned long long)g_current_decode_block_id,
+                 valid_received,
+                 missing_count,
+                 m_limit);
         return FEC_DECODE_TOO_MANY_HOLES;
     }
 
-    if (valid_symbols < ctx->k) {
-        LOG_ERROR("[FEC] fec_decode_block: insufficient valid symbols "
-                  "(valid=%d k=%d holes=%d scan_capacity=%d)",
-                  valid_symbols, ctx->k, holes, scan_capacity);
+    feed_order = (int *)calloc((size_t)scan_capacity, sizeof(int));
+    if (feed_order == NULL) {
+        LOG_ERROR("[FEC] fec_decode_block: feed_order allocation failed");
         return FEC_DECODE_ERR;
     }
 
-    if (!is_aligned_64(out_reconstructed)) {
-        LOG_WARN("[FEC] fec_decode_block: out_reconstructed not 64-byte aligned");
-    }
-
-    LOG_DEBUG("[FEC] decode: valid=%d holes=%d k=%d M=%d scan=%d sparse=%d",
-              valid_symbols, holes, ctx->k, m_available,
-              scan_capacity, sparse_mode);
+    feed_count = fec_build_feed_order(symbols,
+                                      scan_capacity,
+                                      ctx->k,
+                                      feed_order,
+                                      &repair_available);
 
     decoder = wirehair_decoder_create(NULL,
                                       (uint64_t)ctx->block_bytes,
                                       (uint32_t)ctx->symbol_size);
     if (decoder == NULL) {
         LOG_ERROR("[FEC] fec_decode_block: wirehair_decoder_create() failed");
-        return FEC_DECODE_ERR;
-    }
-
-    /*
-     * 2 × scan_capacity so build_feed_order() can use the upper half as
-     * a temporary repair-symbol scratch buffer.
-     */
-    feed_order = (int *)malloc(sizeof(int) * (size_t)scan_capacity * 2);
-    if (feed_order == NULL) {
-        LOG_ERROR("[FEC] fec_decode_block: malloc(feed_order) failed");
         goto cleanup;
     }
 
-    feed_count = build_feed_order(ctx, symbols, scan_capacity,
-                                  sparse_mode, feed_order);
-    if (feed_count < 0) {
-        LOG_ERROR("[FEC] fec_decode_block: build_feed_order() failed");
-        goto cleanup;
-    }
-
-    for (pos_index = 0; pos_index < feed_count; ++pos_index) {
-        int            pos = feed_order[pos_index];
-        WirehairResult wr;
+    for (fed = 0; fed < feed_count; ++fed) {
+        const symbol_t   *sym = &symbols[feed_order[fed]];
+        WirehairResult    wr;
 
         wr = wirehair_decode(decoder,
-                             symbols[pos].fec_id,
-                             symbols[pos].data,
-                             (uint32_t)ctx->symbol_size);
-        fed++;
+                             sym->fec_id,
+                             sym->data,
+                             (uint32_t)sym->payload_len);
+
+        if ((int)sym->fec_id >= ctx->k) {
+            repair_used++;
+        }
 
         if (wr == Wirehair_Success) {
-            decoder_ready = 1;
-            LOG_DEBUG("[FEC] decoder success at fed=%d fec_id=%u holes=%d",
-                      fed, (unsigned)symbols[pos].fec_id, holes);
-            break;   /* MUST break — re-calling after success segfaults */
+            decode_success = 1;
+            break;
         }
 
-        if (wr != Wirehair_NeedMore) {
-            LOG_ERROR("[FEC] wirehair_decode() error "
-                      "pos=%d fec_id=%u wr=%d fed=%d",
-                      pos, (unsigned)symbols[pos].fec_id, (int)wr, fed);
-            goto cleanup;
+        if (wr == Wirehair_NeedMore) {
+            continue;
         }
-    }
 
-    if (!decoder_ready) {
-        LOG_ERROR("[FEC] decoder never reached success "
-                  "(fed=%d valid=%d holes=%d k=%d scan=%d)",
-                  fed, valid_symbols, holes, ctx->k, scan_capacity);
+        LOG_ERROR("[FEC] fec_decode_block: block=%llu wirehair_decode failed "
+                  "fec_id=%u wr=%d after fed=%d",
+                  (unsigned long long)g_current_decode_block_id,
+                  (unsigned)sym->fec_id,
+                  (int)wr,
+                  fed + 1);
         goto cleanup;
     }
 
-    memset(out_reconstructed, 0, ctx->block_bytes);
+    if (!decode_success) {
+        LOG_WARN("[FEC] fec_decode_block: block=%llu decode incomplete "
+                 "received=%d missing=%d repair_avail=%d repair_used=%d",
+                 (unsigned long long)g_current_decode_block_id,
+                 valid_received,
+                 missing_count,
+                 repair_available,
+                 repair_used);
+        goto cleanup;
+    }
+
+    memset(out_reconstructed, 0, (size_t)ctx->block_bytes);
 
     {
-        WirehairResult wr = wirehair_recover(decoder, out_reconstructed,
-                                             (uint64_t)ctx->block_bytes);
+        WirehairResult wr;
+
+        wr = wirehair_recover(decoder,
+                              out_reconstructed,
+                              (uint64_t)ctx->block_bytes);
         if (wr != Wirehair_Success) {
-            LOG_ERROR("[FEC] wirehair_recover() failed wr=%d", (int)wr);
+            LOG_ERROR("[FEC] fec_decode_block: block=%llu wirehair_recover failed wr=%d",
+                      (unsigned long long)g_current_decode_block_id,
+                      (int)wr);
             goto cleanup;
         }
     }
 
-    LOG_DEBUG("[FEC] recovered OK (fed=%d valid=%d holes=%d)",
-              fed, valid_symbols, holes);
+    g_last_decode_telemetry.number_of_repair_symbols_used = repair_used;
+    g_last_decode_telemetry.decode_success                = 1;
+
+    LOG_INFO("[FEC] decode telemetry: block=%llu received=%d missing=%d repair=%d success=YES",
+             (unsigned long long)g_last_decode_telemetry.block_id,
+             g_last_decode_telemetry.number_of_symbols_received,
+             g_last_decode_telemetry.number_of_missing_symbols,
+             g_last_decode_telemetry.number_of_repair_symbols_used);
 
     result = FEC_DECODE_OK;
 
 cleanup:
+    if (result != FEC_DECODE_OK) {
+        g_last_decode_telemetry.number_of_repair_symbols_used = repair_used;
+        g_last_decode_telemetry.decode_success                = 0;
+
+        LOG_INFO("[FEC] decode telemetry: block=%llu received=%d missing=%d repair=%d success=NO",
+                 (unsigned long long)g_last_decode_telemetry.block_id,
+                 g_last_decode_telemetry.number_of_symbols_received,
+                 g_last_decode_telemetry.number_of_missing_symbols,
+                 g_last_decode_telemetry.number_of_repair_symbols_used);
+    }
+
+    if (decoder != NULL) {
+        wirehair_free(decoder);
+    }
     free(feed_order);
-    if (decoder != NULL) { wirehair_free(decoder); }
     return result;
 }
 
-/* -------------------------------------------------------------------------- */
-/* Self-test                                                                   */
-/* -------------------------------------------------------------------------- */
-
 int fec_run_self_test(void)
 {
-    return FEC_DECODE_OK;
+    enum {
+        TEST_K = 8,
+        TEST_M = 2,
+        TEST_SYMBOL_SIZE = 128
+    };
+
+    fec_handle_t   fec = NULL;
+    unsigned char *source = NULL;
+    unsigned char *recon  = NULL;
+    symbol_t       repairs[TEST_M];
+    symbol_t       received[TEST_K + TEST_M];
+    int            i;
+    int            rc = -1;
+
+    fec = fec_create(TEST_K, TEST_SYMBOL_SIZE);
+    if (fec == NULL) {
+        return -1;
+    }
+
+    source = (unsigned char *)calloc((size_t)TEST_K * TEST_SYMBOL_SIZE, sizeof(unsigned char));
+    recon  = (unsigned char *)calloc((size_t)TEST_K * TEST_SYMBOL_SIZE, sizeof(unsigned char));
+    if (source == NULL || recon == NULL) {
+        goto cleanup;
+    }
+
+    for (i = 0; i < TEST_K * TEST_SYMBOL_SIZE; ++i) {
+        source[i] = (unsigned char)((i * 17 + 3) & 0xFF);
+    }
+
+    if (fec_encode_block(fec, source, repairs, TEST_M) != FEC_DECODE_OK) {
+        goto cleanup;
+    }
+
+    memset(received, 0, sizeof(received));
+
+    for (i = 0; i < TEST_K; ++i) {
+        received[i].fec_id      = (uint32_t)i;
+        received[i].payload_len = TEST_SYMBOL_SIZE;
+        memcpy(received[i].data,
+               source + (size_t)i * TEST_SYMBOL_SIZE,
+               TEST_SYMBOL_SIZE);
+    }
+
+    for (i = 0; i < TEST_M; ++i) {
+        received[TEST_K + i] = repairs[i];
+    }
+
+    memset(&received[3], 0, sizeof(symbol_t));
+
+    fec_set_current_decode_block_id(0U);
+
+    if (fec_decode_block(fec,
+                         received,
+                         TEST_K + TEST_M - 1,
+                         TEST_K + TEST_M,
+                         recon) != FEC_DECODE_OK) {
+        goto cleanup;
+    }
+
+    if (memcmp(source, recon, (size_t)TEST_K * TEST_SYMBOL_SIZE) != 0) {
+        LOG_ERROR("[FEC] fec_run_self_test: reconstructed payload mismatch");
+        goto cleanup;
+    }
+
+    rc = 0;
+
+cleanup:
+    free(source);
+    free(recon);
+    fec_destroy(fec);
+    return rc;
 }
