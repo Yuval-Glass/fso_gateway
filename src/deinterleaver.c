@@ -108,6 +108,12 @@ struct deinterleaver {
     slot_t *slots;
 
     dil_stats_t stats;
+
+    deinterleaver_block_final_cb_t final_cb;
+    void                          *final_cb_user;
+
+    deinterleaver_eviction_cb_t    eviction_cb;
+    void                          *eviction_cb_user;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -127,6 +133,37 @@ static inline int bitset_test(const uint8_t *mask, int pos)
 /* -------------------------------------------------------------------------- */
 /* Clock helpers                                                               */
 /* -------------------------------------------------------------------------- */
+
+static void slot_reset(slot_t *s);
+
+static void emit_block_final_reason(deinterleaver_t *self,
+                                   uint32_t          block_id,
+                                   deinterleaver_block_final_reason_t reason)
+{
+    if (self == NULL || reason == DIL_BLOCK_FINAL_NONE) {
+        return;
+    }
+
+    if (self->final_cb != NULL) {
+        self->final_cb(block_id, reason, self->final_cb_user);
+    }
+}
+
+static void finalize_and_reset_slot(deinterleaver_t                      *self,
+                                    slot_t                               *s,
+                                    deinterleaver_block_final_reason_t    reason)
+{
+    uint32_t block_id;
+
+    if (self == NULL || s == NULL || s->state == BLOCK_EMPTY) {
+        return;
+    }
+
+    block_id = s->block_id;
+    emit_block_final_reason(self, block_id, reason);
+    slot_reset(s);
+}
+
 
 static void now_monotonic(struct timespec *ts)
 {
@@ -247,7 +284,51 @@ static slot_t *alloc_slot(deinterleaver_t       *self,
                   oldest_ready_age,
                   (unsigned)block_id);
         self->stats.evicted_done_blocks++;
-        slot_reset(oldest_ready);
+
+        if (self->eviction_cb != NULL) {
+            dil_eviction_info_t ei;
+            int                 si;
+            int                 ac = 0;
+
+            memset(&ei, 0, sizeof(ei));
+            ei.incoming_block_id = (uint64_t)block_id;
+            ei.slot_index        = (uint32_t)(oldest_ready - self->slots);
+            ei.valid_symbols     = (uint32_t)oldest_ready->valid_symbols;
+            ei.holes             = (uint32_t)(self->symbols_per_block -
+                                              oldest_ready->valid_symbols);
+            ei.expected_symbols  = (uint32_t)self->symbols_per_block;
+
+            for (si = 0; si < self->max_active_blocks; ++si) {
+                if (self->slots[si].state != BLOCK_EMPTY) {
+                    ac++;
+                }
+            }
+            ei.active_blocks     = (uint32_t)ac;
+            ei.max_active_blocks = (uint32_t)self->max_active_blocks;
+
+            ei.snapshot_count = 0;
+            for (si = 0; si < self->max_active_blocks &&
+                         ei.snapshot_count < DIL_EVICTION_SNAPSHOT_MAX; ++si) {
+                slot_t *ss = &self->slots[si];
+                uint32_t idx = ei.snapshot_count;
+                ei.snapshot_indices[idx]       = (uint32_t)si;
+                ei.snapshot_states[idx]        =
+                    (ss->state == BLOCK_EMPTY)           ? 'E' :
+                    (ss->state == BLOCK_FILLING)         ? 'F' : 'R';
+                ei.snapshot_block_ids[idx]     = (uint64_t)ss->block_id;
+                ei.snapshot_valid_symbols[idx] = (uint32_t)ss->valid_symbols;
+                ei.snapshot_count++;
+            }
+
+            self->eviction_cb(oldest_ready->block_id,
+                              DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK,
+                              &ei,
+                              self->eviction_cb_user);
+        }
+
+        finalize_and_reset_slot(self,
+                                oldest_ready,
+                                DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK);
         init_slot(oldest_ready, block_id, self->symbols_per_block,
                   self->k, now);
         return oldest_ready;
@@ -263,7 +344,51 @@ static slot_t *alloc_slot(deinterleaver_t       *self,
                  self->symbols_per_block,
                  (unsigned)block_id);
         self->stats.evicted_filling_blocks++;
-        slot_reset(oldest_filling);
+
+        if (self->eviction_cb != NULL) {
+            dil_eviction_info_t ei;
+            int                 si;
+            int                 ac = 0;
+
+            memset(&ei, 0, sizeof(ei));
+            ei.incoming_block_id = (uint64_t)block_id;
+            ei.slot_index        = (uint32_t)(oldest_filling - self->slots);
+            ei.valid_symbols     = (uint32_t)oldest_filling->valid_symbols;
+            ei.holes             = (uint32_t)(self->symbols_per_block -
+                                              oldest_filling->valid_symbols);
+            ei.expected_symbols  = (uint32_t)self->symbols_per_block;
+
+            for (si = 0; si < self->max_active_blocks; ++si) {
+                if (self->slots[si].state != BLOCK_EMPTY) {
+                    ac++;
+                }
+            }
+            ei.active_blocks     = (uint32_t)ac;
+            ei.max_active_blocks = (uint32_t)self->max_active_blocks;
+
+            ei.snapshot_count = 0;
+            for (si = 0; si < self->max_active_blocks &&
+                         ei.snapshot_count < DIL_EVICTION_SNAPSHOT_MAX; ++si) {
+                slot_t *ss = &self->slots[si];
+                uint32_t idx = ei.snapshot_count;
+                ei.snapshot_indices[idx]       = (uint32_t)si;
+                ei.snapshot_states[idx]        =
+                    (ss->state == BLOCK_EMPTY)           ? 'E' :
+                    (ss->state == BLOCK_FILLING)         ? 'F' : 'R';
+                ei.snapshot_block_ids[idx]     = (uint64_t)ss->block_id;
+                ei.snapshot_valid_symbols[idx] = (uint32_t)ss->valid_symbols;
+                ei.snapshot_count++;
+            }
+
+            self->eviction_cb(oldest_filling->block_id,
+                              DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE,
+                              &ei,
+                              self->eviction_cb_user);
+        }
+
+        finalize_and_reset_slot(self,
+                                oldest_filling,
+                                DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE);
         init_slot(oldest_filling, block_id, self->symbols_per_block,
                   self->k, now);
         return oldest_filling;
@@ -282,12 +407,19 @@ static slot_t *alloc_slot(deinterleaver_t       *self,
  *
  * Checks (in order):
  *   (a) Full: valid_symbols == N → READY_TO_DECODE.
- *   (b) Stabilization: valid >= K AND quiet >= stab_ms:
- *         holes <= M → READY_TO_DECODE.
- *         holes >  M → irrecoverable; return FREEZE_RECYCLE.
+ *   (b) Stabilization / early-promotion (valid >= K):
+ *         stab_ms == 0.0 — immediate promotion:
+ *           holes <= M -> READY_TO_DECODE immediately (no quiet wait).
+ *           holes >  M -> unrecoverable; return FREEZE_RECYCLE immediately.
+ *         stab_ms > 0.0 — classic quiet-period gate:
+ *           quiet >= stab_ms AND holes <= M -> READY_TO_DECODE.
+ *           quiet >= stab_ms AND holes >  M -> irrecoverable; FREEZE_RECYCLE.
  *   (c) Hard timeout (age >= timeout_ms):
- *         valid >= K AND holes <= M → READY_TO_DECODE.
- *         otherwise                 → irrecoverable; return FREEZE_RECYCLE.
+ *         valid >= K AND holes <= M -> READY_TO_DECODE.
+ *         otherwise                 -> irrecoverable; return FREEZE_RECYCLE.
+ *
+ * The stab_ms == 0.0 immediate-promotion path prevents recoverable FILLING
+ * blocks from being evicted before decode when the active block window fills.
  *
  * Returns:
  *   FREEZE_NONE    (0) — no transition; slot remains FILLING.
@@ -327,9 +459,40 @@ static int maybe_freeze_slot(slot_t                *s,
     age_ms = elapsed_ms(&s->first_sym_time, now);
 
     /* ------------------------------------------------------------------ */
-    /* (b) Stabilization quiet period                                     */
+    /* (b) Stabilization / early-promotion                                */
+    /*                                                                    */
+    /* stab_ms > 0.0  — classic quiet-period gate: promote only after    */
+    /*                  no new symbol has arrived for stab_ms.            */
+    /* stab_ms == 0.0 — immediate-promotion: as soon as valid >= K and   */
+    /*                  holes <= M the block is decodable; do not hold it */
+    /*                  in FILLING where it risks eviction before decode. */
     /* ------------------------------------------------------------------ */
-    if (stab_ms > 0.0 && s->valid_symbols >= K) {
+    if (s->valid_symbols >= K) {
+        if (stab_ms == 0.0) {
+            /* Immediate-promotion path: no quiet period required. */
+            if (holes > M) {
+                /*
+                 * Already unrecoverable — holes exceed the FEC budget.
+                 * More symbols cannot arrive for fec_ids already lost,
+                 * so the block is permanently undecodable.  Recycle now.
+                 */
+                stats->blocks_failed_holes++;
+                LOG_WARN("[DIL] Block %u → recycle (unrecoverable: "
+                         "holes=%d > M=%d, valid=%d)",
+                         (unsigned)s->block_id, holes, M, s->valid_symbols);
+                return FREEZE_RECYCLE;
+            }
+
+            s->state = BLOCK_READY_TO_DECODE;
+            stats->blocks_ready++;
+            LOG_INFO("[DIL] Block %u → READY_TO_DECODE "
+                     "(early-promote: valid=%d/%d holes=%d)",
+                     (unsigned)s->block_id,
+                     s->valid_symbols, N, holes);
+            return FREEZE_READY;
+        }
+
+        /* Classic stabilization quiet-period gate (stab_ms > 0.0). */
         quiet_ms = elapsed_ms(&s->last_sym_time, now);
 
         if (quiet_ms >= stab_ms) {
@@ -443,6 +606,32 @@ void deinterleaver_destroy(deinterleaver_t *self)
     free(self);
 }
 
+int deinterleaver_set_block_final_callback(deinterleaver_t               *self,
+                                           deinterleaver_block_final_cb_t cb,
+                                           void                          *user)
+{
+    if (self == NULL) {
+        return -1;
+    }
+
+    self->final_cb = cb;
+    self->final_cb_user = user;
+    return 0;
+}
+
+int deinterleaver_set_eviction_callback(deinterleaver_t             *self,
+                                        deinterleaver_eviction_cb_t  cb,
+                                        void                        *user)
+{
+    if (self == NULL) {
+        return -1;
+    }
+
+    self->eviction_cb      = cb;
+    self->eviction_cb_user = user;
+    return 0;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Ingestion                                                                   */
 /* -------------------------------------------------------------------------- */
@@ -452,6 +641,7 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
     slot_t         *slot;
     int             fec_pos;
     int             freeze_rc;
+    int             holes;
     struct timespec now;
 
     if (self == NULL || sym == NULL) {
@@ -556,9 +746,15 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
          * Recycle the slot directly to EMPTY — it was never READY so it
          * cannot be retrieved via get_ready_block().
          */
+        holes = self->symbols_per_block - slot->valid_symbols;
         LOG_DEBUG("[DIL] Block %u irrecoverable at insertion — recycling",
                   (unsigned)slot->block_id);
-        slot_reset(slot);
+        finalize_and_reset_slot(
+            self,
+            slot,
+            (holes > self->m)
+                ? DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE
+                : DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE);
         return 0;
     }
 
@@ -642,7 +838,11 @@ int deinterleaver_mark_result(deinterleaver_t *self,
     LOG_INFO("[DIL] mark_result: block_id=%u %s → EMPTY",
              (unsigned)block_id, success ? "(success)" : "(failure)");
 
-    slot_reset(s);   /* → BLOCK_EMPTY */
+    finalize_and_reset_slot(self,
+                            s,
+                            success
+                                ? DIL_BLOCK_FINAL_DECODE_SUCCESS
+                                : DIL_BLOCK_FINAL_DECODE_FAILED);
     return 0;
 }
 
@@ -698,13 +898,20 @@ int deinterleaver_tick(deinterleaver_t *self, double override_timeout_ms)
         }
 
         if (freeze_rc == FREEZE_RECYCLE) {
+            int holes = self->symbols_per_block - s->valid_symbols;
+
             /*
              * Block is irrecoverable — it was never READY and cannot be
              * retrieved.  Recycle to EMPTY so the slot pool is not drained.
              */
             LOG_DEBUG("[DIL] tick: recycling irrecoverable block_id=%u",
                       (unsigned)s->block_id);
-            slot_reset(s);
+            finalize_and_reset_slot(
+                self,
+                s,
+                (holes > self->m)
+                    ? DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE
+                    : DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE);
         }
     }
 

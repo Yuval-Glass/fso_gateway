@@ -1,4 +1,3 @@
-
 /*
  * tests/channel_campaign_test.c — FSO Channel Campaign Test (Task 21).
  *
@@ -45,39 +44,6 @@
 #define DEFAULT_REPEATS 8
 
 /* =========================================================================
- * sim_runner reporting API
- * =========================================================================*/
-
-enum {
-    SR_FAIL_NONE = 0,
-    SR_FAIL_TOO_MANY_HOLES = 1,
-    SR_FAIL_INSUFFICIENT_SYMBOLS = 2,
-    SR_FAIL_PACKET_AFTER_BLOCK_DECODE = 3
-};
-
-typedef struct {
-    uint64_t blocks_attempted;
-    uint64_t blocks_passed;
-    uint64_t blocks_failed;
-
-    uint64_t fail_too_many_holes;
-    uint64_t fail_insufficient_symbols;
-
-    uint64_t packet_fail_missing;
-    uint64_t packet_fail_corrupted;
-    uint64_t packet_fail_after_successful_block_decode;
-
-    uint64_t max_missing_symbols_in_block;
-    double   avg_missing_symbols_in_failed_blocks;
-
-    uint64_t failed_missing_sum;
-    uint64_t failed_missing_count;
-} sr_run_report_t;
-
-extern void sim_runner_get_last_run_report(sr_run_report_t *out);
-extern const char *sim_runner_failure_reason_name(int reason);
-
-/* =========================================================================
  * Scenario descriptor
  * =========================================================================*/
 
@@ -106,16 +72,37 @@ typedef struct {
     uint64_t failed_runs;
     uint64_t pipeline_errors;
 
-    uint64_t total_blocks_attempted;
-    uint64_t total_blocks_passed;
-    uint64_t total_blocks_failed;
+    uint64_t blocks_total_expected;
+    uint64_t blocks_attempted_for_decode;
+    uint64_t blocks_decode_success;
+    uint64_t blocks_decode_failed;
+    uint64_t blocks_discarded_before_decode;
 
-    uint64_t fail_too_many_holes;
-    uint64_t fail_insufficient_symbols;
+    uint64_t blocks_discarded_timeout_before_decode;
+    uint64_t blocks_discarded_too_many_holes_before_decode;
+    uint64_t blocks_discarded_evicted_before_decode;
+    uint64_t blocks_discarded_ready_evicted_before_mark;
 
     uint64_t packet_fail_missing;
     uint64_t packet_fail_corrupted;
+    uint64_t packet_fail_due_to_missing_blocks;
     uint64_t packet_fail_after_successful_block_decode;
+
+    uint64_t oracle_valid_runs;
+    uint64_t oracle_invalid_runs;
+    uint64_t oracle_blocks_theoretically_recoverable;
+    uint64_t oracle_blocks_theoretically_unrecoverable;
+    uint64_t oracle_recoverable_but_not_decoded_successfully;
+    uint64_t oracle_unrecoverable_and_not_decoded_successfully;
+    uint64_t oracle_recoverable_but_discarded_before_decode;
+    uint64_t oracle_recoverable_but_decode_failed;
+
+    uint64_t suspicious_runs_count;
+    uint64_t suspicious_blocks_total;
+    uint64_t suspicious_discarded_timeout_before_decode;
+    uint64_t suspicious_discarded_too_many_holes_before_decode;
+    uint64_t suspicious_discarded_evicted_before_decode;
+    uint64_t suspicious_discarded_ready_evicted_before_mark;
 
     uint64_t worst_missing_symbols_seen;
     double   failed_blocks_sum_per_run;
@@ -206,25 +193,41 @@ static const char *log_level_name(log_level level)
     }
 }
 
+static const char *snapshot_state_tag(int state)
+{
+    switch (state) {
+        case 0: return "E";
+        case 1: return "F";
+        case 2: return "R";
+        default: return "?";
+    }
+}
+
 static const char *dominant_failure_reason_name(const scenario_agg_t *agg)
 {
     uint64_t block_failures =
-        agg->fail_too_many_holes + agg->fail_insufficient_symbols;
-    uint64_t packet_after =
-        agg->packet_fail_after_successful_block_decode;
+        agg->blocks_decode_failed + agg->blocks_discarded_before_decode;
+    uint64_t packet_missing_blocks = agg->packet_fail_due_to_missing_blocks;
+    uint64_t packet_after = agg->packet_fail_after_successful_block_decode;
 
-    if (block_failures == 0U && packet_after == 0U) {
+    if (block_failures == 0U && packet_missing_blocks == 0U && packet_after == 0U) {
         return "none";
     }
 
-    if (agg->fail_too_many_holes >= agg->fail_insufficient_symbols &&
-        agg->fail_too_many_holes >= packet_after) {
-        return "too_many_holes";
+    if (agg->blocks_discarded_before_decode >= agg->blocks_decode_failed &&
+        agg->blocks_discarded_before_decode >= packet_missing_blocks &&
+        agg->blocks_discarded_before_decode >= packet_after) {
+        return "discarded_before_decode";
     }
 
-    if (agg->fail_insufficient_symbols >= agg->fail_too_many_holes &&
-        agg->fail_insufficient_symbols >= packet_after) {
-        return "insufficient_symbols";
+    if (agg->blocks_decode_failed >= agg->blocks_discarded_before_decode &&
+        agg->blocks_decode_failed >= packet_missing_blocks &&
+        agg->blocks_decode_failed >= packet_after) {
+        return "decode_failed";
+    }
+
+    if (packet_missing_blocks >= packet_after) {
+        return "packet_fail_due_to_missing_blocks";
     }
 
     return "packet_fail_after_block_decode";
@@ -300,6 +303,128 @@ static int parse_campaign_log_level(int argc, char **argv, log_level *level_out)
     }
 
     return 0;
+}
+
+static void print_suspicious_block_line(const char                   *scenario_group,
+                                        const char                   *scenario_name,
+                                        int                           run_idx,
+                                        const sr_oracle_block_diag_t *diag)
+{
+    const char *final_reason;
+    const char *evicted_before_decode;
+    const char *timed_out;
+    char        snapshot[512];
+    size_t      used;
+    uint32_t    i;
+
+    if (diag == NULL) {
+        return;
+    }
+
+    final_reason = sim_runner_block_final_reason_name(diag->final_reason);
+    evicted_before_decode =
+        (diag->discarded_evicted_before_decode ||
+         diag->discarded_ready_evicted_before_mark) ? "YES" : "NO";
+    timed_out =
+        (diag->discarded_timeout_before_decode ||
+         diag->discarded_too_many_holes_before_decode) ? "YES" : "NO";
+
+    if (diag->has_eviction_trace) {
+        used = (size_t)snprintf(snapshot, sizeof(snapshot), "[");
+        if (used >= sizeof(snapshot)) {
+            used = sizeof(snapshot) - 1U;
+        }
+
+        for (i = 0; i < diag->eviction_snapshot_count && used + 2U < sizeof(snapshot); ++i) {
+            int written;
+
+            written = snprintf(snapshot + used,
+                               sizeof(snapshot) - used,
+                               "%sidx%u:%c:block%" PRIu64 ":v%u",
+                               (i == 0U) ? "" : "|",
+                               diag->eviction_snapshot_indices[i],
+                               diag->eviction_snapshot_states[i],
+                               diag->eviction_snapshot_block_ids[i],
+                               diag->eviction_snapshot_valid_symbols[i]);
+            if (written < 0) {
+                break;
+            }
+            if ((size_t)written >= (sizeof(snapshot) - used)) {
+                used = sizeof(snapshot) - 1U;
+                break;
+            }
+            used += (size_t)written;
+        }
+
+        if (used + 2U < sizeof(snapshot)) {
+            snapshot[used++] = ']';
+            snapshot[used] = '\0';
+        } else {
+            snapshot[sizeof(snapshot) - 2U] = ']';
+            snapshot[sizeof(snapshot) - 1U] = '\0';
+        }
+
+        printf("[SUSPICIOUS BLOCK] "
+               "scenario=%s/%s run=%d block=%" PRIu64
+               " survived=%" PRIu64
+               " missing=%" PRIu64
+               " source=%" PRIu64
+               " repair=%" PRIu64
+               " oracle_recoverable=YES"
+               " final_reason=%s"
+               " evicted_before_decode=%s"
+               " timed_out=%s"
+               " eviction_incoming_block_id=%" PRIu64
+               " eviction_slot_index=%u"
+               " eviction_valid_symbols=%u"
+               " eviction_holes=%u"
+               " eviction_expected_symbols=%u"
+               " eviction_active_blocks=%u"
+               " eviction_max_active_blocks=%u"
+               " snapshot=%s\n",
+               scenario_group,
+               scenario_name,
+               run_idx,
+               diag->block_id,
+               diag->survived_symbols,
+               diag->missing_symbols,
+               diag->source_symbols_survived,
+               diag->repair_symbols_survived,
+               final_reason,
+               evicted_before_decode,
+               timed_out,
+               diag->eviction_incoming_block_id,
+               diag->eviction_slot_index,
+               diag->eviction_valid_symbols,
+               diag->eviction_holes,
+               diag->eviction_expected_symbols,
+               diag->eviction_active_blocks,
+               diag->eviction_max_active_blocks,
+               snapshot);
+    } else {
+        printf("[SUSPICIOUS BLOCK] "
+               "scenario=%s/%s run=%d block=%" PRIu64
+               " survived=%" PRIu64
+               " missing=%" PRIu64
+               " source=%" PRIu64
+               " repair=%" PRIu64
+               " oracle_recoverable=YES"
+               " final_reason=%s"
+               " evicted_before_decode=%s"
+               " timed_out=%s"
+               " eviction_trace=NONE\n",
+               scenario_group,
+               scenario_name,
+               run_idx,
+               diag->block_id,
+               diag->survived_symbols,
+               diag->missing_symbols,
+               diag->source_symbols_survived,
+               diag->repair_symbols_survived,
+               final_reason,
+               evicted_before_decode,
+               timed_out);
+    }
 }
 
 /* =========================================================================
@@ -697,9 +822,18 @@ static void csv_write_header(FILE *f)
             "group,name,repeat,seed,"
             "event_description,"
             "transmitted_packets,recovered_packets,exact_match_packets,"
-            "blocks_attempted,blocks_passed,blocks_failed,"
-            "fail_too_many_holes,fail_insufficient_symbols,"
-            "packet_fail_missing,packet_fail_corrupted,packet_fail_after_successful_block_decode,"
+            "blocks_total_expected,blocks_attempted_for_decode,blocks_decode_success,blocks_decode_failed,"
+            "blocks_discarded_before_decode,blocks_discarded_timeout_before_decode,"
+            "blocks_discarded_too_many_holes_before_decode,blocks_discarded_evicted_before_decode,"
+            "blocks_discarded_ready_evicted_before_mark,"
+            "packet_fail_missing,packet_fail_corrupted,packet_fail_due_to_missing_blocks,"
+            "packet_fail_after_successful_block_decode,"
+            "oracle_valid_for_run,"
+            "oracle_blocks_theoretically_recoverable,oracle_blocks_theoretically_unrecoverable,"
+            "oracle_recoverable_but_not_decoded_successfully,"
+            "oracle_unrecoverable_and_not_decoded_successfully,"
+            "oracle_recoverable_but_discarded_before_decode,oracle_recoverable_but_decode_failed,"
+            "suspicious_blocks_in_run,"
             "worst_missing_symbols_seen,pass_fail\n");
 }
 
@@ -710,7 +844,8 @@ static void csv_write_row(FILE                     *f,
                           uint32_t                  seed,
                           const sim_run_request_t  *req,
                           const sim_result_t       *r,
-                          const sr_run_report_t    *rr)
+                          const sr_run_report_t    *rr,
+                          uint64_t                  suspicious_blocks_in_run)
 {
     char event_desc[256];
     int  pass;
@@ -722,9 +857,14 @@ static void csv_write_row(FILE                     *f,
             "%s,%s,%d,%u,"
             "\"%s\","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
-            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%s,"
             "%" PRIu64 ",%" PRIu64 ","
-            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ","
             "%" PRIu64 ",%s\n",
             group,
             name,
@@ -734,14 +874,27 @@ static void csv_write_row(FILE                     *f,
             r->transmitted_packets,
             r->recovered_packets,
             r->exact_match_packets,
-            rr->blocks_attempted,
-            rr->blocks_passed,
-            rr->blocks_failed,
-            rr->fail_too_many_holes,
-            rr->fail_insufficient_symbols,
+            rr->blocks_total_expected,
+            rr->blocks_attempted_for_decode,
+            rr->blocks_decode_success,
+            rr->blocks_decode_failed,
+            rr->blocks_discarded_before_decode,
+            rr->blocks_discarded_timeout_before_decode,
+            rr->blocks_discarded_too_many_holes_before_decode,
+            rr->blocks_discarded_evicted_before_decode,
+            rr->blocks_discarded_ready_evicted_before_mark,
             rr->packet_fail_missing,
             rr->packet_fail_corrupted,
+            rr->packet_fail_due_to_missing_blocks,
             rr->packet_fail_after_successful_block_decode,
+            rr->oracle_valid_for_run ? "true" : "false",
+            rr->oracle_blocks_theoretically_recoverable,
+            rr->oracle_blocks_theoretically_unrecoverable,
+            rr->oracle_recoverable_but_not_decoded_successfully,
+            rr->oracle_unrecoverable_and_not_decoded_successfully,
+            rr->oracle_recoverable_but_discarded_before_decode,
+            rr->oracle_recoverable_but_decode_failed,
+            suspicious_blocks_in_run,
             rr->max_missing_symbols_in_block,
             pass ? "PASS" : "FAIL");
 }
@@ -754,15 +907,18 @@ static void print_run_line(const char               *group,
                            const char               *name,
                            int                       repeat,
                            const sim_result_t       *r,
-                           const sr_run_report_t    *rr)
+                           const sr_run_report_t    *rr,
+                           uint64_t                  suspicious_blocks_in_run)
 {
     const char *status =
         (r->missing_packets == 0U && r->corrupted_packets == 0U) ? "PASS" : "FAIL";
 
     printf("  [%s/%s] rep=%d status=%s "
            "pkts=%" PRIu64 "/%" PRIu64 " "
-           "blocks=%" PRIu64 "/%" PRIu64 " "
-           "holes=%" PRIu64 " insufficient=%" PRIu64 " packet_after=%" PRIu64
+           "decode=%" PRIu64 "/%" PRIu64 " "
+           "discarded=%" PRIu64 " packet_missing_blocks=%" PRIu64 " packet_after=%" PRIu64
+           " oracle_valid=%s suspicious_blocks=%" PRIu64
+           " oracle_recov_discarded=%" PRIu64
            " worst_missing=%" PRIu64 "\n",
            group,
            name,
@@ -770,32 +926,59 @@ static void print_run_line(const char               *group,
            status,
            r->recovered_packets,
            r->transmitted_packets,
-           rr->blocks_passed,
-           rr->blocks_attempted,
-           rr->fail_too_many_holes,
-           rr->fail_insufficient_symbols,
+           rr->blocks_decode_success,
+           rr->blocks_attempted_for_decode,
+           rr->blocks_discarded_before_decode,
+           rr->packet_fail_due_to_missing_blocks,
            rr->packet_fail_after_successful_block_decode,
+           rr->oracle_valid_for_run ? "true" : "false",
+           suspicious_blocks_in_run,
+           rr->oracle_recoverable_but_discarded_before_decode,
            rr->max_missing_symbols_in_block);
 }
 
-static void print_run_summary(const sr_run_report_t *rr)
+static void print_run_summary(const sr_run_report_t *rr,
+                              uint64_t               suspicious_blocks_in_run)
 {
     printf("    [RUN SUMMARY]\n");
-    printf("      blocks_attempted=%" PRIu64 "\n", rr->blocks_attempted);
-    printf("      blocks_passed=%" PRIu64 "\n", rr->blocks_passed);
-    printf("      blocks_failed=%" PRIu64 "\n", rr->blocks_failed);
-    printf("      fail_too_many_holes=%" PRIu64 "\n", rr->fail_too_many_holes);
-    printf("      fail_insufficient_symbols=%" PRIu64 "\n", rr->fail_insufficient_symbols);
+    printf("      blocks_total_expected=%" PRIu64 "\n", rr->blocks_total_expected);
+    printf("      blocks_attempted_for_decode=%" PRIu64 "\n", rr->blocks_attempted_for_decode);
+    printf("      blocks_decode_success=%" PRIu64 "\n", rr->blocks_decode_success);
+    printf("      blocks_decode_failed=%" PRIu64 "\n", rr->blocks_decode_failed);
+    printf("      blocks_discarded_before_decode=%" PRIu64 "\n", rr->blocks_discarded_before_decode);
+    printf("      blocks_discarded_timeout_before_decode=%" PRIu64 "\n",
+           rr->blocks_discarded_timeout_before_decode);
+    printf("      blocks_discarded_too_many_holes_before_decode=%" PRIu64 "\n",
+           rr->blocks_discarded_too_many_holes_before_decode);
+    printf("      blocks_discarded_evicted_before_decode=%" PRIu64 "\n",
+           rr->blocks_discarded_evicted_before_decode);
+    printf("      blocks_discarded_ready_evicted_before_mark=%" PRIu64 "\n",
+           rr->blocks_discarded_ready_evicted_before_mark);
     printf("      packet_fail_missing=%" PRIu64 "\n", rr->packet_fail_missing);
     printf("      packet_fail_corrupted=%" PRIu64 "\n", rr->packet_fail_corrupted);
+    printf("      packet_fail_due_to_missing_blocks=%" PRIu64 "\n",
+           rr->packet_fail_due_to_missing_blocks);
     printf("      packet_fail_after_successful_block_decode=%" PRIu64 "\n",
            rr->packet_fail_after_successful_block_decode);
-    printf("      packet_level_failure_after_successful_block_decode=%s\n",
-           (rr->packet_fail_after_successful_block_decode > 0U) ? "YES" : "NO");
     printf("      max_missing_symbols_in_block=%" PRIu64 "\n",
            rr->max_missing_symbols_in_block);
     printf("      avg_missing_symbols_in_failed_blocks=%.2f\n",
            rr->avg_missing_symbols_in_failed_blocks);
+    printf("      oracle_valid_for_run=%s\n",
+           rr->oracle_valid_for_run ? "true" : "false");
+    printf("      oracle_blocks_theoretically_recoverable=%" PRIu64 "\n",
+           rr->oracle_blocks_theoretically_recoverable);
+    printf("      oracle_blocks_theoretically_unrecoverable=%" PRIu64 "\n",
+           rr->oracle_blocks_theoretically_unrecoverable);
+    printf("      oracle_recoverable_but_not_decoded_successfully=%" PRIu64 "\n",
+           rr->oracle_recoverable_but_not_decoded_successfully);
+    printf("      oracle_unrecoverable_and_not_decoded_successfully=%" PRIu64 "\n",
+           rr->oracle_unrecoverable_and_not_decoded_successfully);
+    printf("      oracle_recoverable_but_discarded_before_decode=%" PRIu64 "\n",
+           rr->oracle_recoverable_but_discarded_before_decode);
+    printf("      oracle_recoverable_but_decode_failed=%" PRIu64 "\n",
+           rr->oracle_recoverable_but_decode_failed);
+    printf("      suspicious_blocks_in_run=%" PRIu64 "\n", suspicious_blocks_in_run);
 }
 
 static void print_scenario_summary(const scenario_t     *sc,
@@ -805,10 +988,35 @@ static void print_scenario_summary(const scenario_t     *sc,
     printf("    runs=%" PRIu64 "\n", agg->runs);
     printf("    pass_runs=%" PRIu64 "\n", agg->pass_runs);
     printf("    failed_runs=%" PRIu64 "\n", agg->failed_runs);
-    printf("    total_failed_blocks=%" PRIu64 "\n", agg->total_blocks_failed);
+    printf("    total_decode_failed_blocks=%" PRIu64 "\n", agg->blocks_decode_failed);
+    printf("    total_discarded_before_decode=%" PRIu64 "\n", agg->blocks_discarded_before_decode);
     printf("    avg_failed_blocks_per_run=%.2f\n",
            (agg->runs > 0U) ? (agg->failed_blocks_sum_per_run / (double)agg->runs) : 0.0);
     printf("    dominant_failure_reason=%s\n", dominant_failure_reason_name(agg));
+    printf("    oracle_valid_runs=%" PRIu64 "\n", agg->oracle_valid_runs);
+    printf("    oracle_invalid_runs=%" PRIu64 "\n", agg->oracle_invalid_runs);
+    printf("    oracle_blocks_theoretically_recoverable=%" PRIu64 "\n",
+           agg->oracle_blocks_theoretically_recoverable);
+    printf("    oracle_blocks_theoretically_unrecoverable=%" PRIu64 "\n",
+           agg->oracle_blocks_theoretically_unrecoverable);
+    printf("    oracle_recoverable_but_not_decoded_successfully=%" PRIu64 "\n",
+           agg->oracle_recoverable_but_not_decoded_successfully);
+    printf("    oracle_unrecoverable_and_not_decoded_successfully=%" PRIu64 "\n",
+           agg->oracle_unrecoverable_and_not_decoded_successfully);
+    printf("    oracle_recoverable_but_discarded_before_decode=%" PRIu64 "\n",
+           agg->oracle_recoverable_but_discarded_before_decode);
+    printf("    oracle_recoverable_but_decode_failed=%" PRIu64 "\n",
+           agg->oracle_recoverable_but_decode_failed);
+    printf("    suspicious_runs_count=%" PRIu64 "\n", agg->suspicious_runs_count);
+    printf("    suspicious_blocks_total=%" PRIu64 "\n", agg->suspicious_blocks_total);
+    printf("    suspicious_discarded_timeout_before_decode=%" PRIu64 "\n",
+           agg->suspicious_discarded_timeout_before_decode);
+    printf("    suspicious_discarded_too_many_holes_before_decode=%" PRIu64 "\n",
+           agg->suspicious_discarded_too_many_holes_before_decode);
+    printf("    suspicious_discarded_evicted_before_decode=%" PRIu64 "\n",
+           agg->suspicious_discarded_evicted_before_decode);
+    printf("    suspicious_discarded_ready_evicted_before_mark=%" PRIu64 "\n",
+           agg->suspicious_discarded_ready_evicted_before_mark);
     printf("    worst_missing_symbols_seen=%" PRIu64 "\n", agg->worst_missing_symbols_seen);
 }
 
@@ -818,12 +1026,31 @@ static void print_campaign_summary(const scenario_agg_t *aggs, int n)
     uint64_t total_runs                          = 0U;
     uint64_t run_pass                            = 0U;
     uint64_t run_fail                            = 0U;
-    uint64_t total_blocks_attempted              = 0U;
-    uint64_t total_blocks_passed                 = 0U;
-    uint64_t total_blocks_failed                 = 0U;
-    uint64_t fail_too_many_holes                 = 0U;
-    uint64_t fail_insufficient_symbols           = 0U;
+    uint64_t blocks_total_expected               = 0U;
+    uint64_t blocks_attempted_for_decode         = 0U;
+    uint64_t blocks_decode_success               = 0U;
+    uint64_t blocks_decode_failed                = 0U;
+    uint64_t blocks_discarded_before_decode      = 0U;
+    uint64_t blocks_discarded_timeout_before_decode = 0U;
+    uint64_t blocks_discarded_too_many_holes_before_decode = 0U;
+    uint64_t blocks_discarded_evicted_before_decode = 0U;
+    uint64_t blocks_discarded_ready_evicted_before_mark = 0U;
+    uint64_t packet_fail_due_to_missing_blocks   = 0U;
     uint64_t packet_fail_after_successful_decode = 0U;
+    uint64_t oracle_valid_runs                   = 0U;
+    uint64_t oracle_invalid_runs                 = 0U;
+    uint64_t oracle_blocks_theoretically_recoverable = 0U;
+    uint64_t oracle_blocks_theoretically_unrecoverable = 0U;
+    uint64_t oracle_recoverable_but_not_decoded_successfully = 0U;
+    uint64_t oracle_unrecoverable_and_not_decoded_successfully = 0U;
+    uint64_t oracle_recoverable_but_discarded_before_decode = 0U;
+    uint64_t oracle_recoverable_but_decode_failed = 0U;
+    uint64_t suspicious_runs_count               = 0U;
+    uint64_t suspicious_blocks_total             = 0U;
+    uint64_t suspicious_discarded_timeout_before_decode = 0U;
+    uint64_t suspicious_discarded_too_many_holes_before_decode = 0U;
+    uint64_t suspicious_discarded_evicted_before_decode = 0U;
+    uint64_t suspicious_discarded_ready_evicted_before_mark = 0U;
     uint64_t longest_recoverable_burst           = 0U;
     uint64_t first_failing_burst                 = 0U;
     uint64_t worst_missing_symbols_seen          = 0U;
@@ -839,12 +1066,39 @@ static void print_campaign_summary(const scenario_agg_t *aggs, int n)
         total_runs                          += a->runs;
         run_pass                            += a->pass_runs;
         run_fail                            += a->failed_runs;
-        total_blocks_attempted              += a->total_blocks_attempted;
-        total_blocks_passed                 += a->total_blocks_passed;
-        total_blocks_failed                 += a->total_blocks_failed;
-        fail_too_many_holes                 += a->fail_too_many_holes;
-        fail_insufficient_symbols           += a->fail_insufficient_symbols;
+        blocks_total_expected               += a->blocks_total_expected;
+        blocks_attempted_for_decode         += a->blocks_attempted_for_decode;
+        blocks_decode_success               += a->blocks_decode_success;
+        blocks_decode_failed                += a->blocks_decode_failed;
+        blocks_discarded_before_decode      += a->blocks_discarded_before_decode;
+        blocks_discarded_timeout_before_decode += a->blocks_discarded_timeout_before_decode;
+        blocks_discarded_too_many_holes_before_decode += a->blocks_discarded_too_many_holes_before_decode;
+        blocks_discarded_evicted_before_decode += a->blocks_discarded_evicted_before_decode;
+        blocks_discarded_ready_evicted_before_mark += a->blocks_discarded_ready_evicted_before_mark;
+        packet_fail_due_to_missing_blocks   += a->packet_fail_due_to_missing_blocks;
         packet_fail_after_successful_decode += a->packet_fail_after_successful_block_decode;
+        oracle_valid_runs                   += a->oracle_valid_runs;
+        oracle_invalid_runs                 += a->oracle_invalid_runs;
+        oracle_blocks_theoretically_recoverable += a->oracle_blocks_theoretically_recoverable;
+        oracle_blocks_theoretically_unrecoverable += a->oracle_blocks_theoretically_unrecoverable;
+        oracle_recoverable_but_not_decoded_successfully +=
+            a->oracle_recoverable_but_not_decoded_successfully;
+        oracle_unrecoverable_and_not_decoded_successfully +=
+            a->oracle_unrecoverable_and_not_decoded_successfully;
+        oracle_recoverable_but_discarded_before_decode +=
+            a->oracle_recoverable_but_discarded_before_decode;
+        oracle_recoverable_but_decode_failed +=
+            a->oracle_recoverable_but_decode_failed;
+        suspicious_runs_count += a->suspicious_runs_count;
+        suspicious_blocks_total += a->suspicious_blocks_total;
+        suspicious_discarded_timeout_before_decode +=
+            a->suspicious_discarded_timeout_before_decode;
+        suspicious_discarded_too_many_holes_before_decode +=
+            a->suspicious_discarded_too_many_holes_before_decode;
+        suspicious_discarded_evicted_before_decode +=
+            a->suspicious_discarded_evicted_before_decode;
+        suspicious_discarded_ready_evicted_before_mark +=
+            a->suspicious_discarded_ready_evicted_before_mark;
 
         if (a->worst_missing_symbols_seen > worst_missing_symbols_seen) {
             worst_missing_symbols_seen = a->worst_missing_symbols_seen;
@@ -873,16 +1127,50 @@ static void print_campaign_summary(const scenario_agg_t *aggs, int n)
     printf("- total_runs: %" PRIu64 "\n", total_runs);
     printf("- run_pass: %" PRIu64 "\n", run_pass);
     printf("- run_fail: %" PRIu64 "\n", run_fail);
-    printf("- total_blocks_attempted: %" PRIu64 "\n", total_blocks_attempted);
-    printf("- total_blocks_passed: %" PRIu64 "\n", total_blocks_passed);
-    printf("- total_blocks_failed: %" PRIu64 "\n", total_blocks_failed);
+    printf("- blocks_total_expected: %" PRIu64 "\n", blocks_total_expected);
+    printf("- blocks_attempted_for_decode: %" PRIu64 "\n", blocks_attempted_for_decode);
+    printf("- blocks_decode_success: %" PRIu64 "\n", blocks_decode_success);
+    printf("- blocks_decode_failed: %" PRIu64 "\n", blocks_decode_failed);
+    printf("- blocks_discarded_before_decode: %" PRIu64 "\n", blocks_discarded_before_decode);
     printf("Failure breakdown:\n");
-    printf("Block-level:\n");
-    printf("- too_many_holes: %" PRIu64 "\n", fail_too_many_holes);
-    printf("- insufficient_symbols: %" PRIu64 "\n", fail_insufficient_symbols);
+    printf("Discarded-before-decode:\n");
+    printf("- timeout_before_decode: %" PRIu64 "\n", blocks_discarded_timeout_before_decode);
+    printf("- too_many_holes_before_decode: %" PRIu64 "\n", blocks_discarded_too_many_holes_before_decode);
+    printf("- evicted_before_decode: %" PRIu64 "\n", blocks_discarded_evicted_before_decode);
+    printf("- ready_evicted_before_mark: %" PRIu64 "\n", blocks_discarded_ready_evicted_before_mark);
+    printf("Decode-level:\n");
+    printf("- decode_failed: %" PRIu64 "\n", blocks_decode_failed);
     printf("Packet-level:\n");
+    printf("- packet_fail_due_to_missing_blocks: %" PRIu64 "\n",
+           packet_fail_due_to_missing_blocks);
     printf("- packet_fail_after_successful_block_decode: %" PRIu64 "\n",
            packet_fail_after_successful_decode);
+    printf("Erasure oracle diagnostics:\n");
+    printf("- oracle_valid_runs: %" PRIu64 "\n", oracle_valid_runs);
+    printf("- oracle_invalid_runs: %" PRIu64 "\n", oracle_invalid_runs);
+    printf("- oracle_blocks_theoretically_recoverable: %" PRIu64 "\n",
+           oracle_blocks_theoretically_recoverable);
+    printf("- oracle_blocks_theoretically_unrecoverable: %" PRIu64 "\n",
+           oracle_blocks_theoretically_unrecoverable);
+    printf("- oracle_recoverable_but_not_decoded_successfully: %" PRIu64 "\n",
+           oracle_recoverable_but_not_decoded_successfully);
+    printf("- oracle_unrecoverable_and_not_decoded_successfully: %" PRIu64 "\n",
+           oracle_unrecoverable_and_not_decoded_successfully);
+    printf("- oracle_recoverable_but_discarded_before_decode: %" PRIu64 "\n",
+           oracle_recoverable_but_discarded_before_decode);
+    printf("- oracle_recoverable_but_decode_failed: %" PRIu64 "\n",
+           oracle_recoverable_but_decode_failed);
+    printf("Suspicious discard pinpoint summary:\n");
+    printf("- suspicious_runs_count: %" PRIu64 "\n", suspicious_runs_count);
+    printf("- suspicious_blocks_total: %" PRIu64 "\n", suspicious_blocks_total);
+    printf("- suspicious_discarded_timeout_before_decode: %" PRIu64 "\n",
+           suspicious_discarded_timeout_before_decode);
+    printf("- suspicious_discarded_too_many_holes_before_decode: %" PRIu64 "\n",
+           suspicious_discarded_too_many_holes_before_decode);
+    printf("- suspicious_discarded_evicted_before_decode: %" PRIu64 "\n",
+           suspicious_discarded_evicted_before_decode);
+    printf("- suspicious_discarded_ready_evicted_before_mark: %" PRIu64 "\n",
+           suspicious_discarded_ready_evicted_before_mark);
     printf("Burst characterization:\n");
     printf("- longest_recoverable_burst: ");
     if (have_longest) {
@@ -930,11 +1218,15 @@ static void run_scenario(const scenario_t *sc,
     printf("\n[%s/%s] %d repeat(s)\n", sc->group, sc->name, sc->repeats);
 
     for (r = 0; r < sc->repeats; ++r) {
-        sim_run_request_t      req;
-        sim_result_t           result;
-        channel_apply_result_t ch;
-        sr_run_report_t        report;
-        uint32_t               seed = sc->base_seed + (uint32_t)r;
+        sim_run_request_t               req;
+        sim_result_t                    result;
+        channel_apply_result_t          ch;
+        sr_run_report_t                 report;
+        const sr_oracle_block_diag_t   *oracle_diags = NULL;
+        size_t                          oracle_diag_count = 0U;
+        uint64_t                        suspicious_blocks_in_run = 0U;
+        uint32_t                        seed = sc->base_seed + (uint32_t)r;
+        size_t                          bi;
 
         memset(&req, 0, sizeof(req));
         memcpy(req.events,
@@ -955,26 +1247,91 @@ static void run_scenario(const scenario_t *sc,
 
         memset(&report, 0, sizeof(report));
         sim_runner_get_last_run_report(&report);
+        sim_runner_get_last_oracle_block_diags(&oracle_diags, &oracle_diag_count);
 
-        print_run_line(sc->group, sc->name, r, &result, &report);
-        print_run_summary(&report);
-        csv_write_row(csv, sc->group, sc->name, r, seed, &req, &result, &report);
+        if (oracle_diags != NULL) {
+            for (bi = 0; bi < oracle_diag_count; ++bi) {
+                const sr_oracle_block_diag_t *diag = &oracle_diags[bi];
+
+                if (!diag->suspicious_oracle_recoverable_but_discarded_before_decode ||
+                    !diag->discarded_evicted_before_decode) {
+                    continue;
+                }
+
+                suspicious_blocks_in_run++;
+                print_suspicious_block_line(sc->group, sc->name, r, diag);
+
+                if (diag->discarded_timeout_before_decode) {
+                    agg->suspicious_discarded_timeout_before_decode++;
+                }
+                if (diag->discarded_too_many_holes_before_decode) {
+                    agg->suspicious_discarded_too_many_holes_before_decode++;
+                }
+                if (diag->discarded_evicted_before_decode) {
+                    agg->suspicious_discarded_evicted_before_decode++;
+                }
+                if (diag->discarded_ready_evicted_before_mark) {
+                    agg->suspicious_discarded_ready_evicted_before_mark++;
+                }
+            }
+        }
+
+        print_run_line(sc->group, sc->name, r, &result, &report, suspicious_blocks_in_run);
+        print_run_summary(&report, suspicious_blocks_in_run);
+        csv_write_row(csv,
+                      sc->group,
+                      sc->name,
+                      r,
+                      seed,
+                      &req,
+                      &result,
+                      &report,
+                      suspicious_blocks_in_run);
 
         agg->runs++;
-        agg->total_blocks_attempted              += report.blocks_attempted;
-        agg->total_blocks_passed                 += report.blocks_passed;
-        agg->total_blocks_failed                 += report.blocks_failed;
-        agg->fail_too_many_holes                 += report.fail_too_many_holes;
-        agg->fail_insufficient_symbols           += report.fail_insufficient_symbols;
+        agg->blocks_total_expected               += report.blocks_total_expected;
+        agg->blocks_attempted_for_decode         += report.blocks_attempted_for_decode;
+        agg->blocks_decode_success               += report.blocks_decode_success;
+        agg->blocks_decode_failed                += report.blocks_decode_failed;
+        agg->blocks_discarded_before_decode      += report.blocks_discarded_before_decode;
+        agg->blocks_discarded_timeout_before_decode += report.blocks_discarded_timeout_before_decode;
+        agg->blocks_discarded_too_many_holes_before_decode += report.blocks_discarded_too_many_holes_before_decode;
+        agg->blocks_discarded_evicted_before_decode += report.blocks_discarded_evicted_before_decode;
+        agg->blocks_discarded_ready_evicted_before_mark += report.blocks_discarded_ready_evicted_before_mark;
         agg->packet_fail_missing                 += report.packet_fail_missing;
         agg->packet_fail_corrupted               += report.packet_fail_corrupted;
+        agg->packet_fail_due_to_missing_blocks   += report.packet_fail_due_to_missing_blocks;
         agg->packet_fail_after_successful_block_decode += report.packet_fail_after_successful_block_decode;
-        agg->failed_blocks_sum_per_run           += (double)report.blocks_failed;
+
+        if (report.oracle_valid_for_run) {
+            agg->oracle_valid_runs++;
+        } else {
+            agg->oracle_invalid_runs++;
+        }
+
+        agg->oracle_blocks_theoretically_recoverable +=
+            report.oracle_blocks_theoretically_recoverable;
+        agg->oracle_blocks_theoretically_unrecoverable +=
+            report.oracle_blocks_theoretically_unrecoverable;
+        agg->oracle_recoverable_but_not_decoded_successfully +=
+            report.oracle_recoverable_but_not_decoded_successfully;
+        agg->oracle_unrecoverable_and_not_decoded_successfully +=
+            report.oracle_unrecoverable_and_not_decoded_successfully;
+        agg->oracle_recoverable_but_discarded_before_decode +=
+            report.oracle_recoverable_but_discarded_before_decode;
+        agg->oracle_recoverable_but_decode_failed +=
+            report.oracle_recoverable_but_decode_failed;
+        agg->failed_blocks_sum_per_run           += (double)report.blocks_decode_failed;
         agg->recovery_rate_sum                   += result.recovery_rate;
         agg->exact_match_rate_sum                += result.exact_match_rate;
 
         if (report.max_missing_symbols_in_block > agg->worst_missing_symbols_seen) {
             agg->worst_missing_symbols_seen = report.max_missing_symbols_in_block;
+        }
+
+        if (suspicious_blocks_in_run > 0U) {
+            agg->suspicious_runs_count++;
+            agg->suspicious_blocks_total += suspicious_blocks_in_run;
         }
 
         if (result.missing_packets == 0U && result.corrupted_packets == 0U) {

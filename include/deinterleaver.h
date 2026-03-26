@@ -25,11 +25,15 @@
  *       Trigger: first valid symbol for an unknown block_id arrives.
  *
  *   FILLING → READY_TO_DECODE
- *       Trigger (full):       all N symbols received.
- *       Trigger (stabilized): valid_symbols >= K  AND  holes <= M  AND
- *                             no new symbol for >= stabilization_ms.
- *       Trigger (timeout-OK): age >= block_max_age_ms  AND
- *                             valid_symbols >= K  AND  holes <= M.
+ *       Trigger (full):          all N symbols received.
+ *       Trigger (early-promote): stabilization_ms == 0.0  AND
+ *                                valid_symbols >= K  AND  holes <= M.
+ *                                Promotes immediately; no quiet-period wait.
+ *       Trigger (stabilized):    stabilization_ms > 0.0  AND
+ *                                valid_symbols >= K  AND  holes <= M  AND
+ *                                no new symbol for >= stabilization_ms.
+ *       Trigger (timeout-OK):    age >= block_max_age_ms  AND
+ *                                valid_symbols >= K  AND  holes <= M.
  *
  *   FILLING → EMPTY  (direct — auto-recycled by tick)
  *       Trigger (timeout-ERR): age >= block_max_age_ms  AND
@@ -56,8 +60,7 @@
  *   M = N - K.  holes = N - valid_symbols.
  *   A block with holes > M is unrecoverable.  When detected at timeout it is
  *   recycled directly to EMPTY without ever becoming READY_TO_DECODE.
- *   Enforced inside maybe_freeze_slot(), not
- *   deferred to the FEC layer.
+ *   Enforced inside maybe_freeze_slot(), not deferred to the FEC layer.
  *
  * get_ready_block() is a pure read
  *   It copies the block into the caller's buffer and returns.  Slot state is
@@ -111,24 +114,72 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 
 typedef enum {
-    BLOCK_EMPTY           = 0,   /* slot free                                 */
-    BLOCK_FILLING         = 1,   /* accumulating symbols                      */
-    BLOCK_READY_TO_DECODE = 2    /* frozen; awaiting mark_result()            */
+    BLOCK_EMPTY           = 0,
+    BLOCK_FILLING         = 1,
+    BLOCK_READY_TO_DECODE = 2
 } block_state_t;
+
+/* -------------------------------------------------------------------------- */
+/* Source-of-truth final reason reporting                                     */
+/* -------------------------------------------------------------------------- */
+
+typedef enum {
+    DIL_BLOCK_FINAL_NONE = 0,
+    DIL_BLOCK_FINAL_DECODE_SUCCESS,
+    DIL_BLOCK_FINAL_DECODE_FAILED,
+    DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE,
+    DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE,
+    DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE,
+    DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK
+} deinterleaver_block_final_reason_t;
+
+typedef void (*deinterleaver_block_final_cb_t)(
+    uint32_t                                block_id,
+    deinterleaver_block_final_reason_t      reason,
+    void                                   *user);
+
+/* -------------------------------------------------------------------------- */
+/* Eviction trace info  (populated only for eviction-type final reasons)      */
+/* -------------------------------------------------------------------------- */
+
+#define DIL_EVICTION_SNAPSHOT_MAX 16
+
+typedef struct {
+    uint64_t incoming_block_id;      /* block_id of the incoming symbol that  */
+                                     /* triggered the eviction                 */
+    uint32_t slot_index;             /* index of the evicted slot              */
+    uint32_t valid_symbols;          /* valid_symbols in the evicted slot      */
+    uint32_t holes;                  /* N - valid_symbols at eviction time     */
+    uint32_t expected_symbols;       /* symbols_per_block (N)                  */
+    uint32_t active_blocks;          /* number of non-EMPTY slots at eviction  */
+    uint32_t max_active_blocks;      /* self->max_active_blocks                */
+
+    uint32_t snapshot_count;
+    uint32_t snapshot_indices[DIL_EVICTION_SNAPSHOT_MAX];
+    char     snapshot_states[DIL_EVICTION_SNAPSHOT_MAX];   /* 'E','F','R'     */
+    uint64_t snapshot_block_ids[DIL_EVICTION_SNAPSHOT_MAX];
+    uint32_t snapshot_valid_symbols[DIL_EVICTION_SNAPSHOT_MAX];
+} dil_eviction_info_t;
+
+typedef void (*deinterleaver_eviction_cb_t)(
+    uint32_t                    evicted_block_id,
+    deinterleaver_block_final_reason_t reason,
+    const dil_eviction_info_t  *info,
+    void                       *user);
 
 /* -------------------------------------------------------------------------- */
 /* Diagnostic counters                                                         */
 /* -------------------------------------------------------------------------- */
 
 typedef struct {
-    uint64_t dropped_symbols_duplicate; /* bitmap dup detected — O(1)         */
-    uint64_t dropped_symbols_frozen;    /* arrived after slot left FILLING     */
-    uint64_t dropped_symbols_erasure;   /* payload_len == 0 sentinel           */
-    uint64_t evicted_filling_blocks;    /* FILLING slot force-recycled (warn)  */
-    uint64_t evicted_done_blocks;       /* acknowledged slot recycled silently */
-    uint64_t blocks_ready;             /* transitions to READY_TO_DECODE      */
-    uint64_t blocks_failed_timeout;    /* recycled directly: timeout + valid < K */
-    uint64_t blocks_failed_holes;      /* recycled directly: holes > M        */
+    uint64_t dropped_symbols_duplicate;
+    uint64_t dropped_symbols_frozen;
+    uint64_t dropped_symbols_erasure;
+    uint64_t evicted_filling_blocks;
+    uint64_t evicted_done_blocks;
+    uint64_t blocks_ready;
+    uint64_t blocks_failed_timeout;
+    uint64_t blocks_failed_holes;
 } dil_stats_t;
 
 /* -------------------------------------------------------------------------- */
@@ -141,23 +192,6 @@ typedef struct deinterleaver deinterleaver_t;
 /* Lifecycle                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/*
- * deinterleaver_create()
- *
- *   max_active_blocks : maximum concurrent live slots  (>= 1).
- *   symbols_per_block : N = K + M  (1 <= N <= MAX_SYMBOLS_PER_BLOCK).
- *   k                 : source symbols per block — the REAL K from the FEC
- *                       configuration.  1 <= k < N.  Never derived or guessed.
- *   symbol_size       : payload bytes per symbol  (> 0). Validation only.
- *   stabilization_ms  : quiet-period in ms after valid_symbols >= K before
- *                       freezing to READY_TO_DECODE.  0.0 disables this path.
- *   block_max_age_ms  : hard deadline in ms from first symbol arrival.
- *                       0.0 disables automatic age-based transitions
- *                       (tick-driven only).
- *
- * Returns a non-NULL pointer on success, NULL on any failure.
- * Must be released with deinterleaver_destroy().
- */
 deinterleaver_t *deinterleaver_create(int    max_active_blocks,
                                       int    symbols_per_block,
                                       int    k,
@@ -165,68 +199,36 @@ deinterleaver_t *deinterleaver_create(int    max_active_blocks,
                                       double stabilization_ms,
                                       double block_max_age_ms);
 
-/*
- * deinterleaver_destroy() — free all resources.  Safe to call with NULL.
- */
 void deinterleaver_destroy(deinterleaver_t *self);
+
+/* -------------------------------------------------------------------------- */
+/* Source-of-truth reporting hook                                              */
+/* -------------------------------------------------------------------------- */
+
+int deinterleaver_set_block_final_callback(deinterleaver_t                 *self,
+                                           deinterleaver_block_final_cb_t   cb,
+                                           void                            *user);
+
+int deinterleaver_set_eviction_callback(deinterleaver_t              *self,
+                                        deinterleaver_eviction_cb_t   cb,
+                                        void                         *user);
 
 /* -------------------------------------------------------------------------- */
 /* Ingestion                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/*
- * deinterleaver_push_symbol() — ingest one received symbol.
- *
- * Enforcement (in order):
- *   1. payload_len == 0  → erasure sentinel; silently dropped; return 0.
- *   2. payload_len > symbol_size → hard error; return -1.
- *   3. fec_id >= N → hard error; return -1.
- *   4. total_symbols mismatch → LOG_WARN; non-fatal.
- *   5. slot not in FILLING → silently dropped (Freeze Rule); return 0.
- *   6. duplicate (block_id, fec_id) → silently dropped; return 0.
- *
- * Returns:
- *    0   symbol accepted or silently dropped; block NOT yet READY.
- *    1   symbol accepted; block transitioned to READY_TO_DECODE.
- *   -1   hard error (NULL arg, fec_id >= N, payload_len > symbol_size).
- */
 int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym);
 
 /* -------------------------------------------------------------------------- */
 /* Retrieval                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/*
- * deinterleaver_get_ready_block() — copy one READY_TO_DECODE block.
- *
- * PURE READ — does NOT change slot state.
- * Slot stays READY_TO_DECODE until mark_result() is called.
- * Calling this multiple times for the same block is safe and idempotent.
- *
- * Returns:
- *    0   block written to *out_block.
- *   -1   no READY_TO_DECODE block available.
- */
 int deinterleaver_get_ready_block(deinterleaver_t *self, block_t *out_block);
 
 /* -------------------------------------------------------------------------- */
 /* Explicit acknowledgment  (MANDATORY after every get_ready_block)          */
 /* -------------------------------------------------------------------------- */
 
-/*
- * deinterleaver_mark_result() — acknowledge FEC outcome and recycle slot.
- *
- *   block_id : block.block_id as returned by get_ready_block().
- *   success  : 1 = FEC decode succeeded; 0 = FEC decode failed.
- *              Either way the slot is returned to BLOCK_EMPTY.
- *              The success flag does NOT produce a distinct persistent state.
- *
- * Transition: READY_TO_DECODE → EMPTY (always, regardless of success flag).
- *
- * Returns:
- *    0   slot found in READY_TO_DECODE, acknowledged, recycled to EMPTY.
- *   -1   no slot with matching block_id in READY_TO_DECODE state.
- */
 int deinterleaver_mark_result(deinterleaver_t *self,
                               uint32_t         block_id,
                               int              success);
@@ -235,43 +237,14 @@ int deinterleaver_mark_result(deinterleaver_t *self,
 /* Timeout / stabilization tick                                               */
 /* -------------------------------------------------------------------------- */
 
-/*
- * deinterleaver_tick() — drive time-based state transitions.
- *
- * override_timeout_ms semantics:
- *   > 0.0   Use as the hard-age threshold (overrides block_max_age_ms).
- *   == 0.0  Immediate flush: all FILLING slots transition regardless of age
- *           (end-of-stream sentinel used by burst_sim_test).
- *   < 0.0   Use block_max_age_ms stored at create() time.
- *
- * FILLING → READY_TO_DECODE : age >= threshold AND valid_symbols >= K
- *                             AND holes <= M.
- * FILLING → EMPTY           : age >= threshold AND (valid_symbols < K OR
- *                             holes > M).  Slot is recycled immediately; it
- *                             is never READY and cannot be retrieved.
- *
- * Returns count of slots that transitioned this call (>= 0).
- */
 int deinterleaver_tick(deinterleaver_t *self, double override_timeout_ms);
 
 /* -------------------------------------------------------------------------- */
 /* Introspection                                                               */
 /* -------------------------------------------------------------------------- */
 
-/*
- * deinterleaver_active_blocks() — count of slots NOT in BLOCK_EMPTY.
- */
 int deinterleaver_active_blocks(const deinterleaver_t *self);
-
-/*
- * deinterleaver_ready_count() — count of slots in BLOCK_READY_TO_DECODE.
- */
 int deinterleaver_ready_count(const deinterleaver_t *self);
-
-/*
- * deinterleaver_get_stats() — copy diagnostic counters into *out.
- * Returns 0 on success, -1 if either pointer is NULL.
- */
 int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out);
 
 #ifdef __cplusplus

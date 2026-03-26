@@ -1,4 +1,3 @@
-
 /* tests/sim_runner.c — Reusable FSO pipeline engine.
  *
  * Implements sim_run_campaign_case().
@@ -52,34 +51,11 @@ extern void fec_get_last_decode_telemetry(fec_decode_telemetry_t *out);
 #define SR_MAX_FRAGS_PER_PKT   8
 #define SR_MAX_ACCUM_FACTOR    4
 #define SR_DIL_HEADROOM_FACTOR 2
+#define SR_BLOCK_FINAL_UNKNOWN (-1)
 
-enum {
-    SR_FAIL_NONE = 0,
-    SR_FAIL_TOO_MANY_HOLES = 1,
-    SR_FAIL_INSUFFICIENT_SYMBOLS = 2,
-    SR_FAIL_PACKET_AFTER_BLOCK_DECODE = 3
-};
-
-typedef struct {
-    uint64_t blocks_attempted;
-    uint64_t blocks_passed;
-    uint64_t blocks_failed;
-
-    uint64_t fail_too_many_holes;
-    uint64_t fail_insufficient_symbols;
-
-    uint64_t packet_fail_missing;
-    uint64_t packet_fail_corrupted;
-    uint64_t packet_fail_after_successful_block_decode;
-
-    uint64_t max_missing_symbols_in_block;
-    double   avg_missing_symbols_in_failed_blocks;
-
-    uint64_t failed_missing_sum;
-    uint64_t failed_missing_count;
-} sr_run_report_t;
-
-static sr_run_report_t g_last_run_report;
+static sr_run_report_t         g_last_run_report;
+static sr_oracle_block_diag_t *g_last_oracle_block_diags = NULL;
+static size_t                  g_last_oracle_block_count  = 0U;
 
 void sim_runner_get_last_run_report(sr_run_report_t *out)
 {
@@ -88,6 +64,18 @@ void sim_runner_get_last_run_report(sr_run_report_t *out)
     }
 
     *out = g_last_run_report;
+}
+
+void sim_runner_get_last_oracle_block_diags(const sr_oracle_block_diag_t **out_blocks,
+                                            size_t                       *out_count)
+{
+    if (out_blocks != NULL) {
+        *out_blocks = g_last_oracle_block_diags;
+    }
+
+    if (out_count != NULL) {
+        *out_count = g_last_oracle_block_count;
+    }
 }
 
 const char *sim_runner_failure_reason_name(int reason)
@@ -104,6 +92,26 @@ const char *sim_runner_failure_reason_name(int reason)
     }
 }
 
+const char *sim_runner_block_final_reason_name(int reason)
+{
+    switch (reason) {
+        case DIL_BLOCK_FINAL_DECODE_SUCCESS:
+            return "DECODE_SUCCESS";
+        case DIL_BLOCK_FINAL_DECODE_FAILED:
+            return "DECODE_FAILED";
+        case DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE:
+            return "DISCARDED_TIMEOUT_BEFORE_DECODE";
+        case DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE:
+            return "DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE";
+        case DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE:
+            return "DISCARDED_EVICTED_BEFORE_DECODE";
+        case DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK:
+            return "DISCARDED_READY_EVICTED_BEFORE_MARK";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 typedef struct {
     uint32_t       packet_id;
     size_t         packet_len;
@@ -111,6 +119,8 @@ typedef struct {
     int            transmitted;
     int            recovered;
     int            exact_match;
+    int            num_contributing_blocks;
+    int            contributing_blocks[SR_MAX_FRAGS_PER_PKT];
 } sr_pkt_record_t;
 
 typedef struct {
@@ -159,7 +169,13 @@ typedef struct {
     uint64_t stat_blocks_ok;
     uint64_t stat_blocks_failed;
 
-    uint64_t packet_fail_after_successful_block_decode_runtime;
+    int *block_final_state;
+
+    dil_eviction_info_t *block_eviction_info;   /* NULL = no eviction trace  */
+    bool                *block_has_eviction;
+
+    uint64_t failed_missing_sum;
+    uint64_t failed_missing_count;
 } sr_ctx_t;
 
 /* packet size table used by sr_generate_packets() */
@@ -173,6 +189,30 @@ static const size_t sr_pkt_sizes[] = {
 static void sr_reset_run_report(void)
 {
     memset(&g_last_run_report, 0, sizeof(g_last_run_report));
+}
+
+static void sr_reset_oracle_block_diags(void)
+{
+    free(g_last_oracle_block_diags);
+    g_last_oracle_block_diags = NULL;
+    g_last_oracle_block_count = 0U;
+}
+
+static int sr_run_has_corruption_events(const sim_run_request_t *req)
+{
+    int i;
+
+    if (req == NULL) {
+        return 0;
+    }
+
+    for (i = 0; i < req->num_events; ++i) {
+        if (req->events[i].type == CHANNEL_EVENT_CORRUPTION) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 static void *sr_alloc_aligned(size_t n)
@@ -281,11 +321,40 @@ static sr_pkt_record_t *sr_find_packet_record(sr_ctx_t *ctx, uint32_t packet_id)
     return NULL;
 }
 
+static void sr_record_packet_block_dependency(sr_ctx_t *ctx,
+                                              uint32_t  packet_id,
+                                              int       block_idx)
+{
+    sr_pkt_record_t *pr;
+    int              i;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    pr = sr_find_packet_record(ctx, packet_id);
+    if (pr == NULL) {
+        return;
+    }
+
+    for (i = 0; i < pr->num_contributing_blocks; ++i) {
+        if (pr->contributing_blocks[i] == block_idx) {
+            return;
+        }
+    }
+
+    if (pr->num_contributing_blocks >= SR_MAX_FRAGS_PER_PKT) {
+        return;
+    }
+
+    pr->contributing_blocks[pr->num_contributing_blocks++] = block_idx;
+}
+
 static int sr_classify_block_failure(const sr_ctx_t *ctx,
                                      const fec_decode_telemetry_t *telemetry)
 {
-    if (telemetry == NULL) {
-        return SR_FAIL_INSUFFICIENT_SYMBOLS;
+    if (ctx == NULL || telemetry == NULL) {
+        return SR_FAIL_NONE;
     }
 
     if (telemetry->number_of_missing_symbols > ctx->m) {
@@ -295,14 +364,11 @@ static int sr_classify_block_failure(const sr_ctx_t *ctx,
     return SR_FAIL_INSUFFICIENT_SYMBOLS;
 }
 
-static void sr_update_run_report_for_block(const sr_ctx_t *ctx,
-                                           const fec_decode_telemetry_t *telemetry,
-                                           int decode_success)
+static void sr_update_decode_telemetry(sr_ctx_t *ctx,
+                                       const fec_decode_telemetry_t *telemetry,
+                                       int decode_success)
 {
     uint64_t missing = 0U;
-    int failure_reason;
-
-    g_last_run_report.blocks_attempted++;
 
     if (telemetry != NULL && telemetry->number_of_missing_symbols > 0) {
         missing = (uint64_t)telemetry->number_of_missing_symbols;
@@ -312,36 +378,359 @@ static void sr_update_run_report_for_block(const sr_ctx_t *ctx,
         g_last_run_report.max_missing_symbols_in_block = missing;
     }
 
-    if (decode_success) {
-        g_last_run_report.blocks_passed++;
-        return;
-    }
-
-    g_last_run_report.blocks_failed++;
-    g_last_run_report.failed_missing_sum += missing;
-    g_last_run_report.failed_missing_count++;
-
-    failure_reason = sr_classify_block_failure(ctx, telemetry);
-
-    if (failure_reason == SR_FAIL_TOO_MANY_HOLES) {
-        g_last_run_report.fail_too_many_holes++;
-    } else {
-        g_last_run_report.fail_insufficient_symbols++;
+    if (!decode_success) {
+        ctx->failed_missing_sum += missing;
+        ctx->failed_missing_count++;
     }
 }
 
-static void sr_finalize_run_report(const sr_ctx_t *ctx)
+static void sr_note_block_final_reason(sr_ctx_t *ctx,
+                                       uint32_t  block_id,
+                                       deinterleaver_block_final_reason_t reason)
 {
-    if (g_last_run_report.failed_missing_count > 0U) {
+    int idx = (int)block_id;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    if (idx < 0 || idx >= ctx->num_blocks_encoded) {
+        LOG_WARN("[sim_runner] block final callback out of range block_id=%u encoded=%d",
+                 (unsigned)block_id,
+                 ctx->num_blocks_encoded);
+        return;
+    }
+
+    if (ctx->block_final_state == NULL) {
+        return;
+    }
+
+    if (ctx->block_final_state[idx] != SR_BLOCK_FINAL_UNKNOWN) {
+        LOG_WARN("[sim_runner] duplicate final reason for block_id=%u old=%d new=%d",
+                 (unsigned)block_id,
+                 ctx->block_final_state[idx],
+                 (int)reason);
+        return;
+    }
+
+    ctx->block_final_state[idx] = (int)reason;
+}
+
+static void sr_deinterleaver_block_final_cb(
+    uint32_t                           block_id,
+    deinterleaver_block_final_reason_t reason,
+    void                              *user)
+{
+    sr_ctx_t *ctx = (sr_ctx_t *)user;
+    sr_note_block_final_reason(ctx, block_id, reason);
+}
+
+static void sr_deinterleaver_eviction_cb(
+    uint32_t                            evicted_block_id,
+    deinterleaver_block_final_reason_t  reason,
+    const dil_eviction_info_t          *info,
+    void                               *user)
+{
+    sr_ctx_t *ctx = (sr_ctx_t *)user;
+    int        idx = (int)evicted_block_id;
+
+    (void)reason;
+
+    if (ctx == NULL || info == NULL) {
+        return;
+    }
+
+    if (idx < 0 || idx >= ctx->num_blocks_encoded) {
+        return;
+    }
+
+    if (ctx->block_eviction_info == NULL || ctx->block_has_eviction == NULL) {
+        return;
+    }
+
+    ctx->block_eviction_info[idx] = *info;
+    ctx->block_has_eviction[idx]  = true;
+}
+
+static int sr_packet_missing_due_to_missing_blocks(const sr_ctx_t        *ctx,
+                                                   const sr_pkt_record_t *pr)
+{
+    int i;
+
+    if (ctx == NULL || pr == NULL || pr->num_contributing_blocks <= 0) {
+        return 1;
+    }
+
+    for (i = 0; i < pr->num_contributing_blocks; ++i) {
+        int blk_idx = pr->contributing_blocks[i];
+        int state;
+
+        if (blk_idx < 0 || blk_idx >= ctx->num_blocks_encoded) {
+            return 1;
+        }
+
+        state = ctx->block_final_state[blk_idx];
+        if (state != DIL_BLOCK_FINAL_DECODE_SUCCESS) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void sr_compute_recoverability_oracle(const sr_ctx_t *ctx)
+{
+    int i;
+
+    if (ctx == NULL || ctx->num_blocks_encoded <= 0) {
+        return;
+    }
+
+    sr_reset_oracle_block_diags();
+
+    g_last_oracle_block_diags = (sr_oracle_block_diag_t *)calloc(
+        (size_t)ctx->num_blocks_encoded,
+        sizeof(*g_last_oracle_block_diags)
+    );
+    if (g_last_oracle_block_diags == NULL) {
+        LOG_WARN("[sim_runner] recoverability oracle allocation failed");
+        return;
+    }
+
+    g_last_oracle_block_count = (size_t)ctx->num_blocks_encoded;
+
+    for (i = 0; i < ctx->num_blocks_encoded; ++i) {
+        g_last_oracle_block_diags[i].block_id = (uint64_t)i;
+        g_last_oracle_block_diags[i].expected_symbols = (uint64_t)ctx->n;
+        g_last_oracle_block_diags[i].final_reason = ctx->block_final_state[i];
+    }
+
+    for (i = 0; i < ctx->tx_count; ++i) {
+        const symbol_t *sym = &ctx->tx_buf[i];
+        uint32_t        blk_idx;
+
+        if (sym->payload_len == 0) {
+            continue;
+        }
+
+        blk_idx = sym->packet_id;
+        if ((int)blk_idx < 0 || (int)blk_idx >= ctx->num_blocks_encoded) {
+            continue;
+        }
+
+        g_last_oracle_block_diags[blk_idx].survived_symbols++;
+        if (sym->fec_id < (uint32_t)ctx->k) {
+            g_last_oracle_block_diags[blk_idx].source_symbols_survived++;
+        } else if (sym->fec_id < (uint32_t)ctx->n) {
+            g_last_oracle_block_diags[blk_idx].repair_symbols_survived++;
+        }
+    }
+
+    for (i = 0; i < ctx->num_blocks_encoded; ++i) {
+        sr_oracle_block_diag_t *diag = &g_last_oracle_block_diags[i];
+        uint64_t expected = diag->expected_symbols;
+        uint64_t survived = diag->survived_symbols;
+        int      state    = diag->final_reason;
+        int      success  = (state == DIL_BLOCK_FINAL_DECODE_SUCCESS);
+
+        diag->missing_symbols = (survived <= expected) ? (expected - survived) : 0U;
+        diag->oracle_theoretically_recoverable = (survived >= (uint64_t)ctx->k);
+
+        diag->discarded_timeout_before_decode =
+            (state == DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE);
+        diag->discarded_too_many_holes_before_decode =
+            (state == DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE);
+        diag->discarded_evicted_before_decode =
+            (state == DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE);
+        diag->discarded_ready_evicted_before_mark =
+            (state == DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK);
+        diag->discarded_before_decode =
+            (diag->discarded_timeout_before_decode ||
+             diag->discarded_too_many_holes_before_decode ||
+             diag->discarded_evicted_before_decode ||
+             diag->discarded_ready_evicted_before_mark);
+
+        /* Eviction trace */
+        if (ctx->block_has_eviction != NULL &&
+            ctx->block_eviction_info != NULL &&
+            ctx->block_has_eviction[i]) {
+            const dil_eviction_info_t *ei = &ctx->block_eviction_info[i];
+            uint32_t                   sc;
+            uint32_t                   j;
+
+            diag->has_eviction_trace            = true;
+            diag->eviction_incoming_block_id    = ei->incoming_block_id;
+            diag->eviction_slot_index           = ei->slot_index;
+            diag->eviction_valid_symbols        = ei->valid_symbols;
+            diag->eviction_holes                = ei->holes;
+            diag->eviction_expected_symbols     = ei->expected_symbols;
+            diag->eviction_active_blocks        = ei->active_blocks;
+            diag->eviction_max_active_blocks    = ei->max_active_blocks;
+
+            sc = ei->snapshot_count;
+            if (sc > 16U) { sc = 16U; }
+            diag->eviction_snapshot_count = sc;
+            for (j = 0; j < sc; ++j) {
+                diag->eviction_snapshot_indices[j]       = ei->snapshot_indices[j];
+                diag->eviction_snapshot_states[j]        = ei->snapshot_states[j];
+                diag->eviction_snapshot_block_ids[j]     = ei->snapshot_block_ids[j];
+                diag->eviction_snapshot_valid_symbols[j] = ei->snapshot_valid_symbols[j];
+            }
+        } else {
+            diag->has_eviction_trace = false;
+        }
+
+        diag->suspicious_oracle_recoverable_but_discarded_before_decode =
+            (g_last_run_report.oracle_valid_for_run &&
+             diag->oracle_theoretically_recoverable &&
+             diag->discarded_before_decode);
+
+        if (diag->oracle_theoretically_recoverable) {
+            g_last_run_report.oracle_blocks_theoretically_recoverable++;
+
+            if (g_last_run_report.oracle_valid_for_run && !success) {
+                g_last_run_report.oracle_recoverable_but_not_decoded_successfully++;
+
+                if (state == DIL_BLOCK_FINAL_DECODE_FAILED) {
+                    g_last_run_report.oracle_recoverable_but_decode_failed++;
+                } else if (diag->discarded_before_decode) {
+                    g_last_run_report.oracle_recoverable_but_discarded_before_decode++;
+                }
+            }
+        } else {
+            g_last_run_report.oracle_blocks_theoretically_unrecoverable++;
+
+            if (!success) {
+                g_last_run_report.oracle_unrecoverable_and_not_decoded_successfully++;
+            }
+        }
+    }
+}
+
+static int sr_finalize_run_report(const sr_ctx_t *ctx)
+{
+    int i;
+    uint64_t discarded_sum;
+    uint64_t class_sum;
+
+    if (ctx == NULL) {
+        return -1;
+    }
+
+    g_last_run_report.blocks_total_expected = (uint64_t)ctx->num_blocks_encoded;
+
+    if (ctx->failed_missing_count > 0U) {
         g_last_run_report.avg_missing_symbols_in_failed_blocks =
-            (double)g_last_run_report.failed_missing_sum /
-            (double)g_last_run_report.failed_missing_count;
+            (double)ctx->failed_missing_sum /
+            (double)ctx->failed_missing_count;
     } else {
         g_last_run_report.avg_missing_symbols_in_failed_blocks = 0.0;
     }
 
-    g_last_run_report.packet_fail_after_successful_block_decode =
-        ctx->packet_fail_after_successful_block_decode_runtime;
+    sr_compute_recoverability_oracle(ctx);
+
+    for (i = 0; i < ctx->num_blocks_encoded; ++i) {
+        int state = ctx->block_final_state[i];
+
+        switch (state) {
+            case DIL_BLOCK_FINAL_DECODE_SUCCESS:
+                g_last_run_report.blocks_decode_success++;
+                break;
+            case DIL_BLOCK_FINAL_DECODE_FAILED:
+                g_last_run_report.blocks_decode_failed++;
+                break;
+            case DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE:
+                g_last_run_report.blocks_discarded_before_decode++;
+                g_last_run_report.blocks_discarded_timeout_before_decode++;
+                break;
+            case DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE:
+                g_last_run_report.blocks_discarded_before_decode++;
+                g_last_run_report.blocks_discarded_too_many_holes_before_decode++;
+                break;
+            case DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE:
+                g_last_run_report.blocks_discarded_before_decode++;
+                g_last_run_report.blocks_discarded_evicted_before_decode++;
+                break;
+            case DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK:
+                g_last_run_report.blocks_discarded_before_decode++;
+                g_last_run_report.blocks_discarded_ready_evicted_before_mark++;
+                break;
+            default:
+                LOG_ERROR("[sim_runner] block %d missing final reason", i);
+                return -1;
+        }
+    }
+
+    discarded_sum =
+        g_last_run_report.blocks_discarded_timeout_before_decode +
+        g_last_run_report.blocks_discarded_too_many_holes_before_decode +
+        g_last_run_report.blocks_discarded_evicted_before_decode +
+        g_last_run_report.blocks_discarded_ready_evicted_before_mark;
+
+    if (discarded_sum != g_last_run_report.blocks_discarded_before_decode) {
+        LOG_ERROR("[sim_runner] discarded block accounting mismatch: total=%" PRIu64
+                  " sub_sum=%" PRIu64,
+                  g_last_run_report.blocks_discarded_before_decode,
+                  discarded_sum);
+        return -1;
+    }
+
+    class_sum =
+        g_last_run_report.blocks_decode_success +
+        g_last_run_report.blocks_decode_failed +
+        g_last_run_report.blocks_discarded_before_decode;
+
+    if (class_sum != g_last_run_report.blocks_total_expected) {
+        LOG_ERROR("[sim_runner] block accounting invariant violated: expected=%" PRIu64
+                  " classified=%" PRIu64,
+                  g_last_run_report.blocks_total_expected,
+                  class_sum);
+        return -1;
+    }
+
+    if (g_last_run_report.blocks_attempted_for_decode !=
+        (g_last_run_report.blocks_decode_success +
+         g_last_run_report.blocks_decode_failed)) {
+        LOG_ERROR("[sim_runner] decoder attempt accounting mismatch: attempted=%" PRIu64
+                  " success+failed=%" PRIu64,
+                  g_last_run_report.blocks_attempted_for_decode,
+                  g_last_run_report.blocks_decode_success +
+                  g_last_run_report.blocks_decode_failed);
+        return -1;
+    }
+
+    if ((g_last_run_report.oracle_blocks_theoretically_recoverable +
+         g_last_run_report.oracle_blocks_theoretically_unrecoverable) !=
+        g_last_run_report.blocks_total_expected) {
+        LOG_ERROR("[sim_runner] oracle block accounting mismatch: recoverable=%" PRIu64
+                  " unrecoverable=%" PRIu64 " expected=%" PRIu64,
+                  g_last_run_report.oracle_blocks_theoretically_recoverable,
+                  g_last_run_report.oracle_blocks_theoretically_unrecoverable,
+                  g_last_run_report.blocks_total_expected);
+        return -1;
+    }
+
+    if (g_last_run_report.oracle_valid_for_run &&
+        g_last_run_report.oracle_recoverable_but_not_decoded_successfully !=
+        (g_last_run_report.oracle_recoverable_but_discarded_before_decode +
+         g_last_run_report.oracle_recoverable_but_decode_failed)) {
+        LOG_ERROR("[sim_runner] oracle recoverable mismatch: not_decoded=%" PRIu64
+                  " discarded=%" PRIu64 " decode_failed=%" PRIu64,
+                  g_last_run_report.oracle_recoverable_but_not_decoded_successfully,
+                  g_last_run_report.oracle_recoverable_but_discarded_before_decode,
+                  g_last_run_report.oracle_recoverable_but_decode_failed);
+        return -1;
+    }
+
+    if (!g_last_run_report.oracle_valid_for_run &&
+        (g_last_run_report.oracle_recoverable_but_not_decoded_successfully != 0U ||
+         g_last_run_report.oracle_recoverable_but_discarded_before_decode != 0U ||
+         g_last_run_report.oracle_recoverable_but_decode_failed != 0U)) {
+        LOG_ERROR("[sim_runner] oracle mismatch counters must be zero when oracle is invalid");
+        return -1;
+    }
+
+    return 0;
 }
 
 static void sr_print_channel_events(const sim_run_request_t *req, int total_symbols)
@@ -411,22 +800,52 @@ static void sr_print_block_analysis(uint64_t block_id,
 static void sr_print_run_summary(void)
 {
     printf("[RUN SUMMARY]\n");
-    printf("- total_blocks_attempted: %" PRIu64 "\n", g_last_run_report.blocks_attempted);
-    printf("- total_blocks_passed: %" PRIu64 "\n", g_last_run_report.blocks_passed);
-    printf("- total_blocks_failed: %" PRIu64 "\n", g_last_run_report.blocks_failed);
-    printf("- fail_too_many_holes: %" PRIu64 "\n", g_last_run_report.fail_too_many_holes);
-    printf("- fail_insufficient_symbols: %" PRIu64 "\n", g_last_run_report.fail_insufficient_symbols);
+    printf("- blocks_total_expected: %" PRIu64 "\n",
+           g_last_run_report.blocks_total_expected);
+    printf("- blocks_attempted_for_decode: %" PRIu64 "\n",
+           g_last_run_report.blocks_attempted_for_decode);
+    printf("- blocks_decode_success: %" PRIu64 "\n",
+           g_last_run_report.blocks_decode_success);
+    printf("- blocks_decode_failed: %" PRIu64 "\n",
+           g_last_run_report.blocks_decode_failed);
+    printf("- blocks_discarded_before_decode: %" PRIu64 "\n",
+           g_last_run_report.blocks_discarded_before_decode);
+    printf("- blocks_discarded_timeout_before_decode: %" PRIu64 "\n",
+           g_last_run_report.blocks_discarded_timeout_before_decode);
+    printf("- blocks_discarded_too_many_holes_before_decode: %" PRIu64 "\n",
+           g_last_run_report.blocks_discarded_too_many_holes_before_decode);
+    printf("- blocks_discarded_evicted_before_decode: %" PRIu64 "\n",
+           g_last_run_report.blocks_discarded_evicted_before_decode);
+    printf("- blocks_discarded_ready_evicted_before_mark: %" PRIu64 "\n",
+           g_last_run_report.blocks_discarded_ready_evicted_before_mark);
     printf("Packet-level failures:\n");
-    printf("- packet_fail_missing: %" PRIu64 "\n", g_last_run_report.packet_fail_missing);
-    printf("- packet_fail_corrupted: %" PRIu64 "\n", g_last_run_report.packet_fail_corrupted);
+    printf("- packet_fail_missing: %" PRIu64 "\n",
+           g_last_run_report.packet_fail_missing);
+    printf("- packet_fail_corrupted: %" PRIu64 "\n",
+           g_last_run_report.packet_fail_corrupted);
+    printf("- packet_fail_due_to_missing_blocks: %" PRIu64 "\n",
+           g_last_run_report.packet_fail_due_to_missing_blocks);
     printf("- packet_fail_after_successful_block_decode: %" PRIu64 "\n",
            g_last_run_report.packet_fail_after_successful_block_decode);
-    printf("- packet_level_failure_after_successful_block_decode: %s\n",
-           (g_last_run_report.packet_fail_after_successful_block_decode > 0U) ? "YES" : "NO");
     printf("- max_missing_symbols_in_block: %" PRIu64 "\n",
            g_last_run_report.max_missing_symbols_in_block);
     printf("- avg_missing_symbols_in_failed_blocks: %.2f\n",
            g_last_run_report.avg_missing_symbols_in_failed_blocks);
+    printf("[ERASURE ORACLE SUMMARY]\n");
+    printf("- oracle_valid_for_run: %s\n",
+           g_last_run_report.oracle_valid_for_run ? "true" : "false");
+    printf("- oracle_blocks_theoretically_recoverable: %" PRIu64 "\n",
+           g_last_run_report.oracle_blocks_theoretically_recoverable);
+    printf("- oracle_blocks_theoretically_unrecoverable: %" PRIu64 "\n",
+           g_last_run_report.oracle_blocks_theoretically_unrecoverable);
+    printf("- oracle_recoverable_but_not_decoded_successfully: %" PRIu64 "\n",
+           g_last_run_report.oracle_recoverable_but_not_decoded_successfully);
+    printf("- oracle_unrecoverable_and_not_decoded_successfully: %" PRIu64 "\n",
+           g_last_run_report.oracle_unrecoverable_and_not_decoded_successfully);
+    printf("- oracle_recoverable_but_discarded_before_decode: %" PRIu64 "\n",
+           g_last_run_report.oracle_recoverable_but_discarded_before_decode);
+    printf("- oracle_recoverable_but_decode_failed: %" PRIu64 "\n",
+           g_last_run_report.oracle_recoverable_but_decode_failed);
 }
 
 /* =========================================================================
@@ -435,31 +854,47 @@ static void sr_print_run_summary(void)
 
 static int sr_generate_packets(sr_ctx_t *ctx, uint32_t seed)
 {
-    int    slots_remaining = ctx->total_src_slots;
-    int    size_idx        = 0;
-    int    unique_id       = 1;
-    int    max_pkts        = sr_max_packets(ctx);
+    int    slots_remaining;
+    int    max_packets;
+    int    i;
 
-    ctx->num_generated = 0;
+    if (ctx == NULL) {
+        return -1;
+    }
 
-    while (slots_remaining > 0 && ctx->num_generated < max_pkts) {
-        size_t           sz = sr_pkt_sizes[size_idx % SR_NUM_PKT_SIZES];
-        sr_pkt_record_t *pr = &ctx->pkts[ctx->num_generated];
-        int              nf = (int)((sz + (size_t)ctx->symbol_size - 1U) /
-                                    (size_t)ctx->symbol_size);
+    slots_remaining = ctx->total_src_slots;
+    max_packets     = sr_max_packets(ctx);
+
+    for (i = 0; i < max_packets && slots_remaining > 0; ++i) {
+        size_t           sz;
+        int              nf;
+        sr_pkt_record_t *pr;
         size_t           j;
 
-        size_idx++;
+        sz = sr_pkt_sizes[i % SR_NUM_PKT_SIZES];
+
+        nf = (int)((sz + (size_t)ctx->symbol_size - 1U) /
+                   (size_t)ctx->symbol_size);
+        if (nf <= 0) {
+            nf = 1;
+        }
+
+        if (nf > SR_MAX_FRAGS_PER_PKT) {
+            nf = SR_MAX_FRAGS_PER_PKT;
+            sz = (size_t)nf * (size_t)ctx->symbol_size;
+        }
 
         if (nf > slots_remaining) {
             continue;
         }
 
-        pr->packet_id   = (uint32_t)unique_id++;
-        pr->packet_len  = sz;
+        pr = &ctx->pkts[ctx->num_generated];
+        pr->packet_id = (uint32_t)(ctx->num_generated + 1);
+        pr->packet_len = sz;
         pr->transmitted = 0;
-        pr->recovered   = 0;
+        pr->recovered = 0;
         pr->exact_match = 0;
+        pr->num_contributing_blocks = 0;
 
         pr->data = (unsigned char *)malloc(sz);
         if (!pr->data) {
@@ -571,33 +1006,39 @@ static int sr_encode_one_block(sr_ctx_t        *ctx,
 
 static int sr_run_tx_pipeline(sr_ctx_t *ctx)
 {
-    symbol_t       *frag_buf   = NULL;
-    symbol_t       *repair_buf = NULL;
-    unsigned char  *src_data   = NULL;
-    interleaver_t  *il         = NULL;
-    fec_handle_t    fec        = NULL;
-    block_builder_t bb;
-    int             result     = -1;
-    int             block_slot = 0;
-    int             pi;
+    block_builder_t  bb;
+    interleaver_t   *il         = NULL;
+    fec_handle_t     fec        = NULL;
+    symbol_t        *frag_buf   = NULL;
+    symbol_t        *repair_buf = NULL;
+    unsigned char   *src_data   = NULL;
+    int              block_slot = 0;
+    int              result     = -1;
+    int              pi;
 
-    ctx->num_blocks_encoded = 0;
-    ctx->tx_count           = 0;
+    if (ctx == NULL) {
+        return -1;
+    }
+
+    memset(&bb, 0, sizeof(bb));
+
+    ctx->tx_buf = (symbol_t *)calloc((size_t)ctx->total_syms, sizeof(symbol_t));
+    if (!ctx->tx_buf) {
+        return -1;
+    }
 
     frag_buf = (symbol_t *)calloc((size_t)SR_MAX_FRAGS_PER_PKT, sizeof(symbol_t));
     repair_buf = (symbol_t *)calloc((size_t)ctx->m, sizeof(symbol_t));
     src_data = (unsigned char *)sr_alloc_aligned(
         (size_t)ctx->k * (size_t)ctx->symbol_size
     );
-    ctx->tx_buf = (symbol_t *)calloc((size_t)ctx->total_syms, sizeof(symbol_t));
 
-    if (!frag_buf || !repair_buf || !src_data || !ctx->tx_buf) {
+    if (!frag_buf || !repair_buf || !src_data) {
         goto cleanup;
     }
 
-    memset(&bb, 0, sizeof(bb));
-    if (block_builder_init(&bb, ctx->k) != 0) {
-        goto cleanup;
+    if (block_builder_init(&bb, (uint16_t)ctx->k) != 0) {
+        goto cleanup_bb;
     }
 
     il = interleaver_create(ctx->depth, ctx->n, ctx->symbol_size);
@@ -656,6 +1097,10 @@ static int sr_run_tx_pipeline(sr_ctx_t *ctx)
             sm->symbol_index   = sym->symbol_index;
             sm->total_symbols  = sym->total_symbols;
             sm->payload_len    = sym->payload_len;
+
+            sr_record_packet_block_dependency(ctx,
+                                              sym->packet_id,
+                                              ctx->num_blocks_encoded);
 
             rc = block_builder_add_symbol(&bb, sym);
             if (rc < 0) {
@@ -949,13 +1394,10 @@ static void sr_deliver_block(sr_ctx_t       *ctx,
                 if ((size_t)recon_len == pr->packet_len &&
                     memcmp(recon_pkt, pr->data, pr->packet_len) == 0) {
                     pr->exact_match = 1;
-                } else {
-                    ctx->packet_fail_after_successful_block_decode_runtime++;
                 }
 
                 stats_inc_recovered(pr->packet_len);
             } else {
-                ctx->packet_fail_after_successful_block_decode_runtime++;
                 stats_inc_failed_packet();
             }
         }
@@ -967,6 +1409,81 @@ static void sr_deliver_block(sr_ctx_t       *ctx,
 /* =========================================================================
  * RX pipeline
  * =========================================================================*/
+
+static int sr_service_ready_blocks(sr_ctx_t *ctx,
+                                   deinterleaver_t *dil,
+                                   fec_handle_t fec,
+                                   unsigned char *recon,
+                                   sr_pkt_accum_t *accum,
+                                   int *accum_count,
+                                   int max_accum)
+{
+    block_t blk;
+
+    if (ctx == NULL || dil == NULL || fec == NULL || recon == NULL ||
+        accum == NULL || accum_count == NULL) {
+        return -1;
+    }
+
+    while (deinterleaver_get_ready_block(dil, &blk) == 0) {
+        int                    blk_idx = (int)blk.block_id;
+        uint64_t               holes = 0U;
+        fec_decode_telemetry_t telemetry;
+        int                    decode_rc;
+        int                    failure_reason = SR_FAIL_NONE;
+
+        if (blk.symbols_per_block > blk.symbol_count) {
+            holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+        }
+
+        ctx->stat_blocks_attempted++;
+        g_last_run_report.blocks_attempted_for_decode++;
+        stats_inc_block_attempt();
+        stats_record_block(holes);
+
+        memset(recon, 0, (size_t)ctx->k * (size_t)ctx->symbol_size);
+
+        fec_set_current_decode_block_id((uint64_t)blk.block_id);
+        decode_rc = fec_decode_block(fec,
+                                     blk.symbols,
+                                     blk.symbol_count,
+                                     blk.symbols_per_block,
+                                     recon);
+        fec_get_last_decode_telemetry(&telemetry);
+
+        if (decode_rc != FEC_DECODE_OK) {
+            failure_reason = sr_classify_block_failure(ctx, &telemetry);
+        }
+
+        sr_update_decode_telemetry(ctx, &telemetry, decode_rc == FEC_DECODE_OK);
+        sr_print_decoder_telemetry((uint64_t)blk.block_id, &telemetry, ctx->m);
+        sr_print_block_analysis((uint64_t)blk.block_id,
+                                blk.symbols_per_block,
+                                &telemetry,
+                                failure_reason);
+
+        if (decode_rc == FEC_DECODE_OK) {
+            ctx->stat_blocks_ok++;
+            stats_inc_block_success();
+
+            if (blk_idx >= 0 && blk_idx < ctx->num_blocks_encoded) {
+                sr_deliver_block(ctx, blk_idx, recon, accum, accum_count, max_accum);
+            }
+
+            if (deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1) != 0) {
+                return -1;
+            }
+        } else {
+            ctx->stat_blocks_failed++;
+            stats_inc_block_failure();
+            if (deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 0) != 0) {
+                return -1;
+            }
+        }
+    }
+
+    return 0;
+}
 
 static int sr_run_rx_pipeline(sr_ctx_t *ctx)
 {
@@ -980,19 +1497,28 @@ static int sr_run_rx_pipeline(sr_ctx_t *ctx)
     int                     result      = -1;
     int                     i;
 
-    dil_slots = ctx->num_blocks_encoded * SR_DIL_HEADROOM_FACTOR;
-    if (dil_slots < ctx->depth + 4) {
-        dil_slots = ctx->depth + 4;
-    }
+    dil_slots = ctx->depth * SR_DIL_HEADROOM_FACTOR;
 
     dil = deinterleaver_create(dil_slots,
                                ctx->n,
                                ctx->k,
                                (size_t)ctx->symbol_size,
                                0.0,
-                               0.0);
+                               1.0e9);
     if (!dil) {
-        return -1;
+        goto cleanup;
+    }
+
+    if (deinterleaver_set_block_final_callback(dil,
+                                               sr_deinterleaver_block_final_cb,
+                                               ctx) != 0) {
+        goto cleanup;
+    }
+
+    if (deinterleaver_set_eviction_callback(dil,
+                                            sr_deinterleaver_eviction_cb,
+                                            ctx) != 0) {
+        goto cleanup;
     }
 
     fec = fec_create(ctx->k, ctx->symbol_size);
@@ -1003,140 +1529,92 @@ static int sr_run_rx_pipeline(sr_ctx_t *ctx)
     recon = (unsigned char *)sr_alloc_aligned(
         (size_t)ctx->k * (size_t)ctx->symbol_size
     );
-    if (!recon) {
-        goto cleanup;
-    }
-
     accum = (sr_pkt_accum_t *)calloc((size_t)max_accum, sizeof(sr_pkt_accum_t));
-    if (!accum) {
+
+    if (!recon || !accum) {
         goto cleanup;
     }
 
     for (i = 0; i < ctx->tx_count; ++i) {
         symbol_t *sym = &ctx->tx_buf[i];
         int       rc;
-        block_t   blk;
 
-        if (sym->payload_len == 0) {
-            continue;
+        if (deinterleaver_ready_count(dil) > 0) {
+            if (sr_service_ready_blocks(ctx,
+                                        dil,
+                                        fec,
+                                        recon,
+                                        accum,
+                                        &accum_count,
+                                        max_accum) != 0) {
+                goto cleanup;
+            }
+        }
+
+        /*
+         * Skip symbols for block_ids that have already been finalized.
+         *
+         * With immediate-promotion (stabilization_ms == 0.0), a block can
+         * be promoted to READY_TO_DECODE, decoded, and its slot cleared via
+         * mark_result() before all interleaved symbols for that block have
+         * arrived.  Without this guard, a late-arriving symbol would cause
+         * alloc_slot() to open a fresh slot for an already-finished block_id.
+         * That re-opened slot is then recycled by the end-of-run tick(0.0),
+         * which fires the block_final_cb a second time for the same block_id
+         * and produces a spurious "duplicate final reason" warning.
+         *
+         * Dropping the late symbol here is correct: the block was already
+         * decoded successfully, so the symbol carries no new information.
+         */
+        {
+            int blk_id = (int)sym->packet_id;
+
+            if (blk_id >= 0 && blk_id < ctx->num_blocks_encoded &&
+                ctx->block_final_state != NULL &&
+                ctx->block_final_state[blk_id] != SR_BLOCK_FINAL_UNKNOWN) {
+                /* Block already finalized — drop the late symbol silently. */
+                continue;
+            }
         }
 
         rc = deinterleaver_push_symbol(dil, sym);
-
         if (rc < 0) {
-            while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-                int                     blk_idx = (int)blk.block_id;
-                uint64_t                holes   = 0U;
-                fec_decode_telemetry_t  telemetry;
-                int                     decode_rc;
-                int                     failure_reason = SR_FAIL_NONE;
-
-                if (blk.symbols_per_block > blk.symbol_count) {
-                    holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
-                }
-
-                ctx->stat_blocks_attempted++;
-                stats_inc_block_attempt();
-                stats_record_block(holes);
-
-                memset(recon, 0, (size_t)ctx->k * (size_t)ctx->symbol_size);
-
-                fec_set_current_decode_block_id((uint64_t)blk.block_id);
-                decode_rc = fec_decode_block(fec,
-                                             blk.symbols,
-                                             blk.symbol_count,
-                                             blk.symbols_per_block,
-                                             recon);
-                fec_get_last_decode_telemetry(&telemetry);
-
-                if (decode_rc != FEC_DECODE_OK) {
-                    failure_reason = sr_classify_block_failure(ctx, &telemetry);
-                }
-
-                sr_update_run_report_for_block(ctx, &telemetry, decode_rc == FEC_DECODE_OK);
-                sr_print_decoder_telemetry((uint64_t)blk.block_id, &telemetry, ctx->m);
-                sr_print_block_analysis((uint64_t)blk.block_id,
-                                        blk.symbols_per_block,
-                                        &telemetry,
-                                        failure_reason);
-
-                if (decode_rc == FEC_DECODE_OK) {
-                    ctx->stat_blocks_ok++;
-                    stats_inc_block_success();
-
-                    if (blk_idx >= 0 && blk_idx < ctx->num_blocks_encoded) {
-                        sr_deliver_block(ctx, blk_idx, recon, accum, &accum_count, max_accum);
-                    }
-
-                    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
-                } else {
-                    ctx->stat_blocks_failed++;
-                    stats_inc_block_failure();
-                    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 0);
+            if (deinterleaver_ready_count(dil) > 0) {
+                if (sr_service_ready_blocks(ctx,
+                                            dil,
+                                            fec,
+                                            recon,
+                                            accum,
+                                            &accum_count,
+                                            max_accum) != 0) {
+                    goto cleanup;
                 }
             }
+            continue;
+        }
 
-            rc = deinterleaver_push_symbol(dil, sym);
-            (void)rc;
+        if (rc > 0 || deinterleaver_ready_count(dil) > 0) {
+            if (sr_service_ready_blocks(ctx,
+                                        dil,
+                                        fec,
+                                        recon,
+                                        accum,
+                                        &accum_count,
+                                        max_accum) != 0) {
+                goto cleanup;
+            }
         }
     }
 
     deinterleaver_tick(dil, 0.0);
-
-    {
-        block_t blk;
-
-        while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-            int                     blk_idx = (int)blk.block_id;
-            uint64_t                holes   = 0U;
-            fec_decode_telemetry_t  telemetry;
-            int                     decode_rc;
-            int                     failure_reason = SR_FAIL_NONE;
-
-            if (blk.symbols_per_block > blk.symbol_count) {
-                holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
-            }
-
-            ctx->stat_blocks_attempted++;
-            stats_inc_block_attempt();
-            stats_record_block(holes);
-
-            memset(recon, 0, (size_t)ctx->k * (size_t)ctx->symbol_size);
-
-            fec_set_current_decode_block_id((uint64_t)blk.block_id);
-            decode_rc = fec_decode_block(fec,
-                                         blk.symbols,
-                                         blk.symbol_count,
-                                         blk.symbols_per_block,
-                                         recon);
-            fec_get_last_decode_telemetry(&telemetry);
-
-            if (decode_rc != FEC_DECODE_OK) {
-                failure_reason = sr_classify_block_failure(ctx, &telemetry);
-            }
-
-            sr_update_run_report_for_block(ctx, &telemetry, decode_rc == FEC_DECODE_OK);
-            sr_print_decoder_telemetry((uint64_t)blk.block_id, &telemetry, ctx->m);
-            sr_print_block_analysis((uint64_t)blk.block_id,
-                                    blk.symbols_per_block,
-                                    &telemetry,
-                                    failure_reason);
-
-            if (decode_rc == FEC_DECODE_OK) {
-                ctx->stat_blocks_ok++;
-                stats_inc_block_success();
-
-                if (blk_idx >= 0 && blk_idx < ctx->num_blocks_encoded) {
-                    sr_deliver_block(ctx, blk_idx, recon, accum, &accum_count, max_accum);
-                }
-
-                deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
-            } else {
-                ctx->stat_blocks_failed++;
-                stats_inc_block_failure();
-                deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 0);
-            }
-        }
+    if (sr_service_ready_blocks(ctx,
+                                dil,
+                                fec,
+                                recon,
+                                accum,
+                                &accum_count,
+                                max_accum) != 0) {
+        goto cleanup;
     }
 
     {
@@ -1151,8 +1629,10 @@ static int sr_run_rx_pipeline(sr_ctx_t *ctx)
 
             if (!pr->recovered) {
                 g_last_run_report.packet_fail_missing++;
-                if (ctx->stat_blocks_failed == 0U) {
-                    ctx->packet_fail_after_successful_block_decode_runtime++;
+                if (sr_packet_missing_due_to_missing_blocks(ctx, pr)) {
+                    g_last_run_report.packet_fail_due_to_missing_blocks++;
+                } else {
+                    g_last_run_report.packet_fail_after_successful_block_decode++;
                 }
                 stats_inc_failed_packet();
             } else if (!pr->exact_match) {
@@ -1161,7 +1641,10 @@ static int sr_run_rx_pipeline(sr_ctx_t *ctx)
         }
     }
 
-    sr_finalize_run_report(ctx);
+    if (sr_finalize_run_report(ctx) != 0) {
+        goto cleanup;
+    }
+
     sr_print_run_summary();
 
     result = 0;
@@ -1209,10 +1692,13 @@ int sim_run_campaign_case(const sim_config_t      *cfg,
     memset(&ctx, 0, sizeof(ctx));
     memset(out_result, 0, sizeof(*out_result));
     sr_reset_run_report();
+    sr_reset_oracle_block_diags();
 
     if (out_channel) {
         memset(out_channel, 0, sizeof(*out_channel));
     }
+
+    g_last_run_report.oracle_valid_for_run = !sr_run_has_corruption_events(req);
 
     stats_reset();
     stats_set_burst_fec_span((uint64_t)(cfg->m * cfg->depth));
@@ -1236,6 +1722,25 @@ int sim_run_campaign_case(const sim_config_t      *cfg,
 
     ctx.block_meta = (sr_block_meta_t *)calloc((size_t)ctx.num_blocks, sizeof(sr_block_meta_t));
     if (!ctx.block_meta) {
+        goto done;
+    }
+
+    ctx.block_final_state = (int *)malloc((size_t)ctx.num_blocks * sizeof(int));
+    if (!ctx.block_final_state) {
+        goto done;
+    }
+    for (b = 0; b < ctx.num_blocks; ++b) {
+        ctx.block_final_state[b] = SR_BLOCK_FINAL_UNKNOWN;
+    }
+
+    ctx.block_eviction_info = (dil_eviction_info_t *)calloc(
+        (size_t)ctx.num_blocks, sizeof(dil_eviction_info_t));
+    if (!ctx.block_eviction_info) {
+        goto done;
+    }
+
+    ctx.block_has_eviction = (bool *)calloc((size_t)ctx.num_blocks, sizeof(bool));
+    if (!ctx.block_has_eviction) {
         goto done;
     }
 
@@ -1339,6 +1844,9 @@ done:
         free(ctx.pkts);
     }
 
+    free(ctx.block_final_state);
+    free(ctx.block_eviction_info);
+    free(ctx.block_has_eviction);
     free(ctx.tx_buf);
 
     return rc;
