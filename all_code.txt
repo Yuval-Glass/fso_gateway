@@ -1,6 +1,5 @@
---- FSO GATEWAY FULL CODE (End of Phase 6: Algorithmic Maturity) ---
-Status: Campaign Validated | Suspicious Blocks: 0 | Recovery Span: 64
-Generated on: Thu Mar 26 14:18:27 IST 2026
+--- FSO GATEWAY - PRE-CRC STABLE VERSION (End of Phase 6) ---
+Status: Campaign Validated | No Internal CRC | Date: Sun Mar 29 10:26:02 IDT 2026
 
 --- FILE: include/block_builder.h ---
 #ifndef BLOCK_BUILDER_H
