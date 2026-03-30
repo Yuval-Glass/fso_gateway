@@ -29,6 +29,26 @@ typedef struct {
     int      symbol_size;
     int      num_windows;
     uint32_t seed;
+
+    /*
+     * Enable internal per-symbol CRC validation on both TX and RX paths.
+     *
+     * Default: 1 (enabled).
+     *
+     * When enabled:
+     *   TX — every source and repair symbol is stamped with a CRC-32 after
+     *        all metadata (packet_id, fec_id, symbol_index, total_symbols,
+     *        payload_len) and payload are finalised.
+     *   RX — each symbol is verified before being pushed to the deinterleaver.
+     *        A CRC failure causes the symbol to be discarded (treated as an
+     *        erasure).  The dropped_symbols_crc_fail counter in dil_stats_t
+     *        is incremented for every dropped symbol.
+     *
+     * When 0 (disabled):
+     *   CRC stamping and verification are both skipped.  The crc32 field in
+     *   symbol_t is left at 0.  Behavior matches the pre-CRC baseline.
+     */
+    int internal_symbol_crc_enabled;
 } sim_config_t;
 
 #define SIM_MAX_EVENTS 32
@@ -106,6 +126,10 @@ typedef struct {
 
     uint64_t failed_missing_sum;
     uint64_t failed_missing_count;
+
+    /* CRC diagnostics (zero when CRC is disabled) */
+    uint64_t crc_dropped_symbols;  /* symbols discarded due to CRC failure    */
+    uint64_t packet_fail_crc_drop; /* packets that failed due to CRC drops    */
 } sr_run_report_t;
 
 typedef struct {

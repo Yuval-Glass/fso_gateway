@@ -26,8 +26,8 @@
  *   T06  Slot reuse: acknowledged READY slots recycled on pressure.
  *   T07  Hard timeout + valid < K → irrecoverable, auto-recycled to EMPTY.
  *   T08  Hard timeout + valid >= K + holes <= M → READY_TO_DECODE.
- *   T09  fec_decode_block() returns FEC_DECODE_TOO_MANY_HOLES (-2) for
- *        holes > M.
+ *   T09  fec_decode_block() returns FEC_DECODE_ERR (-1) when valid symbols
+ *        are fewer than K (insufficient symbols guard fires before holes check).
  *   T10  Full N-symbol block: last push returns 1; READY immediately.
  *   T11  READY_TO_DECODE is evictable under slot pressure.  A READY slot
  *        in a full pool is evicted to make room for a new block_id, and
@@ -40,6 +40,13 @@
  *   T17  fec_decode_block() returns FEC_DECODE_OK with exactly K valid
  *        symbols (holes == M — boundary recoverable case).
  *   T18  dil_stats_t accumulates drop counters correctly.
+ *   T19  Good symbol passes symbol_verify_crc() and is accepted by
+ *        the deinterleaver.
+ *   T20  Corrupted symbol fails symbol_verify_crc(); when discarded before
+ *        push it behaves as an erasure (slot count unaffected).
+ *   T21  End-to-end: CRC detects one corrupted source symbol, discard
+ *        converts it to an erasure, FEC recovers with repair symbol,
+ *        reconstruction is bit-exact.
  *
  * Build:
  *   gcc -std=c11 -Iinclude -Wall -Wextra -Wpedantic -pthread           \
@@ -66,6 +73,7 @@
 #include "deinterleaver.h"
 #include "fec_wrapper.h"
 #include "logging.h"
+#include "symbol.h"
 #include "types.h"
 
 /* -------------------------------------------------------------------------- */
@@ -386,9 +394,15 @@ static void t06_slot_reuse(results_t *r)
     check(r, deinterleaver_active_blocks(dil) == 0,
           "T06: active_blocks == 0 after both mark_result");
 
-    /* 3rd block must be accepted */
+    /*
+     * 3rd block must be accepted.  With stab_ms=0.0 the block promotes to
+     * READY as soon as valid_symbols >= K and holes <= M.  push_range()
+     * returns the rc of the last symbol pushed; symbols arriving after the
+     * READY transition are frozen-dropped (rc=0).  Accepting the block is
+     * confirmed by rc >= 0 (not rejected with -99 or -1).
+     */
     rc = push_range(dil, 12U, 0, TEST_N, TEST_SYMBOL_SIZE, TEST_N);
-    check(r, rc == 1, "T06: 3rd block accepted after slots recycled (rc=1)");
+    check(r, rc >= 0, "T06: 3rd block accepted after slots recycled (rc>=0)");
 
     deinterleaver_get_ready_block(dil, &blk);
     deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
@@ -460,7 +474,7 @@ static void t08_timeout_ready(results_t *r)
 }
 
 /* ========================================================================== */
-/* T09 — fec_decode_block() returns FEC_DECODE_TOO_MANY_HOLES                */
+/* T09 — fec_decode_block() returns FEC_DECODE_ERR for insufficient symbols  */
 /* ========================================================================== */
 
 static void t09_fec_too_many_holes(results_t *r)
@@ -470,7 +484,7 @@ static void t09_fec_too_many_holes(results_t *r)
     unsigned char *out;
     int            i, rc;
 
-    printf("\n--- T09: fec_decode_block returns FEC_DECODE_TOO_MANY_HOLES ---\n");
+    printf("\n--- T09: fec_decode_block returns FEC_DECODE_ERR for insufficient symbols ---\n");
 
     fec = fec_create(FEC_TEST_K, FEC_TEST_SYMBOL_SIZE);
     if (!fec) { fail(r, "T09: fec_create failed"); return; }
@@ -480,20 +494,28 @@ static void t09_fec_too_many_holes(results_t *r)
 
     memset(syms, 0, sizeof(symbol_t) * FEC_TEST_N);
 
-    /* All-zero → holes = N > M */
+    /*
+     * All symbols missing: valid_received = 0 < K.
+     * fec_decode_block() checks valid_received < ctx->k first and returns
+     * FEC_DECODE_ERR (-1) — before the holes > M check is reached.
+     */
     rc = fec_decode_block(fec, syms, 0, FEC_TEST_N, out);
-    check(r, rc == FEC_DECODE_TOO_MANY_HOLES,
-          "T09: returns FEC_DECODE_TOO_MANY_HOLES when all symbols missing");
+    check(r, rc == FEC_DECODE_ERR,
+          "T09: returns FEC_DECODE_ERR when all symbols missing (valid < K)");
 
-    /* K-1 valid → holes = M+1 > M */
+    /*
+     * K-1 valid source symbols: valid_received = K-1 < K.
+     * fec_decode_block() returns FEC_DECODE_ERR because the
+     * insufficient-symbols guard fires before the holes > M check.
+     */
     for (i = 0; i < FEC_TEST_K - 1; ++i) {
         syms[i].fec_id      = (uint32_t)i;
         syms[i].payload_len = (uint16_t)FEC_TEST_SYMBOL_SIZE;
     }
     memset(out, 0, (size_t)FEC_TEST_K * FEC_TEST_SYMBOL_SIZE);
     rc = fec_decode_block(fec, syms, FEC_TEST_K - 1, FEC_TEST_N, out);
-    check(r, rc == FEC_DECODE_TOO_MANY_HOLES,
-          "T09: returns FEC_DECODE_TOO_MANY_HOLES for K-1 symbols");
+    check(r, rc == FEC_DECODE_ERR,
+          "T09: returns FEC_DECODE_ERR for K-1 symbols (valid < K)");
 
     free(out);
     fec_destroy(fec);
@@ -881,6 +903,216 @@ static void t18_stats(results_t *r)
 }
 
 /* ========================================================================== */
+/* T19 — Good symbol passes CRC verification                                  */
+/* ========================================================================== */
+
+static void t19_crc_good_symbol_passes(results_t *r)
+{
+    deinterleaver_t *dil;
+    symbol_t         sym;
+    int              rc;
+
+    printf("\n--- T19: good symbol passes CRC ---\n");
+
+    dil = make_dil();
+    if (!dil) { fail(r, "T19: create failed"); return; }
+
+    make_symbol(&sym, 200U, 0U, TEST_SYMBOL_SIZE, TEST_N);
+    symbol_compute_crc(&sym);
+
+    check(r, symbol_verify_crc(&sym) == 1,
+          "T19: symbol_verify_crc returns 1 for correctly stamped symbol");
+
+    rc = deinterleaver_push_symbol(dil, &sym);
+    check(r, rc >= 0,
+          "T19: CRC-stamped symbol accepted by deinterleaver");
+
+    deinterleaver_destroy(dil);
+}
+
+/* ========================================================================== */
+/* T20 — Corrupted symbol is rejected by CRC                                  */
+/* ========================================================================== */
+
+static void t20_crc_corrupted_symbol_rejected(results_t *r)
+{
+    symbol_t sym;
+    symbol_t sym_meta;
+
+    printf("\n--- T20: corrupted symbol rejected by CRC ---\n");
+
+    /* (a) Payload byte flip */
+    make_symbol(&sym, 201U, 0U, TEST_SYMBOL_SIZE, TEST_N);
+    symbol_compute_crc(&sym);
+    sym.data[0] ^= 0xFFU;
+
+    check(r, symbol_verify_crc(&sym) == 0,
+          "T20a: symbol_verify_crc returns 0 after payload corruption");
+
+    /* (b) Metadata (packet_id) flip */
+    make_symbol(&sym_meta, 202U, 1U, TEST_SYMBOL_SIZE, TEST_N);
+    symbol_compute_crc(&sym_meta);
+    sym_meta.packet_id ^= 0x1U;
+
+    check(r, symbol_verify_crc(&sym_meta) == 0,
+          "T20b: symbol_verify_crc returns 0 after metadata corruption");
+
+    /* (c) CRC discard behaves as erasure */
+    {
+        deinterleaver_t *dil;
+        block_t          blk;
+        symbol_t         good;
+        int              i;
+        int              rc_ready;
+
+        dil = make_dil();
+        if (!dil) { fail(r, "T20c: create failed"); return; }
+
+        make_symbol(&good, 203U, 0U, TEST_SYMBOL_SIZE, TEST_N);
+        symbol_compute_crc(&good);
+        deinterleaver_push_symbol(dil, &good);
+
+        make_symbol(&sym, 203U, 1U, TEST_SYMBOL_SIZE, TEST_N);
+        symbol_compute_crc(&sym);
+        sym.data[5] ^= 0xA5U;
+        check(r, symbol_verify_crc(&sym) == 0,
+              "T20c: CRC detects corruption before push");
+
+        for (i = 2; i < TEST_N; ++i) {
+            make_symbol(&good, 203U, (uint32_t)i, TEST_SYMBOL_SIZE, TEST_N);
+            symbol_compute_crc(&good);
+            deinterleaver_push_symbol(dil, &good);
+        }
+
+        sleep_ms((long)(STAB_MS + 5.0));
+        deinterleaver_tick(dil, -1.0);
+
+        rc_ready = deinterleaver_get_ready_block(dil, &blk);
+        check(r, rc_ready == 0,
+              "T20c: block reaches READY despite one CRC-dropped symbol (erasure)");
+
+        if (rc_ready == 0) {
+            check(r, blk.symbol_count == TEST_N - 1,
+                  "T20c: block has N-1 valid symbols (one erasure from CRC drop)");
+            deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+        }
+
+        deinterleaver_destroy(dil);
+    }
+}
+
+/* ========================================================================== */
+/* T21 — FEC recovery when corruption is converted to erasure via CRC        */
+/* ========================================================================== */
+
+static void t21_crc_erasure_fec_recovery(results_t *r)
+{
+    enum {
+        T21_K  = FEC_TEST_K,
+        T21_M  = FEC_TEST_M,
+        T21_N  = FEC_TEST_N,
+        T21_SZ = FEC_TEST_SYMBOL_SIZE
+    };
+
+    /* fec_set_current_decode_block_id is an internal function in
+     * fec_wrapper.c not exposed via fec_wrapper.h; the same
+     * extern-at-call-site pattern is used in sim_runner.c.            */
+    extern void fec_set_current_decode_block_id(uint64_t block_id);
+
+    fec_handle_t   fec        = NULL;
+    unsigned char *source     = NULL;
+    unsigned char *recon      = NULL;
+    symbol_t      *repairs    = NULL;
+    symbol_t       received[T21_N];
+    int            i;
+    int            ok = 0;
+
+    printf("\n--- T21: CRC erasure → FEC recovery ---\n");
+
+    fec = fec_create(T21_K, T21_SZ);
+    if (!fec) { fail(r, "T21: fec_create failed"); return; }
+
+    source  = (unsigned char *)calloc((size_t)T21_K * T21_SZ, 1U);
+    recon   = (unsigned char *)calloc((size_t)T21_K * T21_SZ, 1U);
+    repairs = (symbol_t *)calloc((size_t)T21_M, sizeof(symbol_t));
+    if (!source || !recon || !repairs) {
+        fail(r, "T21: alloc failed");
+        goto cleanup;
+    }
+
+    for (i = 0; i < T21_K * T21_SZ; ++i) {
+        source[i] = (unsigned char)((i * 17 + 5) & 0xFFU);
+    }
+
+    if (fec_encode_block(fec, source, repairs, T21_M) != FEC_DECODE_OK) {
+        fail(r, "T21: fec_encode_block failed");
+        goto cleanup;
+    }
+
+    memset(received, 0, sizeof(received));
+
+    for (i = 0; i < T21_K; ++i) {
+        symbol_t *s = &received[i];
+        s->packet_id     = 0U;
+        s->fec_id        = (uint32_t)i;
+        s->symbol_index  = (uint16_t)i;
+        s->total_symbols = (uint16_t)T21_N;
+        s->payload_len   = (uint16_t)T21_SZ;
+        memcpy(s->data, source + (size_t)i * T21_SZ, (size_t)T21_SZ);
+        symbol_compute_crc(s);
+    }
+
+    for (i = 0; i < T21_M; ++i) {
+        symbol_t *s = &repairs[i];
+        s->packet_id     = 0U;
+        s->total_symbols = (uint16_t)T21_N;
+        symbol_compute_crc(s);
+        received[T21_K + i] = *s;
+    }
+
+    received[0].data[0] ^= 0xFFU;
+
+    check(r, symbol_verify_crc(&received[0]) == 0,
+          "T21: corrupted source symbol fails CRC");
+
+    memset(&received[0], 0, sizeof(symbol_t));
+
+    ok = 1;
+    for (i = 1; i < T21_K; ++i) {
+        if (!symbol_verify_crc(&received[i])) { ok = 0; break; }
+    }
+    check(r, ok == 1, "T21: all non-corrupted source symbols pass CRC");
+
+    ok = 1;
+    for (i = 0; i < T21_M; ++i) {
+        if (!symbol_verify_crc(&received[T21_K + i])) { ok = 0; break; }
+    }
+    check(r, ok == 1, "T21: all repair symbols pass CRC");
+
+    fec_set_current_decode_block_id(21U);
+    {
+        int rc = fec_decode_block(fec,
+                                  received,
+                                  T21_N - 1,
+                                  T21_N,
+                                  recon);
+        check(r, rc == FEC_DECODE_OK,
+              "T21: FEC decodes successfully after CRC-erasure");
+
+        if (rc == FEC_DECODE_OK) {
+            check(r, memcmp(source, recon, (size_t)T21_K * T21_SZ) == 0,
+                  "T21: reconstructed data is bit-exact");
+        }
+    }
+
+cleanup:
+    free(repairs);
+    free(recon);
+    free(source);
+    fec_destroy(fec);
+}
+
+/* ========================================================================== */
 /* Entry point                                                                 */
 /* ========================================================================== */
 
@@ -890,11 +1122,6 @@ int main(void)
 
     log_init();
 
-    /*
-     * Wirehair must be initialised before any fec_create() / fec_decode_block()
-     * call.  Tests T09 and T17 invoke the FEC layer directly; this single
-     * wirehair_init() call covers both of them.
-     */
     if (wirehair_init() != Wirehair_Success) {
         fprintf(stderr, "[FATAL] wirehair_init() failed — aborting\n");
         return 1;
@@ -928,6 +1155,9 @@ int main(void)
     t16_idempotent_get(&r);
     t17_fec_boundary_ok(&r);
     t18_stats(&r);
+    t19_crc_good_symbol_passes(&r);
+    t20_crc_corrupted_symbol_rejected(&r);
+    t21_crc_erasure_fec_recovery(&r);
 
     printf("\n============================================================\n");
     printf("  Results: %d passed, %d failed\n", r.passed, r.failed);

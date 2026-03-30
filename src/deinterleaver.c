@@ -49,6 +49,14 @@
  *   Blocks that cannot be recovered (insufficient symbols or holes > M at
  *   timeout) are recycled to EMPTY immediately inside tick().  They are
  *   never READY and cannot be retrieved via get_ready_block().
+ *
+ * CRC pre-filter
+ *   CRC checking is performed by the caller BEFORE push_symbol() is invoked.
+ *   CRC-failed symbols are never presented to the deinterleaver.  The
+ *   dropped_symbols_crc_fail counter in dil_stats_t is incremented via
+ *   deinterleaver_inc_crc_drop() by the caller (e.g. sim_runner) so that
+ *   all drop statistics remain retrievable in a single deinterleaver_get_stats()
+ *   call.  The deinterleaver FSM itself has no CRC awareness.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -404,27 +412,6 @@ static slot_t *alloc_slot(deinterleaver_t       *self,
  * maybe_freeze_slot() — evaluate FILLING exit transitions.
  *
  * Called after every successful symbol store AND from deinterleaver_tick().
- *
- * Checks (in order):
- *   (a) Full: valid_symbols == N → READY_TO_DECODE.
- *   (b) Stabilization / early-promotion (valid >= K):
- *         stab_ms == 0.0 — immediate promotion:
- *           holes <= M -> READY_TO_DECODE immediately (no quiet wait).
- *           holes >  M -> unrecoverable; return FREEZE_RECYCLE immediately.
- *         stab_ms > 0.0 — classic quiet-period gate:
- *           quiet >= stab_ms AND holes <= M -> READY_TO_DECODE.
- *           quiet >= stab_ms AND holes >  M -> irrecoverable; FREEZE_RECYCLE.
- *   (c) Hard timeout (age >= timeout_ms):
- *         valid >= K AND holes <= M -> READY_TO_DECODE.
- *         otherwise                 -> irrecoverable; return FREEZE_RECYCLE.
- *
- * The stab_ms == 0.0 immediate-promotion path prevents recoverable FILLING
- * blocks from being evicted before decode when the active block window fills.
- *
- * Returns:
- *   FREEZE_NONE    (0) — no transition; slot remains FILLING.
- *   FREEZE_READY   (1) — slot moved to READY_TO_DECODE.
- *   FREEZE_RECYCLE (2) — irrecoverable; caller must call slot_reset().
  */
 static int maybe_freeze_slot(slot_t                *s,
                               int                    N,
@@ -460,22 +447,11 @@ static int maybe_freeze_slot(slot_t                *s,
 
     /* ------------------------------------------------------------------ */
     /* (b) Stabilization / early-promotion                                */
-    /*                                                                    */
-    /* stab_ms > 0.0  — classic quiet-period gate: promote only after    */
-    /*                  no new symbol has arrived for stab_ms.            */
-    /* stab_ms == 0.0 — immediate-promotion: as soon as valid >= K and   */
-    /*                  holes <= M the block is decodable; do not hold it */
-    /*                  in FILLING where it risks eviction before decode. */
     /* ------------------------------------------------------------------ */
     if (s->valid_symbols >= K) {
         if (stab_ms == 0.0) {
             /* Immediate-promotion path: no quiet period required. */
             if (holes > M) {
-                /*
-                 * Already unrecoverable — holes exceed the FEC budget.
-                 * More symbols cannot arrive for fec_ids already lost,
-                 * so the block is permanently undecodable.  Recycle now.
-                 */
                 stats->blocks_failed_holes++;
                 LOG_WARN("[DIL] Block %u → recycle (unrecoverable: "
                          "holes=%d > M=%d, valid=%d)",
@@ -741,11 +717,6 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
                                   &self->stats);
 
     if (freeze_rc == FREEZE_RECYCLE) {
-        /*
-         * Block is irrecoverable (holes > M or timeout with valid < K).
-         * Recycle the slot directly to EMPTY — it was never READY so it
-         * cannot be retrieved via get_ready_block().
-         */
         holes = self->symbols_per_block - slot->valid_symbols;
         LOG_DEBUG("[DIL] Block %u irrecoverable at insertion — recycling",
                   (unsigned)slot->block_id);
@@ -787,11 +758,6 @@ int deinterleaver_get_ready_block(deinterleaver_t *self, block_t *out_block)
 
             *out_block = s->block;
 
-            /*
-             * STATE IS NOT CHANGED HERE.
-             * Slot stays READY_TO_DECODE until mark_result() is called.
-             * This call is idempotent.
-             */
             LOG_INFO("[DIL] get_ready_block: block_id=%u (%d/%d syms) "
                      "— state unchanged; mark_result() required",
                      (unsigned)s->block_id,
@@ -828,13 +794,6 @@ int deinterleaver_mark_result(deinterleaver_t *self,
         return -1;
     }
 
-    /*
-     * READY_TO_DECODE → EMPTY.
-     *
-     * The success flag is informational only — it is logged but does not
-     * produce a distinct slot state.  The slot is always returned to EMPTY
-     * regardless of outcome.
-     */
     LOG_INFO("[DIL] mark_result: block_id=%u %s → EMPTY",
              (unsigned)block_id, success ? "(success)" : "(failure)");
 
@@ -861,13 +820,6 @@ int deinterleaver_tick(deinterleaver_t *self, double override_timeout_ms)
 
     now_monotonic(&now);
 
-    /*
-     * Resolve effective hard timeout:
-     *   override > 0.0  → use override.
-     *   override == 0.0 → immediate flush (threshold 0; elapsed always fires).
-     *   override < 0.0  → use stored block_max_age_ms; if 0 (disabled), use
-     *                     a large sentinel so only stabilization can trigger.
-     */
     if (override_timeout_ms > 0.0) {
         hard_timeout = override_timeout_ms;
     } else if (override_timeout_ms == 0.0) {
@@ -900,10 +852,6 @@ int deinterleaver_tick(deinterleaver_t *self, double override_timeout_ms)
         if (freeze_rc == FREEZE_RECYCLE) {
             int holes = self->symbols_per_block - s->valid_symbols;
 
-            /*
-             * Block is irrecoverable — it was never READY and cannot be
-             * retrieved.  Recycle to EMPTY so the slot pool is not drained.
-             */
             LOG_DEBUG("[DIL] tick: recycling irrecoverable block_id=%u",
                       (unsigned)s->block_id);
             finalize_and_reset_slot(
@@ -947,4 +895,10 @@ int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out)
     if (self == NULL || out == NULL) { return -1; }
     *out = self->stats;
     return 0;
+}
+
+void deinterleaver_inc_crc_drop(deinterleaver_t *self)
+{
+    if (self == NULL) { return; }
+    self->stats.dropped_symbols_crc_fail++;
 }

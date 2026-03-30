@@ -34,6 +34,10 @@ typedef struct {
     atomic_uint_fast64_t total_symbols;
     atomic_uint_fast64_t lost_symbols;
 
+    /* CRC integrity counters */
+    atomic_uint_fast64_t symbols_dropped_crc;
+    atomic_uint_fast64_t packet_fail_crc_drop;
+
     atomic_uint_fast64_t blocks_attempted;
     atomic_uint_fast64_t blocks_recovered;
     atomic_uint_fast64_t blocks_failed;
@@ -174,6 +178,8 @@ static void stats_snapshot(struct stats_container *out)
     out->failed_packets            = stats_atomic_load_u64(&g_stats.failed_packets);
     out->total_symbols             = stats_atomic_load_u64(&g_stats.total_symbols);
     out->lost_symbols              = stats_atomic_load_u64(&g_stats.lost_symbols);
+    out->symbols_dropped_crc       = stats_atomic_load_u64(&g_stats.symbols_dropped_crc);
+    out->packet_fail_crc_drop      = stats_atomic_load_u64(&g_stats.packet_fail_crc_drop);
     out->blocks_attempted          = stats_atomic_load_u64(&g_stats.blocks_attempted);
     out->blocks_recovered          = stats_atomic_load_u64(&g_stats.blocks_recovered);
     out->blocks_failed             = stats_atomic_load_u64(&g_stats.blocks_failed);
@@ -346,6 +352,8 @@ void stats_reset(void)
     atomic_store_explicit(&g_stats.failed_packets,            0U, memory_order_relaxed);
     atomic_store_explicit(&g_stats.total_symbols,             0U, memory_order_relaxed);
     atomic_store_explicit(&g_stats.lost_symbols,              0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.symbols_dropped_crc,       0U, memory_order_relaxed);
+    atomic_store_explicit(&g_stats.packet_fail_crc_drop,      0U, memory_order_relaxed);
     atomic_store_explicit(&g_stats.blocks_attempted,          0U, memory_order_relaxed);
     atomic_store_explicit(&g_stats.blocks_recovered,          0U, memory_order_relaxed);
     atomic_store_explicit(&g_stats.blocks_failed,             0U, memory_order_relaxed);
@@ -474,6 +482,16 @@ void stats_inc_block_failure(void)
     atomic_fetch_add_explicit(&g_stats.blocks_failed, 1U, memory_order_relaxed);
 }
 
+void stats_inc_crc_drop_symbol(void)
+{
+    atomic_fetch_add_explicit(&g_stats.symbols_dropped_crc, 1U, memory_order_relaxed);
+}
+
+void stats_inc_crc_drop_packet_fail(void)
+{
+    atomic_fetch_add_explicit(&g_stats.packet_fail_crc_drop, 1U, memory_order_relaxed);
+}
+
 void stats_report(void)
 {
     struct stats_container snapshot;
@@ -574,6 +592,11 @@ void stats_report(void)
     LOG_INFO("Symbols:");
     LOG_INFO("  Total:                %" PRIu64, snapshot.total_symbols);
     LOG_INFO("  Lost:                 %" PRIu64, snapshot.lost_symbols);
+    LOG_INFO("  CRC-Dropped:          %" PRIu64, snapshot.symbols_dropped_crc);
+
+    LOG_INFO("CRC Integrity:");
+    LOG_INFO("  Symbols dropped (CRC):%" PRIu64, snapshot.symbols_dropped_crc);
+    LOG_INFO("  Packet fails (CRC):   %" PRIu64, snapshot.packet_fail_crc_drop);
 
     LOG_INFO("FEC:");
     LOG_INFO("  Blocks Attempted:     %" PRIu64, snapshot.blocks_attempted);

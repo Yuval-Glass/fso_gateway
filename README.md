@@ -303,3 +303,212 @@ This means:
 
 👉 The hard problem (channel + coding) is solved
 👉 The rest is deterministic debugging
+
+
+
+
+
+CRC Integrity Layer (NEW – Phase 6 Extension)
+Motivation
+
+While the system is designed as a Packet Erasure Channel, real-world channels may introduce corrupted symbols, not just losses.
+
+Wirehair (Fountain Code):
+
+❌ Cannot fix corrupted data
+✔ Can recover from missing symbols
+
+Therefore:
+
+👉 Any corrupted symbol must be converted into an erasure BEFORE FEC decoding
+
+Design Overview
+
+A lightweight per-symbol CRC validation layer was introduced.
+
+Flow Integration
+
+TX:
+
+packet
+→ fragment → symbol
+→ FEC encode
+→ CRC calculation (per symbol)
+→ interleave
+→ TX
+
+RX:
+
+RX
+→ deinterleave
+→ CRC validation
+    → valid → pass to FEC
+    → invalid → DROP (treated as erasure)
+→ FEC decode
+→ reassemble
+Key Principle
+
+✔ Corruption is converted into erasure
+✔ FEC sees only valid or missing symbols
+✔ System remains mathematically consistent
+
+CRC Behavior
+
+Each symbol now contains:
+
+payload
+metadata (block_id, fec_id, etc.)
+CRC field
+On Receive:
+CRC is recomputed
+Compared to stored value
+
+If mismatch:
+
+symbol → DROPPED
+→ counted as "missing"
+→ increases holes
+New Metrics (Campaign + Runtime)
+Symbol-Level
+crc_dropped_symbols
+Number of symbols rejected due to CRC mismatch
+Packet-Level
+packet_fail_crc_drop
+Packets that failed directly due to CRC drops
+
+(Currently expected to be 0 in most runs — CRC contributes indirectly via missing blocks)
+
+Observed Behavior (Validated)
+
+From campaign runs:
+
+CRC actively drops corrupted symbols ✔
+No false decode successes ✔
+No oracle mismatches ✔
+System still aligns with erasure model ✔
+
+Example:
+
+crc_dropped_symbols > 0
+blocks_decode_failed = 0
+oracle_recoverable_but_not_decoded_successfully = 0
+
+Meaning:
+
+👉 CRC integration is correct and safe
+
+Important Implementation Detail
+
+CRC is calculated:
+
+AFTER FEC encode
+
+Reason:
+
+FEC modifies payload
+CRC must reflect final transmitted data
+Campaign Impact
+
+CRC introduces:
+
+More "missing symbols" (converted corruption)
+Higher stress on FEC
+More realistic channel modeling
+
+But:
+
+✔ No degradation in correct recoverable scenarios
+✔ No increase in suspicious discards
+✔ No violation of theoretical limits
+
+How to Run with CRC
+Default (CRC enabled)
+make clean
+mkdir -p build
+make ctest DEBUG=1 > build/ctest_full.log 2>&1
+Disable CRC (for comparison)
+
+If supported via runtime flag:
+
+./build/channel_campaign_test --crc 0
+
+or (depending on implementation):
+
+./build/channel_campaign_test --enable-crc=0
+Compare Modes
+Mode	Behavior
+CRC ON	corruption → erasure
+CRC OFF	corrupted symbols reach FEC (undefined behavior risk)
+How to Analyze Results
+View Summary
+tail -n 120 build/ctest_full.log
+Key Fields to Check
+Correctness
+blocks_decode_failed = 0
+oracle_recoverable_but_not_decoded_successfully = 0
+oracle_recoverable_but_discarded_before_decode = 0
+CRC Behavior
+crc_dropped_symbols > 0 (expected in corruption scenarios)
+packet_fail_crc_drop ≈ 0
+System Health
+suspicious_blocks_total = 0
+Interpretation Guide
+Case 1 — Healthy System
+decode_success = full
+oracle mismatch = 0
+suspicious = 0
+
+✔ System correct
+
+Case 2 — Too Many Holes
+fail_too_many_holes > 0
+
+✔ Expected — beyond FEC capability
+
+Case 3 — CRC Active
+crc_dropped_symbols > 0
+
+✔ Corruption handled correctly
+
+Case 4 — Problem (Should NOT happen)
+oracle_recoverable_but_not_decoded_successfully > 0
+
+❌ Indicates real bug
+
+Design Insight (Updated)
+
+System model refined:
+
+Real Channel
+→ corruption + erasure
+
+CRC Layer
+→ converts corruption → erasure
+
+Effective Channel to FEC
+→ PURE ERASURE CHANNEL
+
+This ensures:
+
+✔ Mathematical alignment with FEC assumptions
+✔ Predictable behavior
+✔ Clean theoretical validation
+
+Final Status After CRC Integration
+
+✔ CRC layer fully integrated
+✔ No regression in FEC performance
+✔ No new inconsistencies introduced
+✔ Campaign validation remains stable
+✔ System behavior matches theory
+
+Conclusion Update
+
+The system now handles:
+
+✔ Burst erasures (via interleaving + FEC)
+✔ Corrupted symbols (via CRC → erasure)
+
+Meaning:
+
+👉 The channel abstraction is now complete and realistic

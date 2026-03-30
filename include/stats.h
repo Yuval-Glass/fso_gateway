@@ -39,6 +39,10 @@ struct stats_container {
     uint64_t total_symbols;
     uint64_t lost_symbols;
 
+    /* CRC integrity counters (zero when internal CRC is disabled) */
+    uint64_t symbols_dropped_crc;   /* symbols discarded due to CRC failure   */
+    uint64_t packet_fail_crc_drop;  /* packets that failed due to CRC drops   */
+
     uint64_t blocks_attempted;
     uint64_t blocks_recovered;
     uint64_t blocks_failed;
@@ -156,6 +160,25 @@ void stats_inc_block_success(void);
  * @brief Increment the failed block counter.
  */
 void stats_inc_block_failure(void);
+
+/**
+ * @brief Increment the CRC-dropped symbol counter.
+ *
+ * Called by the RX pipeline each time a symbol is discarded due to CRC
+ * failure (internal_symbol_crc_enabled must be non-zero).  The symbol is
+ * treated as an erasure and must not be forwarded to the deinterleaver.
+ */
+void stats_inc_crc_drop_symbol(void);
+
+/**
+ * @brief Increment the packet-level CRC-drop failure counter.
+ *
+ * Called when a packet fails to reconstruct because one or more of its
+ * symbols were dropped due to CRC failure (creating erasures beyond the
+ * FEC recovery threshold).  This is an additional diagnostic dimension;
+ * it does NOT replace packet_fail_missing or packet_fail_corrupted.
+ */
+void stats_inc_crc_drop_packet_fail(void);
 
 /**
  * @brief Print a structured statistics report through LOG_INFO.

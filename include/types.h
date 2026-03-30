@@ -63,6 +63,14 @@ extern "C" {
  *                  and repair symbols; may be less for the last fragment of
  *                  a short packet.
  *
+ *   crc32          CRC-32 (IEEE 802.3 polynomial) protecting the critical
+ *                  metadata fields (packet_id, fec_id, symbol_index,
+ *                  total_symbols, payload_len) and the first payload_len
+ *                  bytes of data[].  Set by symbol_compute_crc() on the TX
+ *                  path; verified by symbol_verify_crc() on the RX path
+ *                  before the symbol is accepted into the deinterleaver.
+ *                  Zero when internal CRC is disabled (bypass mode).
+ *
  *   data[]         raw payload bytes, up to MAX_SYMBOL_DATA_SIZE.
  */
 typedef struct symbol_t {
@@ -71,6 +79,7 @@ typedef struct symbol_t {
     uint16_t      symbol_index;
     uint16_t      total_symbols;
     uint16_t      payload_len;
+    uint32_t      crc32;          /* internal per-symbol CRC (0 = disabled)  */
     unsigned char data[MAX_SYMBOL_DATA_SIZE];
 } symbol_t;
 
@@ -112,7 +121,7 @@ typedef struct symbol_t {
  * Memory model:
  *   symbols[] is an inline array — no heap allocation required.
  *   sizeof(block_t) ≈ MAX_SYMBOLS_PER_BLOCK × sizeof(symbol_t)
- *                   = 256 × ~9018 bytes ≈ 2.3 MiB
+ *                   = 256 × ~9024 bytes ≈ 2.3 MiB
  *
  *   This is intentionally large so that a single block_t can be stack-
  *   or heap-allocated without pointer chasing.  In the deinterleaver,

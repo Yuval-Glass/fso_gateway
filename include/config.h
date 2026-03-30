@@ -22,6 +22,7 @@
  * - Network interface names for the LAN side and FSO side
  * - FEC-related parameters
  * - Processing/interleaving-related parameters
+ * - Internal CRC enable flag
  *
  * All fields are populated by config_parse().
  */
@@ -72,6 +73,22 @@ struct config {
      * or another unit defined by later FEC/interleaving logic.
      */
     int symbol_size;
+
+    /**
+     * @brief Enable internal per-symbol CRC validation.
+     *
+     * When non-zero (default: 1), every transmitted symbol carries a CRC-32
+     * covering its critical metadata fields and payload bytes.  On the RX
+     * path, symbols that fail CRC verification are discarded before entering
+     * the deinterleaver and are treated as erasures by the FEC layer.
+     *
+     * Set to 0 to disable CRC generation and verification entirely.  This
+     * restores baseline behavior for CPU/throughput experiments.
+     *
+     * CLI option: --internal-symbol-crc 0|1
+     * Default:    1 (enabled)
+     */
+    int internal_symbol_crc_enabled;
 };
 
 /**
@@ -81,7 +98,8 @@ struct config {
  * 1. Initializes the provided configuration structure with defaults.
  * 2. Iterates over argc/argv using getopt_long().
  * 3. Recognizes long-form options such as:
- *    --lan-iface, --fso-iface, --k, --m, --depth, --symbol-size
+ *    --lan-iface, --fso-iface, --k, --m, --depth, --symbol-size,
+ *    --internal-symbol-crc
  * 4. Validates parsed values.
  * 5. Returns success or failure.
  *

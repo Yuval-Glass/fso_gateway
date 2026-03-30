@@ -180,6 +180,7 @@ BURST_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                    $(OBJ_DIR)/fec_wrapper.o \
                    $(OBJ_DIR)/interleaver.o \
                    $(OBJ_DIR)/logging.o \
+                   $(OBJ_DIR)/symbol.o \
                    $(WIREHAIR_OBJS)
 
 $(BURST_TEST_BIN): $(BURST_TEST_OBJ) $(BURST_TEST_DEPS) | $(BIN_DIR)
@@ -192,6 +193,7 @@ ROBUSTNESS_TEST_OBJ  := $(TEST_OBJS_DIR)/receiver_robustness_test.o
 ROBUSTNESS_TEST_DEPS := $(OBJ_DIR)/deinterleaver.o \
                          $(OBJ_DIR)/fec_wrapper.o \
                          $(OBJ_DIR)/logging.o \
+                         $(OBJ_DIR)/symbol.o \
                          $(WIREHAIR_OBJS)
 
 $(ROBUSTNESS_TEST_BIN): $(ROBUSTNESS_TEST_OBJ) $(ROBUSTNESS_TEST_DEPS) | $(BIN_DIR)

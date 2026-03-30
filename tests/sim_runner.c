@@ -11,6 +11,24 @@
  *            stats_inc_block_failure(), stats_record_block()
  *
  * All metrics in sim_result_t come from real pipeline execution only.
+ *
+ * Internal CRC integration
+ * ------------------------
+ * TX path (sr_encode_one_block):
+ *   After all metadata fields (packet_id, fec_id, total_symbols, payload_len)
+ *   are finalised on each source and repair symbol, symbol_compute_crc() is
+ *   called when ctx->internal_symbol_crc_enabled is non-zero.  This stamps
+ *   sym.crc32 / repair_buf[m].crc32 before the symbol enters the interleaver.
+ *
+ * RX path (sr_run_rx_pipeline):
+ *   Before deinterleaver_push_symbol(), symbol_verify_crc() is called on
+ *   every symbol with payload_len > 0 when ctx->internal_symbol_crc_enabled
+ *   is non-zero.  A CRC failure causes the symbol to be silently discarded
+ *   (treated as an erasure).  deinterleaver_inc_crc_drop() and
+ *   g_last_run_report.crc_dropped_symbols are both incremented.
+ *
+ * When ctx->internal_symbol_crc_enabled == 0 both paths are bypassed and
+ * behavior matches the pre-CRC baseline exactly.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -32,6 +50,7 @@
 #include "packet_fragmenter.h"
 #include "packet_reassembler.h"
 #include "stats.h"
+#include "symbol.h"
 #include "types.h"
 
 #include "sim_runner.h"
@@ -153,6 +172,9 @@ typedef struct {
     int total_syms;
     int total_src_slots;
 
+    /* CRC configuration — propagated from sim_config_t */
+    int internal_symbol_crc_enabled;
+
     sr_pkt_record_t *pkts;
     int              num_generated;
     int              num_transmitted;
@@ -173,6 +195,15 @@ typedef struct {
 
     dil_eviction_info_t *block_eviction_info;   /* NULL = no eviction trace  */
     bool                *block_has_eviction;
+
+    /*
+     * Per-block CRC drop counter.
+     * block_crc_drops[i] is the number of symbols dropped due to CRC failure
+     * while block i was being received.  sym->packet_id carries the block_id
+     * in the interleaved stream, so we index directly by that value.
+     * Allocated alongside block_final_state; NULL when CRC is disabled.
+     */
+    uint64_t *block_crc_drops;
 
     uint64_t failed_missing_sum;
     uint64_t failed_missing_count;
@@ -471,6 +502,61 @@ static int sr_packet_missing_due_to_missing_blocks(const sr_ctx_t        *ctx,
 
         state = ctx->block_final_state[blk_idx];
         if (state != DIL_BLOCK_FINAL_DECODE_SUCCESS) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * sr_packet_fail_attributable_to_crc()
+ *
+ * Returns 1 if there is grounded evidence that this packet's failure can be
+ * attributed to CRC drops — specifically when ALL of the following hold:
+ *
+ *   1. CRC is enabled (block_crc_drops array is non-NULL).
+ *   2. The packet failed due to at least one contributing block failing
+ *      (sr_packet_missing_due_to_missing_blocks already confirmed this
+ *      before this function is called).
+ *   3. At least one of the contributing blocks that actually FAILED (i.e.
+ *      final_state != DECODE_SUCCESS) had one or more CRC drops recorded
+ *      against it.
+ *
+ * This is a conservative attribution: it does not claim CRC caused the
+ * failure solely because some unrelated block elsewhere in the run had drops.
+ * The causal link must be to a block that both (a) contributed to this
+ * specific packet's symbols AND (b) failed AND (c) had CRC drops.
+ *
+ * Returns 0 when no such evidence exists or when CRC is disabled.
+ */
+static int sr_packet_fail_attributable_to_crc(const sr_ctx_t        *ctx,
+                                               const sr_pkt_record_t *pr)
+{
+    int i;
+
+    if (ctx == NULL || pr == NULL ||
+        ctx->block_crc_drops == NULL ||
+        pr->num_contributing_blocks <= 0) {
+        return 0;
+    }
+
+    for (i = 0; i < pr->num_contributing_blocks; ++i) {
+        int blk_idx = pr->contributing_blocks[i];
+        int state;
+
+        if (blk_idx < 0 || blk_idx >= ctx->num_blocks_encoded) {
+            continue;
+        }
+
+        state = ctx->block_final_state[blk_idx];
+        if (state == DIL_BLOCK_FINAL_DECODE_SUCCESS) {
+            /* This contributing block succeeded — not the source of failure. */
+            continue;
+        }
+
+        /* Block failed AND had at least one CRC drop — precise attribution. */
+        if (ctx->block_crc_drops[blk_idx] > 0U) {
             return 1;
         }
     }
@@ -831,6 +917,10 @@ static void sr_print_run_summary(void)
            g_last_run_report.max_missing_symbols_in_block);
     printf("- avg_missing_symbols_in_failed_blocks: %.2f\n",
            g_last_run_report.avg_missing_symbols_in_failed_blocks);
+    printf("- crc_dropped_symbols: %" PRIu64 "\n",
+           g_last_run_report.crc_dropped_symbols);
+    printf("- packet_fail_crc_drop: %" PRIu64 "\n",
+           g_last_run_report.packet_fail_crc_drop);
     printf("[ERASURE ORACLE SUMMARY]\n");
     printf("- oracle_valid_for_run: %s\n",
            g_last_run_report.oracle_valid_for_run ? "true" : "false");
@@ -920,7 +1010,18 @@ static int sr_generate_packets(sr_ctx_t *ctx, uint32_t seed)
 }
 
 /* =========================================================================
- * Encode one full/padded block and drain ready interleaver output
+ * Encode one full/padded block and drain ready interleaver output.
+ *
+ * CRC stamping (TX path):
+ *   Source symbols: after packet_id, fec_id, total_symbols, payload_len are
+ *   all set (they are all set in this loop), call symbol_compute_crc() before
+ *   pushing to the interleaver.
+ *
+ *   Repair symbols: fec_encode_block() fills fec_id, payload_len, and data[].
+ *   After we set packet_id, total_symbols, and (implicitly) fec_id is already
+ *   correct, call symbol_compute_crc() before pushing to the interleaver.
+ *
+ * Both stamps are skipped when ctx->internal_symbol_crc_enabled == 0.
  * =========================================================================*/
 
 static int sr_encode_one_block(sr_ctx_t        *ctx,
@@ -959,16 +1060,37 @@ static int sr_encode_one_block(sr_ctx_t        *ctx,
         sym.total_symbols = (uint16_t)ctx->n;
         sym.payload_len   = (uint16_t)ctx->symbol_size;
 
+        /*
+         * Stamp CRC after all metadata fields are finalised.
+         * This protects packet_id, fec_id, symbol_index, total_symbols,
+         * payload_len, and the active payload bytes in data[].
+         */
+        if (ctx->internal_symbol_crc_enabled) {
+            symbol_compute_crc(&sym);
+        }
+
         if (interleaver_push_symbol(il, &sym) < 0) {
             return -1;
         }
     }
 
     for (m = 0; m < ctx->m; ++m) {
+        /*
+         * fec_encode_block() already set repair_buf[m].fec_id and
+         * repair_buf[m].payload_len.  We set the remaining metadata fields
+         * here before stamping CRC.
+         */
         repair_buf[m].packet_id     = (uint32_t)blk_idx;
         repair_buf[m].fec_id        = (uint32_t)(ctx->k + m);
         repair_buf[m].total_symbols = (uint16_t)ctx->n;
         repair_buf[m].payload_len   = (uint16_t)ctx->symbol_size;
+
+        /*
+         * Stamp CRC on repair symbol after all metadata is set.
+         */
+        if (ctx->internal_symbol_crc_enabled) {
+            symbol_compute_crc(&repair_buf[m]);
+        }
 
         if (interleaver_push_symbol(il, &repair_buf[m]) < 0) {
             return -1;
@@ -1577,6 +1699,46 @@ static int sr_run_rx_pipeline(sr_ctx_t *ctx)
             }
         }
 
+        /*
+         * CRC pre-filter (RX path).
+         *
+         * For every non-erasure symbol, verify the CRC before forwarding to
+         * the deinterleaver.  A CRC failure means the symbol payload or
+         * critical metadata was corrupted in transit.  The symbol is silently
+         * discarded and treated as an erasure — Wirehair will handle the
+         * resulting hole via FEC repair symbols.
+         *
+         * This check is bypassed when internal_symbol_crc_enabled == 0.
+         */
+        if (sym->payload_len > 0 && ctx->internal_symbol_crc_enabled) {
+            if (!symbol_verify_crc(sym)) {
+                LOG_DEBUG("[sim_runner] CRC fail: dropping symbol "
+                          "block_id=%u fec_id=%u",
+                          (unsigned)sym->packet_id,
+                          (unsigned)sym->fec_id);
+                deinterleaver_inc_crc_drop(dil);
+                g_last_run_report.crc_dropped_symbols++;
+                stats_inc_crc_drop_symbol();
+                /*
+                 * Record CRC drop against the block that owns this symbol.
+                 * sym->packet_id carries the block_id in the interleaved
+                 * stream (set by sr_encode_one_block before interleaving).
+                 * This per-block count is used later for precise
+                 * packet_fail_crc_drop attribution.
+                 */
+                {
+                    int blk_id = (int)sym->packet_id;
+                    if (ctx->block_crc_drops != NULL &&
+                        blk_id >= 0 &&
+                        blk_id < ctx->num_blocks_encoded) {
+                        ctx->block_crc_drops[blk_id]++;
+                    }
+                }
+                /* Do NOT push to deinterleaver — treat as erasure. */
+                continue;
+            }
+        }
+
         rc = deinterleaver_push_symbol(dil, sym);
         if (rc < 0) {
             if (deinterleaver_ready_count(dil) > 0) {
@@ -1631,6 +1793,19 @@ static int sr_run_rx_pipeline(sr_ctx_t *ctx)
                 g_last_run_report.packet_fail_missing++;
                 if (sr_packet_missing_due_to_missing_blocks(ctx, pr)) {
                     g_last_run_report.packet_fail_due_to_missing_blocks++;
+                    /*
+                     * Precise CRC attribution: increment packet_fail_crc_drop
+                     * only when at least one of this packet's contributing
+                     * blocks both FAILED and had recorded CRC drops.
+                     * This pins the cause to a specific failed block with
+                     * confirmed CRC-dropped symbols, avoiding run-level
+                     * overcounting.
+                     */
+                    if (ctx->internal_symbol_crc_enabled &&
+                        sr_packet_fail_attributable_to_crc(ctx, pr)) {
+                        g_last_run_report.packet_fail_crc_drop++;
+                        stats_inc_crc_drop_packet_fail();
+                    }
                 } else {
                     g_last_run_report.packet_fail_after_successful_block_decode++;
                 }
@@ -1703,14 +1878,15 @@ int sim_run_campaign_case(const sim_config_t      *cfg,
     stats_reset();
     stats_set_burst_fec_span((uint64_t)(cfg->m * cfg->depth));
 
-    ctx.k               = cfg->k;
-    ctx.m               = cfg->m;
-    ctx.n               = cfg->k + cfg->m;
-    ctx.depth           = cfg->depth;
-    ctx.symbol_size     = cfg->symbol_size;
-    ctx.num_blocks      = cfg->num_windows * cfg->depth;
-    ctx.total_syms      = ctx.num_blocks * ctx.n;
-    ctx.total_src_slots = ctx.num_blocks * ctx.k;
+    ctx.k                          = cfg->k;
+    ctx.m                          = cfg->m;
+    ctx.n                          = cfg->k + cfg->m;
+    ctx.depth                      = cfg->depth;
+    ctx.symbol_size                = cfg->symbol_size;
+    ctx.num_blocks                 = cfg->num_windows * cfg->depth;
+    ctx.total_syms                 = ctx.num_blocks * ctx.n;
+    ctx.total_src_slots            = ctx.num_blocks * ctx.k;
+    ctx.internal_symbol_crc_enabled = cfg->internal_symbol_crc_enabled;
 
     seed     = (req->seed_override != 0U) ? req->seed_override : cfg->seed;
     max_pkts = ctx.total_src_slots + 8;
@@ -1742,6 +1918,18 @@ int sim_run_campaign_case(const sim_config_t      *cfg,
     ctx.block_has_eviction = (bool *)calloc((size_t)ctx.num_blocks, sizeof(bool));
     if (!ctx.block_has_eviction) {
         goto done;
+    }
+
+    /*
+     * Allocate per-block CRC drop counter only when CRC is enabled.
+     * Left NULL when disabled so the attribution code skips it cheaply.
+     */
+    if (ctx.internal_symbol_crc_enabled) {
+        ctx.block_crc_drops = (uint64_t *)calloc((size_t)ctx.num_blocks,
+                                                  sizeof(uint64_t));
+        if (!ctx.block_crc_drops) {
+            goto done;
+        }
     }
 
     for (b = 0; b < ctx.num_blocks; ++b) {
@@ -1847,6 +2035,7 @@ done:
     free(ctx.block_final_state);
     free(ctx.block_eviction_info);
     free(ctx.block_has_eviction);
+    free(ctx.block_crc_drops);
     free(ctx.tx_buf);
 
     return rc;

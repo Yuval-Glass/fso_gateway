@@ -16,6 +16,18 @@
  * All symbols except the last one normally carry symbol_size bytes.
  * The last symbol carries only the remaining bytes.
  *
+ * CRC note:
+ *   fragment_packet() does NOT stamp CRC.  CRC must be computed by the
+ *   caller after fec_id has been assigned (i.e. after the block builder
+ *   sets sym.fec_id for each source symbol).  This separates concerns:
+ *   fragmentation fills payload and packet-level metadata; the block
+ *   builder assigns the FEC id; only then is the symbol fully populated
+ *   and ready for CRC stamping via symbol_compute_crc().
+ *
+ *   For a compact fragmentation-only path where fec_id is set inside this
+ *   call (i.e. fec_id == symbol_index for all source symbols), you may call
+ *   symbol_compute_crc() immediately after fragment_packet() returns.
+ *
  * Safety checks:
  * - packet_data must not be NULL when packet_len > 0
  * - out_symbols must not be NULL
@@ -100,9 +112,18 @@ int fragment_packet(const unsigned char *packet_data,
         symbol_init(&out_symbols[i]);
 
         out_symbols[i].packet_id = packet_id;
-        out_symbols[i].symbol_index = i;
+        /*
+         * fec_id is set here to symbol_index so that callers that use
+         * fragment_packet() in a direct path (no separate block builder)
+         * have a fully populated symbol ready for CRC stamping.
+         * The block builder may overwrite fec_id before calling
+         * symbol_compute_crc(); that is correct — CRC must be stamped
+         * after fec_id is finalised.
+         */
+        out_symbols[i].fec_id        = (uint32_t)i;
+        out_symbols[i].symbol_index  = i;
         out_symbols[i].total_symbols = total_symbols;
-        out_symbols[i].payload_len = payload_len;
+        out_symbols[i].payload_len   = payload_len;
 
         memcpy(out_symbols[i].data, packet_data + offset, payload_len);
 

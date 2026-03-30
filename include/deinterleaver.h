@@ -49,6 +49,19 @@
  *   NO OTHER TRANSITIONS ARE LEGAL.
  *
  * =============================================================================
+ * CRC REJECTION
+ * =============================================================================
+ *
+ * Internal per-symbol CRC rejection is a pre-filter that operates BEFORE
+ * push_symbol() is called.  CRC-failed symbols are counted in
+ * dil_stats_t::dropped_symbols_crc_fail and are never presented to the
+ * deinterleaver.  From the deinterleaver's perspective, they are identical
+ * to symbols that were never transmitted — i.e., they become erasures.
+ *
+ * The CRC pre-filter is exercised in the sim_runner RX pipeline; the
+ * deinterleaver itself has no knowledge of CRC processing.
+ *
+ * =============================================================================
  * KEY INVARIANTS
  * =============================================================================
  *
@@ -94,7 +107,9 @@
  * DIAGNOSTIC COUNTERS
  * =============================================================================
  *   dil_stats_t tracks dropped symbols, evictions, and state transitions.
- *   Retrieve with deinterleaver_get_stats().
+ *   The dropped_symbols_crc_fail counter is incremented by callers (e.g.
+ *   sim_runner) before calling push_symbol(); the deinterleaver itself never
+ *   touches it.  Retrieve the full struct with deinterleaver_get_stats().
  */
 
 #ifndef FSO_DEINTERLEAVER_H
@@ -175,6 +190,7 @@ typedef struct {
     uint64_t dropped_symbols_duplicate;
     uint64_t dropped_symbols_frozen;
     uint64_t dropped_symbols_erasure;
+    uint64_t dropped_symbols_crc_fail;   /* CRC-rejected before push_symbol() */
     uint64_t evicted_filling_blocks;
     uint64_t evicted_done_blocks;
     uint64_t blocks_ready;
@@ -246,6 +262,16 @@ int deinterleaver_tick(deinterleaver_t *self, double override_timeout_ms);
 int deinterleaver_active_blocks(const deinterleaver_t *self);
 int deinterleaver_ready_count(const deinterleaver_t *self);
 int deinterleaver_get_stats(const deinterleaver_t *self, dil_stats_t *out);
+
+/*
+ * deinterleaver_inc_crc_drop() — increment the CRC-fail drop counter.
+ *
+ * Called by the RX pipeline (e.g. sim_runner) when a symbol is discarded
+ * due to CRC failure before push_symbol() is invoked.  This keeps the
+ * counter co-located with other per-deinterleaver stats so all drop
+ * diagnostics are retrievable via deinterleaver_get_stats().
+ */
+void deinterleaver_inc_crc_drop(deinterleaver_t *self);
 
 #ifdef __cplusplus
 }

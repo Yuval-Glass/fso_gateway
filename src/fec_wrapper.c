@@ -28,6 +28,18 @@
  *     - decode_success
  *
  *   sim_runner.c reads this via local extern declarations.
+ *
+ * CRC note
+ * --------
+ *   fec_encode_block() produces repair symbol payloads and metadata but does
+ *   NOT stamp CRC.  CRC must be stamped by the caller (e.g. sim_runner's
+ *   sr_encode_one_block) AFTER all metadata fields (packet_id, fec_id,
+ *   symbol_index, total_symbols, payload_len) are fully populated.
+ *
+ *   The rationale is that fec_encode_block() only sets fec_id and payload_len
+ *   on repair symbols.  The caller assigns packet_id (block index),
+ *   total_symbols, and symbol_index before pushing to the interleaver.  CRC
+ *   must be stamped after that assignment — not inside fec_encode_block().
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -216,6 +228,17 @@ int fec_encode_block(fec_handle_t          handle,
             goto cleanup;
         }
 
+        /*
+         * Populate only the FEC-layer fields here.
+         *
+         * packet_id, symbol_index, and total_symbols are left at zero.
+         * The caller (e.g. sim_runner's sr_encode_one_block) MUST set
+         * those fields AND then call symbol_compute_crc() before pushing
+         * the repair symbol to the interleaver.
+         *
+         * crc32 is intentionally left at 0 so that any accidental use of
+         * an unfinished repair symbol is detectable via CRC failure on RX.
+         */
         memset(&out_repair_symbols[i], 0, sizeof(symbol_t));
         out_repair_symbols[i].fec_id      = repair_fec_id;
         out_repair_symbols[i].payload_len = (uint16_t)bytes_out;

@@ -72,6 +72,7 @@
 #include "interleaver.h"
 #include "logging.h"
 #include "sim_runner.h"
+#include "symbol.h"
 #include "packet_fragmenter.h"
 #include "packet_reassembler.h"
 #include "stats.h"
@@ -191,6 +192,13 @@ typedef struct {
     int  stat_blocks_attempted;
     int  stat_blocks_ok;
     int  stat_blocks_failed;
+
+    /*
+     * Internal CRC feature flag — mirrors config.internal_symbol_crc_enabled.
+     * 1 = stamp CRC on TX, verify on RX (default).
+     * 0 = bypass CRC entirely (baseline behavior).
+     */
+    int crc_enabled;
 } sim_t;
 
 /* ==========================================================================
@@ -370,6 +378,11 @@ static int encode_one_block(sim_t           *ctx,
                   (unsigned)sym.fec_id,
                   (unsigned)sym.packet_id);
 
+        /* Stamp CRC after all metadata and payload are finalised. */
+        if (ctx->crc_enabled) {
+            symbol_compute_crc(&sym);
+        }
+
         if (interleaver_push_symbol(il, &sym) < 0) {
             LOG_ERROR("[E2E] push src sym failed block=%d fec=%d", blk_idx, s);
             return -1;
@@ -385,6 +398,11 @@ static int encode_one_block(sim_t           *ctx,
 
         LOG_DEBUG("[TX] REPAIR blk=%d idx=%d fec_id=%u",
                   blk_idx, m, (unsigned)repair_buf[m].fec_id);
+
+        /* Stamp CRC on repair symbol after all metadata is set. */
+        if (ctx->crc_enabled) {
+            symbol_compute_crc(&repair_buf[m]);
+        }
 
         if (interleaver_push_symbol(il, &repair_buf[m]) < 0) {
             LOG_ERROR("[E2E] push rep sym failed block=%d idx=%d", blk_idx, m);
@@ -830,6 +848,20 @@ static int run_rx_pipeline(sim_t *ctx)
             continue;
         }
 
+        /*
+         * CRC pre-filter (RX path).
+         * Only active when ctx->crc_enabled != 0.
+         * Verify symbol integrity before pushing to the deinterleaver.
+         * A CRC failure means the payload or critical metadata was corrupted;
+         * discard the symbol and treat it as an erasure.
+         */
+        if (ctx->crc_enabled && !symbol_verify_crc(sym)) {
+            LOG_DEBUG("[E2E] CRC fail: dropping symbol block_id=%u fec_id=%u",
+                      (unsigned)sym->packet_id, (unsigned)sym->fec_id);
+            stats_record_symbol(false);
+            continue;
+        }
+
         stats_record_symbol(false);
         rc = deinterleaver_push_symbol(dil, sym);
 
@@ -1069,14 +1101,54 @@ static int init_task20_runtime(void)
  * main
  * ==========================================================================*/
 
-int main(void)
+int main(int argc, char **argv)
 {
     sim_t ctx;
     int   rc;
-    int   exit_code = 1;
+    int   exit_code  = 1;
+    int   crc_enable = 1;   /* default: CRC enabled */
     int   p;
+    int   i;
+
+    /*
+     * Parse command-line arguments.
+     *
+     * Accepted form:
+     *   end_to_end_sim_test [--crc 0|1]
+     *
+     * Examples:
+     *   end_to_end_sim_test             # CRC enabled (default)
+     *   end_to_end_sim_test --crc 0     # CRC disabled (true pre-CRC baseline)
+     *   end_to_end_sim_test --crc 1     # CRC enabled (explicit)
+     */
+    for (i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--crc") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --crc requires a value (0 or 1)\n");
+                fprintf(stderr, "Usage: %s [--crc 0|1]\n", argv[0]);
+                return 2;
+            }
+            ++i;
+            if (strcmp(argv[i], "0") == 0) {
+                crc_enable = 0;
+            } else if (strcmp(argv[i], "1") == 0) {
+                crc_enable = 1;
+            } else {
+                fprintf(stderr,
+                        "Error: --crc value must be 0 or 1 (got '%s')\n",
+                        argv[i]);
+                fprintf(stderr, "Usage: %s [--crc 0|1]\n", argv[0]);
+                return 2;
+            }
+        } else {
+            fprintf(stderr, "Error: unknown argument '%s'\n", argv[i]);
+            fprintf(stderr, "Usage: %s [--crc 0|1]\n", argv[0]);
+            return 2;
+        }
+    }
 
     memset(&ctx, 0, sizeof(ctx));
+    ctx.crc_enabled = crc_enable;
 
     log_init();
 
@@ -1086,6 +1158,7 @@ int main(void)
            SIM_K, SIM_M, SIM_N, SIM_DEPTH, SIM_SYMBOL_SIZE);
     printf("  Blocks=%d  Windows=%d  BurstLen=%d  BurstStart=%d\n",
            SIM_NUM_BLOCKS, SIM_NUM_WINDOWS, SIM_BURST_LEN, SIM_BURST_START);
+    printf("  CRC: %s\n", ctx.crc_enabled ? "ENABLED" : "DISABLED");
     printf("================================================================\n\n");
 
     if (init_task20_runtime() != 0) {

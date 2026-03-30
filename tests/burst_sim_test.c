@@ -43,6 +43,7 @@
 #include "fec_wrapper.h"
 #include "interleaver.h"
 #include "logging.h"
+#include "symbol.h"
 #include "types.h"
 
 /* -------------------------------------------------------------------------- */
@@ -312,6 +313,7 @@ static int run_iteration_internal(int                 burst_len,
                                   erasure_mode_t      erasure_mode,
                                   int                 target_block,
                                   int                 exact_losses,
+                                  int                 crc_enabled,
                                   iteration_result_t *out)
 {
     const int        n             = k + m;
@@ -432,6 +434,11 @@ static int run_iteration_internal(int                 burst_len,
                    records[b].source + (size_t)f * DEFAULT_SYMBOL_SIZE,
                    (size_t)DEFAULT_SYMBOL_SIZE);
 
+            /* Stamp CRC after all metadata and payload are finalised. */
+            if (crc_enabled) {
+                symbol_compute_crc(&sym);
+            }
+
             rc = interleaver_push_symbol(il, &sym);
             if (rc < 0) {
                 free(repair_syms);
@@ -448,6 +455,11 @@ static int run_iteration_internal(int                 burst_len,
                 free(repair_syms);
                 LOG_ERROR("[BSIM] repair payload_len=0 block=%d idx=%d", b, f);
                 goto cleanup;
+            }
+
+            /* Stamp CRC on repair symbol after all metadata is set. */
+            if (crc_enabled) {
+                symbol_compute_crc(&repair_syms[f]);
             }
 
             rc = interleaver_push_symbol(il, &repair_syms[f]);
@@ -516,6 +528,23 @@ static int run_iteration_internal(int                 burst_len,
 
         for (i = 0; i < total_symbols; ++i) {
             if (tx_buffer[i].payload_len == 0) {
+                skipped++;
+                continue;
+            }
+
+            /*
+             * CRC pre-filter: verify integrity before pushing to deinterleaver.
+             * Only active when crc_enabled != 0.
+             * In the burst-erasure model, no corruption is injected, so a CRC
+             * failure here indicates a software bug rather than a channel event.
+             * Drop the symbol and log an error so the problem is visible.
+             */
+            if (crc_enabled && !symbol_verify_crc(&tx_buffer[i])) {
+                LOG_ERROR("[BSIM] CRC verification failed for symbol at index=%d "
+                          "block_id=%u fec_id=%u — dropping (unexpected in erasure-only test)",
+                          i,
+                          (unsigned)tx_buffer[i].packet_id,
+                          (unsigned)tx_buffer[i].fec_id);
                 skipped++;
                 continue;
             }
@@ -603,19 +632,23 @@ cleanup:
 
 static int run_iteration(int burst_len, int burst_start,
                          int depth, int k, int m,
+                         int crc_enabled,
                          iteration_result_t *out)
 {
     return run_iteration_internal(burst_len, burst_start, depth, k, m,
-                                  ERASURE_MODE_BURST, -1, 0, out);
+                                  ERASURE_MODE_BURST, -1, 0,
+                                  crc_enabled, out);
 }
 
 static int run_exact_boundary_iteration(int target_block, int losses,
                                         int depth, int k, int m,
+                                        int crc_enabled,
                                         iteration_result_t *out)
 {
     return run_iteration_internal(0, 0, depth, k, m,
                                   ERASURE_MODE_EXACT_BLOCK,
-                                  target_block, losses, out);
+                                  target_block, losses,
+                                  crc_enabled, out);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -666,7 +699,8 @@ static void print_summary(const summary_row_t *rows, int row_count)
 /* Test suites                                                                 */
 /* -------------------------------------------------------------------------- */
 
-static int run_burst_length_sweep(summary_row_t *rows, int *row_count)
+static int run_burst_length_sweep(summary_row_t *rows, int *row_count,
+                                  int crc_enabled)
 {
     static const int lengths[] = {1, 10, 32, 33, 50, 100, 200, 500,
                                    3200, 3201};
@@ -686,7 +720,7 @@ static int run_burst_length_sweep(summary_row_t *rows, int *row_count)
 
         if (run_iteration(lengths[i], 0,
                           DEFAULT_DEPTH, DEFAULT_K, DEFAULT_M,
-                          &out) != 0) {
+                          crc_enabled, &out) != 0) {
             actual_pass = 0;
         } else {
             actual_pass = out.all_blocks_pass;
@@ -709,7 +743,8 @@ static int run_burst_length_sweep(summary_row_t *rows, int *row_count)
     return failures;
 }
 
-static int run_burst_start_sweep(summary_row_t *rows, int *row_count)
+static int run_burst_start_sweep(summary_row_t *rows, int *row_count,
+                                 int crc_enabled)
 {
     const int n         = DEFAULT_K + DEFAULT_M;
     const int total     = DEFAULT_DEPTH * n;
@@ -738,7 +773,7 @@ static int run_burst_start_sweep(summary_row_t *rows, int *row_count)
 
         if (run_iteration(burst_len, starts[i],
                           DEFAULT_DEPTH, DEFAULT_K, DEFAULT_M,
-                          &out) != 0) {
+                          crc_enabled, &out) != 0) {
             actual_pass = 0;
         } else {
             actual_pass = out.all_blocks_pass;
@@ -759,7 +794,8 @@ static int run_burst_start_sweep(summary_row_t *rows, int *row_count)
     return failures;
 }
 
-static int run_exact_boundary_tests(summary_row_t *rows, int *row_count)
+static int run_exact_boundary_tests(summary_row_t *rows, int *row_count,
+                                    int crc_enabled)
 {
     const int target_block = 17;
     const int losses[]     = {DEFAULT_M - 1, DEFAULT_M, DEFAULT_M + 1};
@@ -779,7 +815,7 @@ static int run_exact_boundary_tests(summary_row_t *rows, int *row_count)
 
         if (run_exact_boundary_iteration(target_block, losses[i],
                                          DEFAULT_DEPTH, DEFAULT_K, DEFAULT_M,
-                                         &out) != 0) {
+                                         crc_enabled, &out) != 0) {
             actual_pass = 0;
         } else {
             actual_pass =
@@ -812,9 +848,11 @@ static int run_exact_boundary_tests(summary_row_t *rows, int *row_count)
 int main(int argc, char **argv)
 {
     summary_row_t rows[32];
-    int           row_count = 0;
-    int           failures  = 0;
-    test_mode_t   mode      = TEST_MODE_ALL;
+    int           row_count   = 0;
+    int           failures    = 0;
+    test_mode_t   mode        = TEST_MODE_ALL;
+    int           crc_enabled = 1;   /* default: CRC enabled */
+    int           i;
 
     memset(rows, 0, sizeof(rows));
 
@@ -825,32 +863,72 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (argc >= 2) {
-        if (strcmp(argv[1], "length") == 0) {
+    /*
+     * Parse command-line arguments.
+     *
+     * Accepted forms:
+     *   burst_sim_test [mode] [--crc 0|1]
+     *
+     * The optional mode argument (positional) must come before --crc if both
+     * are supplied.  --crc may appear in any remaining position.
+     *
+     * Examples:
+     *   burst_sim_test                    # all modes, CRC enabled
+     *   burst_sim_test length             # length sweep, CRC enabled
+     *   burst_sim_test --crc 0            # all modes, CRC disabled
+     *   burst_sim_test boundary --crc 1   # boundary tests, CRC enabled
+     */
+    for (i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--crc") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --crc requires a value (0 or 1)\n");
+                fprintf(stderr,
+                        "Usage: %s [all|length|start|boundary] [--crc 0|1]\n",
+                        argv[0]);
+                return 2;
+            }
+            ++i;
+            if (strcmp(argv[i], "0") == 0) {
+                crc_enabled = 0;
+            } else if (strcmp(argv[i], "1") == 0) {
+                crc_enabled = 1;
+            } else {
+                fprintf(stderr,
+                        "Error: --crc value must be 0 or 1 (got '%s')\n",
+                        argv[i]);
+                fprintf(stderr,
+                        "Usage: %s [all|length|start|boundary] [--crc 0|1]\n",
+                        argv[0]);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "length") == 0) {
             mode = TEST_MODE_BURST_LENGTH;
-        } else if (strcmp(argv[1], "start") == 0) {
+        } else if (strcmp(argv[i], "start") == 0) {
             mode = TEST_MODE_BURST_START;
-        } else if (strcmp(argv[1], "boundary") == 0) {
+        } else if (strcmp(argv[i], "boundary") == 0) {
             mode = TEST_MODE_EXACT_BOUNDARY;
-        } else if (strcmp(argv[1], "all") == 0) {
+        } else if (strcmp(argv[i], "all") == 0) {
             mode = TEST_MODE_ALL;
         } else {
-            fprintf(stderr, "Usage: %s [all|length|start|boundary]\n",
+            fprintf(stderr, "Error: unknown argument '%s'\n", argv[i]);
+            fprintf(stderr,
+                    "Usage: %s [all|length|start|boundary] [--crc 0|1]\n",
                     argv[0]);
             return 2;
         }
     }
 
     printf("\n--- Running automated burst/interleaver/FEC stress tests ---\n");
+    printf("--- CRC: %s ---\n\n", crc_enabled ? "ENABLED" : "DISABLED");
 
     if (mode == TEST_MODE_ALL || mode == TEST_MODE_BURST_LENGTH) {
-        failures += run_burst_length_sweep(rows, &row_count);
+        failures += run_burst_length_sweep(rows, &row_count, crc_enabled);
     }
     if (mode == TEST_MODE_ALL || mode == TEST_MODE_BURST_START) {
-        failures += run_burst_start_sweep(rows, &row_count);
+        failures += run_burst_start_sweep(rows, &row_count, crc_enabled);
     }
     if (mode == TEST_MODE_ALL || mode == TEST_MODE_EXACT_BOUNDARY) {
-        failures += run_exact_boundary_tests(rows, &row_count);
+        failures += run_exact_boundary_tests(rows, &row_count, crc_enabled);
     }
 
     print_summary(rows, row_count);

@@ -109,6 +109,10 @@ typedef struct {
     double   recovery_rate_sum;
     double   exact_match_rate_sum;
 
+    /* CRC integrity counters (zero when CRC is disabled) */
+    uint64_t crc_dropped_symbols;
+    uint64_t packet_fail_crc_drop;
+
     int      contributes_to_contiguous_boundary;
     uint64_t characterization_burst_symbols;
 } scenario_agg_t;
@@ -144,6 +148,7 @@ static sim_config_t default_cfg(void)
     c.symbol_size = CAMP_SYMBOL_SIZE;
     c.num_windows = CAMP_NUM_WINDOWS;
     c.seed        = CAMP_BASE_SEED;
+    c.internal_symbol_crc_enabled = 1;  /* enable per-symbol CRC by default */
 
     return c;
 }
@@ -834,6 +839,7 @@ static void csv_write_header(FILE *f)
             "oracle_unrecoverable_and_not_decoded_successfully,"
             "oracle_recoverable_but_discarded_before_decode,oracle_recoverable_but_decode_failed,"
             "suspicious_blocks_in_run,"
+            "crc_dropped_symbols,packet_fail_crc_drop,"
             "worst_missing_symbols_seen,pass_fail\n");
 }
 
@@ -865,6 +871,7 @@ static void csv_write_row(FILE                     *f,
             "%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%s\n",
             group,
             name,
@@ -895,6 +902,8 @@ static void csv_write_row(FILE                     *f,
             rr->oracle_recoverable_but_discarded_before_decode,
             rr->oracle_recoverable_but_decode_failed,
             suspicious_blocks_in_run,
+            rr->crc_dropped_symbols,
+            rr->packet_fail_crc_drop,
             rr->max_missing_symbols_in_block,
             pass ? "PASS" : "FAIL");
 }
@@ -964,6 +973,10 @@ static void print_run_summary(const sr_run_report_t *rr,
            rr->max_missing_symbols_in_block);
     printf("      avg_missing_symbols_in_failed_blocks=%.2f\n",
            rr->avg_missing_symbols_in_failed_blocks);
+    printf("      crc_dropped_symbols=%" PRIu64 "\n",
+           rr->crc_dropped_symbols);
+    printf("      packet_fail_crc_drop=%" PRIu64 "\n",
+           rr->packet_fail_crc_drop);
     printf("      oracle_valid_for_run=%s\n",
            rr->oracle_valid_for_run ? "true" : "false");
     printf("      oracle_blocks_theoretically_recoverable=%" PRIu64 "\n",
@@ -1018,6 +1031,8 @@ static void print_scenario_summary(const scenario_t     *sc,
     printf("    suspicious_discarded_ready_evicted_before_mark=%" PRIu64 "\n",
            agg->suspicious_discarded_ready_evicted_before_mark);
     printf("    worst_missing_symbols_seen=%" PRIu64 "\n", agg->worst_missing_symbols_seen);
+    printf("    crc_dropped_symbols=%" PRIu64 "\n", agg->crc_dropped_symbols);
+    printf("    packet_fail_crc_drop=%" PRIu64 "\n", agg->packet_fail_crc_drop);
 }
 
 static void print_campaign_summary(const scenario_agg_t *aggs, int n)
@@ -1056,6 +1071,8 @@ static void print_campaign_summary(const scenario_agg_t *aggs, int n)
     uint64_t worst_missing_symbols_seen          = 0U;
     double   failed_blocks_weighted_sum          = 0.0;
     uint64_t failed_blocks_weighted_count        = 0U;
+    uint64_t crc_dropped_symbols_total           = 0U;
+    uint64_t packet_fail_crc_drop_total          = 0U;
     int      have_longest                        = 0;
     int      have_first_fail                     = 0;
     int      i;
@@ -1107,6 +1124,9 @@ static void print_campaign_summary(const scenario_agg_t *aggs, int n)
         failed_blocks_weighted_sum   += a->failed_blocks_sum_per_run;
         failed_blocks_weighted_count += a->runs;
 
+        crc_dropped_symbols_total    += a->crc_dropped_symbols;
+        packet_fail_crc_drop_total   += a->packet_fail_crc_drop;
+
         if (a->contributes_to_contiguous_boundary && a->runs > 0U) {
             if (a->failed_runs == 0U) {
                 if (!have_longest || a->characterization_burst_symbols > longest_recoverable_burst) {
@@ -1145,6 +1165,9 @@ static void print_campaign_summary(const scenario_agg_t *aggs, int n)
            packet_fail_due_to_missing_blocks);
     printf("- packet_fail_after_successful_block_decode: %" PRIu64 "\n",
            packet_fail_after_successful_decode);
+    printf("CRC integrity:\n");
+    printf("- crc_dropped_symbols: %" PRIu64 "\n", crc_dropped_symbols_total);
+    printf("- packet_fail_crc_drop: %" PRIu64 "\n", packet_fail_crc_drop_total);
     printf("Erasure oracle diagnostics:\n");
     printf("- oracle_valid_runs: %" PRIu64 "\n", oracle_valid_runs);
     printf("- oracle_invalid_runs: %" PRIu64 "\n", oracle_invalid_runs);
@@ -1324,6 +1347,9 @@ static void run_scenario(const scenario_t *sc,
         agg->failed_blocks_sum_per_run           += (double)report.blocks_decode_failed;
         agg->recovery_rate_sum                   += result.recovery_rate;
         agg->exact_match_rate_sum                += result.exact_match_rate;
+
+        agg->crc_dropped_symbols                 += report.crc_dropped_symbols;
+        agg->packet_fail_crc_drop                += report.packet_fail_crc_drop;
 
         if (report.max_missing_symbols_in_block > agg->worst_missing_symbols_seen) {
             agg->worst_missing_symbols_seen = report.max_missing_symbols_in_block;
