@@ -1,5 +1,5 @@
---- FSO GATEWAY - STABLE PHASE 6 (Including Internal CRC) ---
-Status: Campaign Validated | Internal CRC: Active | Date: Mon Mar 30 10:40:48 IDT 2026
+--- FSO GATEWAY - END OF PHASE 7 (Full Algorithmic Core) ---
+Status: Algorithmic Core Complete | CRC & Interleaving Validated | Date: Thu Apr  9 11:03:22 IDT 2026
 
 --- FILE: include/block_builder.h ---
 #ifndef BLOCK_BUILDER_H
@@ -755,6 +755,102 @@ void fso_protocol_print_header(const struct fso_header *header);
 
 #endif /* FSO_PROTOCOL_H */
 
+--- FILE: include/gateway.h ---
+/*
+ * include/gateway.h — Full-duplex FSO Gateway.
+ *
+ * Wires the TX and RX pipelines together into a single process,
+ * running each direction in its own pthread.
+ *
+ * Opaque handle: struct gateway is defined only in gateway.c.
+ *
+ * Typical lifecycle:
+ *   gw = gateway_create(&cfg);
+ *   // install signal handler that calls gateway_stop(gw)
+ *   rc = gateway_run(gw);   // blocks until stopped
+ *   gateway_destroy(gw);
+ */
+
+#ifndef GATEWAY_H
+#define GATEWAY_H
+
+#include "config.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* -------------------------------------------------------------------------- */
+/* Opaque handle                                                               */
+/* -------------------------------------------------------------------------- */
+
+typedef struct gateway gateway_t;
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * gateway_create() — open all four NIC handles and create both pipelines.
+ *
+ * Opens:
+ *   ctx_lan_rx : cfg->lan_iface, promiscuous=1  (TX pipeline source)
+ *   ctx_fso_tx : cfg->fso_iface, promiscuous=0  (TX pipeline sink)
+ *   ctx_fso_rx : cfg->fso_iface, promiscuous=1  (RX pipeline source)
+ *   ctx_lan_tx : cfg->lan_iface, promiscuous=0  (RX pipeline sink)
+ *
+ * Creates:
+ *   tx_pipeline (cfg, ctx_lan_rx, ctx_fso_tx)
+ *   rx_pipeline (cfg, ctx_fso_rx, ctx_lan_tx)
+ *
+ * On any failure: closes all already-opened handles, frees all memory,
+ * logs via LOG_ERROR, and returns NULL.
+ *
+ * Returns non-NULL on success.
+ */
+gateway_t *gateway_create(const struct config *cfg);
+
+/*
+ * gateway_run() — start both pipeline threads and block until they stop.
+ *
+ * Starts:
+ *   TX thread: tight loop over tx_pipeline_run_once()
+ *   RX thread: tight loop over rx_pipeline_run_once()
+ *
+ * Each thread exits if gateway_stop() is called or if its pipeline
+ * returns a fatal error (-1).
+ *
+ * Blocks until both threads have been joined.
+ *
+ * Returns:
+ *    0  — clean stop (gateway_stop() was called, no fatal errors).
+ *   -1  — at least one pipeline thread encountered a fatal error.
+ */
+int gateway_run(gateway_t *gw);
+
+/*
+ * gateway_stop() — signal both threads to stop.
+ *
+ * Thread-safe. Returns immediately without waiting.
+ * gateway_run() will return once both threads have joined.
+ */
+void gateway_stop(gateway_t *gw);
+
+/*
+ * gateway_destroy() — tear down pipelines, close handles, free memory.
+ *
+ * Must be called after gateway_run() has returned.
+ * Safe to call with NULL.
+ */
+void gateway_destroy(gateway_t *gw);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* GATEWAY_H */
+
+
 --- FILE: include/interleaver.h ---
 /*
  * include/interleaver.h — Symbol-level matrix interleaver for the FSO Gateway.
@@ -1131,6 +1227,126 @@ int fragment_packet(const unsigned char *packet_data,
 
 #endif /* PACKET_FRAGMENTER_H */
 
+--- FILE: include/packet_io.h ---
+/*
+ * include/packet_io.h — Raw packet I/O layer using libpcap.
+ *
+ * This module provides a non-blocking, pcap-based interface for capturing
+ * and injecting raw Ethernet frames on a named network interface.  It is
+ * used by both the TX pipeline (capturing from the LAN NIC) and the RX
+ * pipeline (capturing from the FSO NIC), as well as by forwarding test tools.
+ *
+ * Jumbo frame support: the capture snaplen is at least 9200 bytes.
+ * All handles are opened in non-blocking mode.
+ *
+ * Opaque handle: struct packet_io_ctx is defined only in packet_io.c.
+ */
+
+#ifndef PACKET_IO_H
+#define PACKET_IO_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* -------------------------------------------------------------------------- */
+/* Opaque handle                                                               */
+/* -------------------------------------------------------------------------- */
+
+typedef struct packet_io_ctx packet_io_ctx_t;
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * packet_io_open() — open a live pcap capture handle on a named interface.
+ *
+ *   iface:        network interface name (e.g. "eth0")
+ *   promiscuous:  1 = promiscuous mode, 0 = normal mode
+ *   errbuf:       caller-allocated buffer for error messages;
+ *                 must be at least PCAP_ERRBUF_SIZE bytes
+ *   errbuf_size:  size of errbuf in bytes
+ *
+ * The handle is placed in non-blocking mode after opening.
+ * On success, the opened interface name is logged at INFO level.
+ * On failure, the error is written to errbuf AND logged via LOG_ERROR.
+ *
+ * Returns non-NULL on success, NULL on failure.
+ */
+packet_io_ctx_t *packet_io_open(const char *iface,
+                                int         promiscuous,
+                                char       *errbuf,
+                                size_t      errbuf_size);
+
+/*
+ * packet_io_close() — close the pcap handle and free all memory.
+ *
+ * Safe to call with NULL — must not crash.
+ */
+void packet_io_close(packet_io_ctx_t *ctx);
+
+/* -------------------------------------------------------------------------- */
+/* I/O                                                                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * packet_io_receive() — attempt to receive one raw Ethernet frame.
+ *                       Non-blocking.
+ *
+ *   buf:      caller-allocated receive buffer
+ *   buf_size: size of buf in bytes
+ *   out_len:  set to the number of bytes copied on success (return 1),
+ *             or 0 on return 0 or -1
+ *
+ * Return values:
+ *    1  — packet received and copied into buf
+ *    0  — no packet available (would block)
+ *   -1  — error
+ *
+ * If the captured frame is larger than buf_size, buf_size bytes are copied,
+ * a LOG_WARN is emitted, and 1 is returned (truncated but not an error).
+ */
+int packet_io_receive(packet_io_ctx_t *ctx,
+                      unsigned char   *buf,
+                      size_t           buf_size,
+                      size_t          *out_len);
+
+/*
+ * packet_io_send() — inject one raw Ethernet frame onto the interface.
+ *
+ *   buf: raw frame bytes including Ethernet header
+ *   len: total frame length in bytes
+ *
+ * Returns:
+ *    0  — success
+ *   -1  — failure (logged via LOG_ERROR)
+ */
+int packet_io_send(packet_io_ctx_t     *ctx,
+                   const unsigned char *buf,
+                   size_t               len);
+
+/* -------------------------------------------------------------------------- */
+/* Diagnostics                                                                 */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * packet_io_last_error() — return the last error string stored in ctx.
+ *
+ * Returns "" (empty string) if ctx is NULL or no error has occurred.
+ * The returned pointer is valid until the next call on this ctx.
+ */
+const char *packet_io_last_error(const packet_io_ctx_t *ctx);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* PACKET_IO_H */
+
+
 --- FILE: include/packet_reassembler.h ---
 #ifndef PACKET_REASSEMBLER_H
 #define PACKET_REASSEMBLER_H
@@ -1166,6 +1382,91 @@ int reassemble_packet(const symbol_t *in_symbols,
                       size_t max_packet_size);
 
 #endif /* PACKET_REASSEMBLER_H */
+
+--- FILE: include/rx_pipeline.h ---
+/*
+ * include/rx_pipeline.h — RX pipeline for the FSO Gateway.
+ *
+ * Implements the unidirectional receive path:
+ *   NIC_FSO receive → deinterleave → FEC decode → reassemble → NIC_LAN transmit
+ *
+ * Opaque handle: struct rx_pipeline is defined only in rx_pipeline.c.
+ */
+
+#ifndef RX_PIPELINE_H
+#define RX_PIPELINE_H
+
+#include "config.h"
+#include "packet_io.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* -------------------------------------------------------------------------- */
+/* Opaque handle                                                               */
+/* -------------------------------------------------------------------------- */
+
+typedef struct rx_pipeline rx_pipeline_t;
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * rx_pipeline_create() — allocate and initialise the RX pipeline.
+ *
+ *   cfg    : runtime configuration (copied internally).
+ *   rx_ctx : packet_io handle to receive from (FSO NIC).
+ *   tx_ctx : packet_io handle to transmit to  (LAN NIC).
+ *
+ * Internally allocates:
+ *   - deinterleaver (max_active_blocks = cfg->depth * 4,
+ *                    symbols_per_block = cfg->k + cfg->m,
+ *                    k                 = cfg->k,
+ *                    symbol_size       = cfg->symbol_size,
+ *                    stabilization_ms  = 0.0,
+ *                    block_max_age_ms  = 50.0)
+ *   - fec_handle    (k = cfg->k, symbol_size = cfg->symbol_size)
+ *   - recon_buf     (k * symbol_size bytes, heap-allocated)
+ *
+ * Returns non-NULL on success, NULL on any allocation failure.
+ * Caller retains ownership of rx_ctx and tx_ctx — do NOT close them
+ * inside rx_pipeline_destroy().
+ */
+rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
+                                  packet_io_ctx_t     *rx_ctx,
+                                  packet_io_ctx_t     *tx_ctx);
+
+/*
+ * rx_pipeline_run_once() — execute one iteration of the RX pipeline.
+ *
+ * Steps performed (in order):
+ *   1. Non-blocking receive from the FSO NIC.
+ *   2. Deserialize wire format → symbol_t; validate; CRC check.
+ *   3. Push symbol into deinterleaver.
+ *   4. Drain any ready blocks: FEC decode → reassemble → send to LAN NIC.
+ *
+ * Returns:
+ *    0  — success (or benign no-op such as no packet available).
+ *   -1  — fatal error (should not occur in normal operation).
+ */
+int rx_pipeline_run_once(rx_pipeline_t *pl);
+
+/*
+ * rx_pipeline_destroy() — free all resources owned by the pipeline.
+ *
+ * Does NOT close rx_ctx or tx_ctx — those are owned by the caller.
+ * Safe to call with NULL.
+ */
+void rx_pipeline_destroy(rx_pipeline_t *pl);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* RX_PIPELINE_H */
+
 
 --- FILE: include/stats.h ---
 #ifndef STATS_H
@@ -1477,6 +1778,89 @@ uint32_t symbol_crc32c(const unsigned char *data, size_t length);
 #endif
 
 #endif /* SYMBOL_H */
+
+
+--- FILE: include/tx_pipeline.h ---
+/*
+ * include/tx_pipeline.h — TX pipeline for the FSO Gateway.
+ *
+ * Implements the unidirectional transmit path:
+ *   NIC_LAN receive → fragment → block build → FEC encode →
+ *   interleave → NIC_FSO transmit
+ *
+ * Opaque handle: struct tx_pipeline is defined only in tx_pipeline.c.
+ */
+
+#ifndef TX_PIPELINE_H
+#define TX_PIPELINE_H
+
+#include "config.h"
+#include "packet_io.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* -------------------------------------------------------------------------- */
+/* Opaque handle                                                               */
+/* -------------------------------------------------------------------------- */
+
+typedef struct tx_pipeline tx_pipeline_t;
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * tx_pipeline_create() — allocate and initialise the TX pipeline.
+ *
+ *   cfg    : runtime configuration (copied internally).
+ *   rx_ctx : packet_io handle to receive from (LAN NIC).
+ *   tx_ctx : packet_io handle to transmit to  (FSO NIC).
+ *
+ * Internally allocates:
+ *   - block_builder  (k = cfg->k)
+ *   - fec_handle     (k = cfg->k, symbol_size = cfg->symbol_size)
+ *   - interleaver    (depth = cfg->depth, k_plus_m = cfg->k + cfg->m,
+ *                     symbol_size = cfg->symbol_size)
+ *
+ * Returns non-NULL on success, NULL on any allocation failure.
+ * Caller retains ownership of rx_ctx and tx_ctx — do NOT close them
+ * inside tx_pipeline_destroy().
+ */
+tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
+                                  packet_io_ctx_t     *rx_ctx,
+                                  packet_io_ctx_t     *tx_ctx);
+
+/*
+ * tx_pipeline_run_once() — execute one iteration of the TX pipeline.
+ *
+ * Steps performed (in order):
+ *   1. Non-blocking receive from the LAN NIC.
+ *   2. Fragment the received packet into source symbols.
+ *   3. Feed source symbols into the block builder; on block completion
+ *      encode (FEC), push all K+M symbols to the interleaver, drain.
+ *   4. On idle (no packet): check block-timeout and flush if needed.
+ *
+ * Returns:
+ *    0  — success (or benign no-op such as no packet available).
+ *   -1  — fatal error.
+ */
+int tx_pipeline_run_once(tx_pipeline_t *pl);
+
+/*
+ * tx_pipeline_destroy() — free all resources owned by the pipeline.
+ *
+ * Does NOT close rx_ctx or tx_ctx — those are owned by the caller.
+ * Safe to call with NULL.
+ */
+void tx_pipeline_destroy(tx_pipeline_t *pl);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* TX_PIPELINE_H */
 
 
 --- FILE: include/types.h ---
@@ -3625,6 +4009,278 @@ void fso_protocol_print_header(const struct fso_header *header)
     printf("}\n");
 }
 
+--- FILE: src/gateway.c ---
+/*
+ * src/gateway.c — Full-duplex FSO Gateway implementation.
+ *
+ * See include/gateway.h for the public API.
+ *
+ * Two pthreads run the TX and RX pipelines simultaneously:
+ *
+ *   TX thread: NIC_LAN → fragment → FEC encode → interleave → NIC_FSO
+ *   RX thread: NIC_FSO → deinterleave → FEC decode → reassemble → NIC_LAN
+ *
+ * The stop condition is gw->running (volatile int).  Either thread may
+ * clear it on a fatal pipeline error; gateway_stop() also clears it from
+ * outside (e.g. a signal handler).
+ *
+ * gateway_run() joins both threads before returning so the caller can
+ * safely call gateway_destroy() immediately afterwards.
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "config.h"
+#include "gateway.h"
+#include "logging.h"
+#include "packet_io.h"
+#include "rx_pipeline.h"
+#include "tx_pipeline.h"
+
+/* -------------------------------------------------------------------------- */
+/* Internal constants                                                          */
+/* -------------------------------------------------------------------------- */
+
+#define ERRBUF_SIZE 256
+
+/* -------------------------------------------------------------------------- */
+/* Internal struct                                                             */
+/* -------------------------------------------------------------------------- */
+
+struct gateway {
+    struct config     cfg;
+    packet_io_ctx_t  *ctx_lan_rx;   /* LAN NIC — promiscuous, TX source      */
+    packet_io_ctx_t  *ctx_fso_tx;   /* FSO NIC — non-promiscuous, TX sink    */
+    packet_io_ctx_t  *ctx_fso_rx;   /* FSO NIC — promiscuous, RX source      */
+    packet_io_ctx_t  *ctx_lan_tx;   /* LAN NIC — non-promiscuous, RX sink    */
+    tx_pipeline_t    *tx_pl;
+    rx_pipeline_t    *rx_pl;
+    volatile int      running;
+    int               tx_error;     /* 1 if TX thread had a fatal error       */
+    int               rx_error;     /* 1 if RX thread had a fatal error       */
+    pthread_t         tx_tid;
+    pthread_t         rx_tid;
+};
+
+/* -------------------------------------------------------------------------- */
+/* Thread functions                                                            */
+/* -------------------------------------------------------------------------- */
+
+static void *tx_thread_func(void *arg)
+{
+    gateway_t *gw = (gateway_t *)arg;
+    int        rc;
+
+    LOG_INFO("[gateway] TX thread started");
+
+    while (gw->running) {
+        rc = tx_pipeline_run_once(gw->tx_pl);
+        if (rc == -1) {
+            LOG_ERROR("[gateway] TX thread: tx_pipeline_run_once fatal error");
+            gw->tx_error = 1;
+            gw->running  = 0;
+            break;
+        }
+    }
+
+    LOG_INFO("[gateway] TX thread stopped");
+    return NULL;
+}
+
+static void *rx_thread_func(void *arg)
+{
+    gateway_t *gw = (gateway_t *)arg;
+    int        rc;
+
+    LOG_INFO("[gateway] RX thread started");
+
+    while (gw->running) {
+        rc = rx_pipeline_run_once(gw->rx_pl);
+        if (rc == -1) {
+            LOG_ERROR("[gateway] RX thread: rx_pipeline_run_once fatal error");
+            gw->rx_error = 1;
+            gw->running  = 0;
+            break;
+        }
+    }
+
+    LOG_INFO("[gateway] RX thread stopped");
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+gateway_t *gateway_create(const struct config *cfg)
+{
+    gateway_t *gw;
+    char       errbuf[ERRBUF_SIZE];
+
+    if (cfg == NULL) {
+        LOG_ERROR("[gateway] create: cfg is NULL");
+        return NULL;
+    }
+
+    gw = (gateway_t *)malloc(sizeof(gateway_t));
+    if (gw == NULL) {
+        LOG_ERROR("[gateway] create: malloc(gateway_t) failed");
+        return NULL;
+    }
+    memset(gw, 0, sizeof(gateway_t));
+    gw->cfg     = *cfg;
+    gw->running = 0;
+
+    /* ---- Open all four packet_io handles -------------------------------- */
+
+    gw->ctx_lan_rx = packet_io_open(cfg->lan_iface, 1,
+                                     errbuf, sizeof(errbuf));
+    if (gw->ctx_lan_rx == NULL) {
+        LOG_ERROR("[gateway] create: packet_io_open(lan_rx \"%s\") failed: %s",
+                  cfg->lan_iface, errbuf);
+        free(gw);
+        return NULL;
+    }
+
+    gw->ctx_fso_tx = packet_io_open(cfg->fso_iface, 0,
+                                     errbuf, sizeof(errbuf));
+    if (gw->ctx_fso_tx == NULL) {
+        LOG_ERROR("[gateway] create: packet_io_open(fso_tx \"%s\") failed: %s",
+                  cfg->fso_iface, errbuf);
+        packet_io_close(gw->ctx_lan_rx);
+        free(gw);
+        return NULL;
+    }
+
+    gw->ctx_fso_rx = packet_io_open(cfg->fso_iface, 1,
+                                     errbuf, sizeof(errbuf));
+    if (gw->ctx_fso_rx == NULL) {
+        LOG_ERROR("[gateway] create: packet_io_open(fso_rx \"%s\") failed: %s",
+                  cfg->fso_iface, errbuf);
+        packet_io_close(gw->ctx_fso_tx);
+        packet_io_close(gw->ctx_lan_rx);
+        free(gw);
+        return NULL;
+    }
+
+    gw->ctx_lan_tx = packet_io_open(cfg->lan_iface, 0,
+                                     errbuf, sizeof(errbuf));
+    if (gw->ctx_lan_tx == NULL) {
+        LOG_ERROR("[gateway] create: packet_io_open(lan_tx \"%s\") failed: %s",
+                  cfg->lan_iface, errbuf);
+        packet_io_close(gw->ctx_fso_rx);
+        packet_io_close(gw->ctx_fso_tx);
+        packet_io_close(gw->ctx_lan_rx);
+        free(gw);
+        return NULL;
+    }
+
+    /* ---- Create TX pipeline -------------------------------------------- */
+
+    gw->tx_pl = tx_pipeline_create(cfg, gw->ctx_lan_rx, gw->ctx_fso_tx);
+    if (gw->tx_pl == NULL) {
+        LOG_ERROR("[gateway] create: tx_pipeline_create failed");
+        packet_io_close(gw->ctx_lan_tx);
+        packet_io_close(gw->ctx_fso_rx);
+        packet_io_close(gw->ctx_fso_tx);
+        packet_io_close(gw->ctx_lan_rx);
+        free(gw);
+        return NULL;
+    }
+
+    /* ---- Create RX pipeline -------------------------------------------- */
+
+    gw->rx_pl = rx_pipeline_create(cfg, gw->ctx_fso_rx, gw->ctx_lan_tx);
+    if (gw->rx_pl == NULL) {
+        LOG_ERROR("[gateway] create: rx_pipeline_create failed");
+        tx_pipeline_destroy(gw->tx_pl);
+        packet_io_close(gw->ctx_lan_tx);
+        packet_io_close(gw->ctx_fso_rx);
+        packet_io_close(gw->ctx_fso_tx);
+        packet_io_close(gw->ctx_lan_rx);
+        free(gw);
+        return NULL;
+    }
+
+    LOG_INFO("[gateway] Created: lan=%s fso=%s k=%d m=%d depth=%d sym=%d",
+             cfg->lan_iface, cfg->fso_iface,
+             cfg->k, cfg->m, cfg->depth, cfg->symbol_size);
+
+    return gw;
+}
+
+int gateway_run(gateway_t *gw)
+{
+    int rc_tx;
+    int rc_rx;
+
+    if (gw == NULL) {
+        LOG_ERROR("[gateway] run: gw is NULL");
+        return -1;
+    }
+
+    gw->running  = 1;
+    gw->tx_error = 0;
+    gw->rx_error = 0;
+
+    rc_tx = pthread_create(&gw->tx_tid, NULL, tx_thread_func, gw);
+    if (rc_tx != 0) {
+        LOG_ERROR("[gateway] run: pthread_create(TX) failed (rc=%d)", rc_tx);
+        gw->running = 0;
+        return -1;
+    }
+
+    rc_rx = pthread_create(&gw->rx_tid, NULL, rx_thread_func, gw);
+    if (rc_rx != 0) {
+        LOG_ERROR("[gateway] run: pthread_create(RX) failed (rc=%d)", rc_rx);
+        gw->running = 0;
+        pthread_join(gw->tx_tid, NULL);
+        return -1;
+    }
+
+    LOG_INFO("[gateway] Both pipeline threads running");
+
+    pthread_join(gw->tx_tid, NULL);
+    pthread_join(gw->rx_tid, NULL);
+
+    LOG_INFO("[gateway] Both pipeline threads joined");
+
+    if (gw->tx_error || gw->rx_error) {
+        return -1;
+    }
+    return 0;
+}
+
+void gateway_stop(gateway_t *gw)
+{
+    if (gw == NULL) {
+        return;
+    }
+    gw->running = 0;
+}
+
+void gateway_destroy(gateway_t *gw)
+{
+    if (gw == NULL) {
+        return;
+    }
+
+    rx_pipeline_destroy(gw->rx_pl);
+    tx_pipeline_destroy(gw->tx_pl);
+
+    packet_io_close(gw->ctx_lan_tx);
+    packet_io_close(gw->ctx_fso_rx);
+    packet_io_close(gw->ctx_fso_tx);
+    packet_io_close(gw->ctx_lan_rx);
+
+    free(gw);
+}
+
+
 --- FILE: src/interleaver.c ---
 /*
  * src/interleaver.c — Symbol-level matrix interleaver implementation.
@@ -5082,6 +5738,280 @@ int fragment_packet(const unsigned char *packet_data,
 }
 
 
+--- FILE: src/packet_io.c ---
+/*
+ * src/packet_io.c — Raw packet I/O layer using libpcap.
+ *
+ * See include/packet_io.h for the public API and design notes.
+ *
+ * Implementation notes
+ * --------------------
+ * pcap_open_live() is used with a snaplen of PACKET_IO_SNAPLEN (9200 bytes)
+ * to support jumbo frames.  After opening, the handle is switched to
+ * non-blocking mode via pcap_setnonblock().
+ *
+ * packet_io_receive() wraps pcap_next_ex():
+ *   - Return value  1 → packet captured.
+ *   - Return value  0 → timeout / no packet (EAGAIN equivalent in non-blocking).
+ *   - Return value -1 → pcap error.
+ *   - Return value -2 → no packets available (non-blocking, same as 0).
+ *
+ * packet_io_send() uses pcap_sendpacket() which returns 0 on success and
+ * -1 on failure.
+ *
+ * All errors are written into ctx->last_error for retrieval via
+ * packet_io_last_error() and are also emitted via LOG_ERROR.
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <net/if.h>      /* IF_NAMESIZE */
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <pcap/pcap.h>
+
+#include "logging.h"
+#include "packet_io.h"
+
+/* -------------------------------------------------------------------------- */
+/* Internal constants                                                          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Minimum snaplen: 9200 bytes covers standard jumbo frames (9000 bytes
+ * payload + Ethernet/VLAN headers).
+ */
+#define PACKET_IO_SNAPLEN   9200
+
+/*
+ * pcap_open_live() read timeout in milliseconds.  In non-blocking mode this
+ * value is largely irrelevant (pcap_next_ex returns immediately), but a
+ * non-zero value is required by some platforms to avoid degenerate behaviour.
+ */
+#define PACKET_IO_TIMEOUT_MS 1
+
+/* -------------------------------------------------------------------------- */
+/* Opaque context struct                                                       */
+/* -------------------------------------------------------------------------- */
+
+struct packet_io_ctx {
+    pcap_t *handle;
+    char    last_error[PCAP_ERRBUF_SIZE];
+    char    iface[IF_NAMESIZE];
+};
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+packet_io_ctx_t *packet_io_open(const char *iface,
+                                int         promiscuous,
+                                char       *errbuf,
+                                size_t      errbuf_size)
+{
+    packet_io_ctx_t *ctx;
+    char             pcap_errbuf[PCAP_ERRBUF_SIZE];
+    int              rc;
+
+    if (iface == NULL) {
+        if (errbuf != NULL && errbuf_size > 0) {
+            snprintf(errbuf, errbuf_size, "iface is NULL");
+        }
+        LOG_ERROR("[packet_io] open: iface argument is NULL");
+        return NULL;
+    }
+
+    if (errbuf == NULL || errbuf_size == 0) {
+        LOG_ERROR("[packet_io] open: errbuf is NULL or zero-length");
+        return NULL;
+    }
+
+    ctx = (packet_io_ctx_t *)malloc(sizeof(packet_io_ctx_t));
+    if (ctx == NULL) {
+        snprintf(errbuf, errbuf_size, "malloc(packet_io_ctx_t) failed");
+        LOG_ERROR("[packet_io] open: malloc(packet_io_ctx_t) failed");
+        return NULL;
+    }
+
+    memset(ctx, 0, sizeof(packet_io_ctx_t));
+    strncpy(ctx->iface, iface, IF_NAMESIZE - 1);
+    ctx->iface[IF_NAMESIZE - 1] = '\0';
+
+    pcap_errbuf[0] = '\0';
+    ctx->handle = pcap_open_live(iface,
+                                 PACKET_IO_SNAPLEN,
+                                 promiscuous,
+                                 PACKET_IO_TIMEOUT_MS,
+                                 pcap_errbuf);
+    if (ctx->handle == NULL) {
+        snprintf(errbuf, errbuf_size, "%s", pcap_errbuf);
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE, "%s", pcap_errbuf);
+        LOG_ERROR("[packet_io] open: pcap_open_live(%s) failed: %s",
+                  iface, pcap_errbuf);
+        free(ctx);
+        return NULL;
+    }
+
+    /* Warn on non-fatal warnings from pcap_open_live */
+    if (pcap_errbuf[0] != '\0') {
+        LOG_WARN("[packet_io] open: pcap_open_live(%s) warning: %s",
+                 iface, pcap_errbuf);
+    }
+
+    rc = pcap_setnonblock(ctx->handle, 1, pcap_errbuf);
+    if (rc == -1) {
+        snprintf(errbuf, errbuf_size, "%s", pcap_errbuf);
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE, "%s", pcap_errbuf);
+        LOG_ERROR("[packet_io] open: pcap_setnonblock(%s) failed: %s",
+                  iface, pcap_errbuf);
+        pcap_close(ctx->handle);
+        free(ctx);
+        return NULL;
+    }
+
+    LOG_INFO("[packet_io] Opened interface \"%s\" "
+             "(promiscuous=%d, snaplen=%d, non-blocking)",
+             iface, promiscuous, PACKET_IO_SNAPLEN);
+
+    return ctx;
+}
+
+void packet_io_close(packet_io_ctx_t *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    if (ctx->handle != NULL) {
+        pcap_close(ctx->handle);
+        ctx->handle = NULL;
+    }
+
+    free(ctx);
+}
+
+/* -------------------------------------------------------------------------- */
+/* I/O                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int packet_io_receive(packet_io_ctx_t *ctx,
+                      unsigned char   *buf,
+                      size_t           buf_size,
+                      size_t          *out_len)
+{
+    struct pcap_pkthdr *header;
+    const unsigned char *data;
+    size_t               copy_len;
+    int                  rc;
+
+    if (out_len != NULL) {
+        *out_len = 0;
+    }
+
+    if (ctx == NULL) {
+        LOG_ERROR("[packet_io] receive: ctx is NULL");
+        return -1;
+    }
+
+    if (buf == NULL) {
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE,
+                 "receive: buf is NULL");
+        LOG_ERROR("[packet_io] receive: buf is NULL");
+        return -1;
+    }
+
+    if (out_len == NULL) {
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE,
+                 "receive: out_len is NULL");
+        LOG_ERROR("[packet_io] receive: out_len is NULL");
+        return -1;
+    }
+
+    rc = pcap_next_ex(ctx->handle, &header, &data);
+
+    if (rc == 0 || rc == -2) {
+        /* 0  = timeout / no packet available in non-blocking mode
+         * -2 = no more packets (live capture won't return -2, but handle it) */
+        return 0;
+    }
+
+    if (rc == -1) {
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE, "%s",
+                 pcap_geterr(ctx->handle));
+        LOG_ERROR("[packet_io] receive: pcap_next_ex(%s) error: %s",
+                  ctx->iface, ctx->last_error);
+        return -1;
+    }
+
+    /* rc == 1: packet captured */
+    copy_len = (size_t)header->caplen;
+
+    if (copy_len > buf_size) {
+        LOG_WARN("[packet_io] receive: frame truncated on \"%s\" "
+                 "(caplen=%u > buf_size=%zu); copying %zu bytes",
+                 ctx->iface, header->caplen, buf_size, buf_size);
+        copy_len = buf_size;
+    }
+
+    memcpy(buf, data, copy_len);
+    *out_len = copy_len;
+
+    return 1;
+}
+
+int packet_io_send(packet_io_ctx_t     *ctx,
+                   const unsigned char *buf,
+                   size_t               len)
+{
+    int rc;
+
+    if (ctx == NULL) {
+        LOG_ERROR("[packet_io] send: ctx is NULL");
+        return -1;
+    }
+
+    if (buf == NULL) {
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE, "send: buf is NULL");
+        LOG_ERROR("[packet_io] send: buf is NULL");
+        return -1;
+    }
+
+    if (len == 0) {
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE,
+                 "send: len is 0");
+        LOG_ERROR("[packet_io] send: len is 0");
+        return -1;
+    }
+
+    rc = pcap_sendpacket(ctx->handle, buf, (int)len);
+    if (rc == -1) {
+        snprintf(ctx->last_error, PCAP_ERRBUF_SIZE, "%s",
+                 pcap_geterr(ctx->handle));
+        LOG_ERROR("[packet_io] send: pcap_sendpacket(%s, len=%zu) failed: %s",
+                  ctx->iface, len, ctx->last_error);
+        return -1;
+    }
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Diagnostics                                                                 */
+/* -------------------------------------------------------------------------- */
+
+const char *packet_io_last_error(const packet_io_ctx_t *ctx)
+{
+    if (ctx == NULL) {
+        return "";
+    }
+
+    return ctx->last_error;
+}
+
+
 --- FILE: src/packet_reassembler.c ---
 #include "packet_reassembler.h"
 
@@ -5229,6 +6159,468 @@ int reassemble_packet(const symbol_t *in_symbols,
 
     return (int)reconstructed_len;
 }
+
+--- FILE: src/rx_pipeline.c ---
+/*
+ * src/rx_pipeline.c — RX pipeline implementation for the FSO Gateway.
+ *
+ * See include/rx_pipeline.h for the public API.
+ *
+ * Pipeline:
+ *   NIC_FSO receive → deinterleave → FEC decode → reassemble → NIC_LAN transmit
+ *
+ * Wire format (receive direction, same layout as TX emits):
+ *   Offset  Size  Field
+ *    0       4    packet_id      big-endian uint32
+ *    4       4    fec_id         big-endian uint32
+ *    8       2    symbol_index   big-endian uint16
+ *   10       2    total_symbols  big-endian uint16
+ *   12       2    payload_len    big-endian uint16
+ *   14       4    crc32          big-endian uint32
+ *   18       N    data[0..payload_len-1]
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <arpa/inet.h>   /* ntohl, ntohs */
+#include <stdlib.h>
+#include <string.h>
+
+#include "config.h"
+#include "deinterleaver.h"
+#include "fec_wrapper.h"
+#include "logging.h"
+#include "packet_io.h"
+#include "packet_reassembler.h"
+#include "rx_pipeline.h"
+#include "symbol.h"
+#include "types.h"
+
+/* -------------------------------------------------------------------------- */
+/* Internal constants                                                          */
+/* -------------------------------------------------------------------------- */
+
+/* Receive buffer — must hold the largest possible wire frame */
+#define RX_WIRE_BUF_SIZE     9200U
+
+/* Wire header size in bytes */
+#define WIRE_HDR_SIZE        18U
+
+/* block_max_age for the deinterleaver */
+#define RX_BLOCK_MAX_AGE_MS  50.0
+
+/* Output buffer for reassemble_packet — max Ethernet jumbo frame */
+#define REASSEM_BUF_SIZE     9200U
+
+/* -------------------------------------------------------------------------- */
+/* Internal struct                                                             */
+/* -------------------------------------------------------------------------- */
+
+struct rx_pipeline {
+    struct config     cfg;        /* copy of runtime configuration            */
+    packet_io_ctx_t  *rx_ctx;    /* FSO NIC — receive side                   */
+    packet_io_ctx_t  *tx_ctx;    /* LAN NIC — transmit side                  */
+    deinterleaver_t  *dil;       /* block collector / deinterleaver           */
+    fec_handle_t      fec;       /* Wirehair FEC context                      */
+    unsigned char    *recon_buf; /* k * symbol_size, heap-allocated           */
+    block_t          *block_buf;     /* heap-allocated, one block_t            */
+    symbol_t         *pkt_syms_buf;  /* heap, MAX_SYMBOLS_PER_BLOCK elements   */
+};
+
+/* -------------------------------------------------------------------------- */
+/* Forward declaration                                                         */
+/* -------------------------------------------------------------------------- */
+
+static void drain_ready_blocks(rx_pipeline_t *pl);
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
+                                  packet_io_ctx_t     *rx_ctx,
+                                  packet_io_ctx_t     *tx_ctx)
+{
+    rx_pipeline_t *pl;
+    size_t         recon_size;
+
+    if (cfg == NULL) {
+        LOG_ERROR("[rx_pipeline] create: cfg is NULL");
+        return NULL;
+    }
+    if (rx_ctx == NULL) {
+        LOG_ERROR("[rx_pipeline] create: rx_ctx is NULL");
+        return NULL;
+    }
+    if (tx_ctx == NULL) {
+        LOG_ERROR("[rx_pipeline] create: tx_ctx is NULL");
+        return NULL;
+    }
+
+    pl = (rx_pipeline_t *)malloc(sizeof(rx_pipeline_t));
+    if (pl == NULL) {
+        LOG_ERROR("[rx_pipeline] create: malloc(rx_pipeline_t) failed");
+        return NULL;
+    }
+    memset(pl, 0, sizeof(rx_pipeline_t));
+
+    pl->cfg    = *cfg;
+    pl->rx_ctx = rx_ctx;
+    pl->tx_ctx = tx_ctx;
+
+    /* Heap-allocate recon_buf (k * symbol_size can be up to ~576 kB) */
+    recon_size = (size_t)cfg->k * (size_t)cfg->symbol_size;
+    pl->recon_buf = (unsigned char *)malloc(recon_size);
+    if (pl->recon_buf == NULL) {
+        LOG_ERROR("[rx_pipeline] create: malloc(recon_buf, %zu) failed",
+                  recon_size);
+        free(pl);
+        return NULL;
+    }
+
+    /* Create FEC context */
+    pl->fec = fec_create(cfg->k, cfg->symbol_size);
+    if (pl->fec == NULL) {
+        LOG_ERROR("[rx_pipeline] create: fec_create(k=%d, sym=%d) failed",
+                  cfg->k, cfg->symbol_size);
+        free(pl->recon_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Create deinterleaver */
+    pl->dil = deinterleaver_create(cfg->depth * 4,
+                                   cfg->k + cfg->m,
+                                   cfg->k,
+                                   (size_t)cfg->symbol_size,
+                                   0.0,
+                                   RX_BLOCK_MAX_AGE_MS);
+    if (pl->dil == NULL) {
+        LOG_ERROR("[rx_pipeline] create: deinterleaver_create failed "
+                  "(depth*4=%d, k+m=%d, k=%d, sym=%d)",
+                  cfg->depth * 4, cfg->k + cfg->m, cfg->k, cfg->symbol_size);
+        fec_destroy(pl->fec);
+        free(pl->recon_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Heap-allocate block_buf (sizeof(block_t) ~ 2.3 MB — too large for stack) */
+    pl->block_buf = (block_t *)malloc(sizeof(block_t));
+    if (pl->block_buf == NULL) {
+        LOG_ERROR("[rx_pipeline] create: malloc(block_buf) failed");
+        deinterleaver_destroy(pl->dil);
+        fec_destroy(pl->fec);
+        free(pl->recon_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Heap-allocate pkt_syms_buf (256 × ~9024 bytes — too large for stack) */
+    pl->pkt_syms_buf = (symbol_t *)malloc(
+        sizeof(symbol_t) * MAX_SYMBOLS_PER_BLOCK);
+    if (pl->pkt_syms_buf == NULL) {
+        LOG_ERROR("[rx_pipeline] create: malloc(pkt_syms_buf) failed");
+        free(pl->block_buf);
+        deinterleaver_destroy(pl->dil);
+        fec_destroy(pl->fec);
+        free(pl->recon_buf);
+        free(pl);
+        return NULL;
+    }
+
+    LOG_INFO("[rx_pipeline] Created: k=%d m=%d depth=%d symbol_size=%d",
+             cfg->k, cfg->m, cfg->depth, cfg->symbol_size);
+
+    return pl;
+}
+
+void rx_pipeline_destroy(rx_pipeline_t *pl)
+{
+    if (pl == NULL) {
+        return;
+    }
+
+    deinterleaver_destroy(pl->dil);
+    fec_destroy(pl->fec);
+    free(pl->pkt_syms_buf);
+    free(pl->block_buf);
+    free(pl->recon_buf);
+    free(pl);
+}
+
+/* -------------------------------------------------------------------------- */
+/* rx_pipeline_run_once                                                        */
+/* -------------------------------------------------------------------------- */
+
+int rx_pipeline_run_once(rx_pipeline_t *pl)
+{
+    unsigned char wire_buf[RX_WIRE_BUF_SIZE];
+    size_t        wire_len;
+    int           rc;
+    symbol_t      sym;
+    uint32_t      tmp32;
+    uint16_t      tmp16;
+
+    if (pl == NULL) {
+        LOG_ERROR("[rx_pipeline] run_once: pl is NULL");
+        return -1;
+    }
+
+    wire_len = 0;
+
+    /* ------------------------------------------------------------------ */
+    /* Step 1 — Receive from FSO NIC                                       */
+    /* ------------------------------------------------------------------ */
+    rc = packet_io_receive(pl->rx_ctx, wire_buf, sizeof(wire_buf), &wire_len);
+
+    if (rc == 0) {
+        /* No packet — tick the deinterleaver and try to drain */
+        deinterleaver_tick(pl->dil, 0.0);
+        drain_ready_blocks(pl);
+        return 0;
+    }
+
+    if (rc == -1) {
+        LOG_WARN("[rx_pipeline] run_once: packet_io_receive error: %s",
+                 packet_io_last_error(pl->rx_ctx));
+        return 0;
+    }
+
+    /* rc == 1: packet received */
+
+    /* ------------------------------------------------------------------ */
+    /* Step 2 — Deserialize wire format → symbol_t                        */
+    /* ------------------------------------------------------------------ */
+
+    /* Minimum header check */
+    if (wire_len < WIRE_HDR_SIZE) {
+        LOG_DEBUG("[rx_pipeline] run_once: frame too short (%zu < %u), "
+                  "dropping", wire_len, WIRE_HDR_SIZE);
+        return 0;
+    }
+
+    memset(&sym, 0, sizeof(sym));
+
+    memcpy(&tmp32, wire_buf + 0,  4); sym.packet_id     = ntohl(tmp32);
+    memcpy(&tmp32, wire_buf + 4,  4); sym.fec_id        = ntohl(tmp32);
+    memcpy(&tmp16, wire_buf + 8,  2); sym.symbol_index  = ntohs(tmp16);
+    memcpy(&tmp16, wire_buf + 10, 2); sym.total_symbols = ntohs(tmp16);
+    memcpy(&tmp16, wire_buf + 12, 2); sym.payload_len   = ntohs(tmp16);
+    memcpy(&tmp32, wire_buf + 14, 4); sym.crc32         = ntohl(tmp32);
+
+    /* Validate payload_len */
+    if (sym.payload_len == 0) {
+        LOG_DEBUG("[rx_pipeline] run_once: payload_len==0, dropping");
+        return 0;
+    }
+    if ((int)sym.payload_len > pl->cfg.symbol_size) {
+        LOG_DEBUG("[rx_pipeline] run_once: payload_len=%u > symbol_size=%d, "
+                  "dropping", sym.payload_len, pl->cfg.symbol_size);
+        return 0;
+    }
+    if (sym.payload_len > MAX_SYMBOL_DATA_SIZE) {
+        LOG_DEBUG("[rx_pipeline] run_once: payload_len=%u > "
+                  "MAX_SYMBOL_DATA_SIZE=%u, dropping",
+                  sym.payload_len, MAX_SYMBOL_DATA_SIZE);
+        return 0;
+    }
+    if (wire_len < WIRE_HDR_SIZE + sym.payload_len) {
+        LOG_DEBUG("[rx_pipeline] run_once: frame truncated "
+                  "(wire_len=%zu < hdr+payload=%u), dropping",
+                  wire_len, WIRE_HDR_SIZE + sym.payload_len);
+        return 0;
+    }
+
+    memcpy(sym.data, wire_buf + WIRE_HDR_SIZE, sym.payload_len);
+
+    /* CRC check */
+    if (pl->cfg.internal_symbol_crc_enabled) {
+        if (symbol_verify_crc(&sym) == 0) {
+            deinterleaver_inc_crc_drop(pl->dil);
+            LOG_DEBUG("[rx_pipeline] run_once: CRC fail — "
+                      "packet_id=%u fec_id=%u dropped as erasure",
+                      sym.packet_id, sym.fec_id);
+            return 0;
+        }
+    }
+
+    /* Push into deinterleaver */
+    deinterleaver_push_symbol(pl->dil, &sym);
+
+    /* ------------------------------------------------------------------ */
+    /* Step 3 — Drain ready blocks                                         */
+    /* ------------------------------------------------------------------ */
+    drain_ready_blocks(pl);
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* drain_ready_blocks — internal helper                                        */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Drain all blocks that the deinterleaver has promoted to READY_TO_DECODE.
+ * For each block: FEC-decode → reconstruct source symbols → group by
+ * packet_id → reassemble → send to LAN NIC.
+ * deinterleaver_mark_result() is called unconditionally for every block.
+ */
+static void drain_ready_blocks(rx_pipeline_t *pl)
+{
+    int           fec_rc;
+    int           k;
+    int           sym_size;
+    int           i;
+    size_t        recon_size;
+
+    /* Per-packet_id grouping array — heap-allocated via pl->pkt_syms_buf */
+    int           pkt_sym_count;
+    uint32_t      cur_packet_id;
+    unsigned char reassem_buf[REASSEM_BUF_SIZE];
+    int           reassem_len;
+
+    k        = pl->cfg.k;
+    sym_size = pl->cfg.symbol_size;
+    recon_size = (size_t)k * (size_t)sym_size;
+
+    while (deinterleaver_get_ready_block(pl->dil, pl->block_buf) == 0) {
+
+        /* ---- a. FEC decode ------------------------------------------- */
+        memset(pl->recon_buf, 0, recon_size);
+
+        fec_rc = fec_decode_block(pl->fec,
+                                  pl->block_buf->symbols,
+                                  pl->block_buf->symbol_count,
+                                  pl->block_buf->symbols_per_block,
+                                  pl->recon_buf);
+
+        if (fec_rc == FEC_DECODE_TOO_MANY_HOLES || fec_rc == FEC_DECODE_ERR) {
+            LOG_WARN("[rx_pipeline] drain: FEC decode failed "
+                     "(block_id=%lu symbol_count=%d rc=%d)",
+                     (unsigned long)pl->block_buf->block_id,
+                     pl->block_buf->symbol_count, fec_rc);
+            deinterleaver_mark_result(pl->dil,
+                                      (uint32_t)pl->block_buf->block_id, 0);
+            continue;
+        }
+
+        /* ---- b. Reconstruct source symbols from decoded bytes ---------- */
+        /*
+         * Walk source symbol slots (fec_id < k, payload_len > 0).
+         * The metadata in pl->block_buf->symbols[i] (packet_id, symbol_index,
+         * total_symbols, payload_len) is authoritative; the payload bytes
+         * are taken from the decoded recon_buf at offset i * sym_size.
+         *
+         * We accumulate symbols per packet_id and call reassemble_packet()
+         * as soon as a complete set is collected.
+         *
+         * Because source symbols within a single FEC block may belong to
+         * different packets (a packet may span multiple symbols), we scan
+         * all k source slots in a single pass.  When the packet_id changes
+         * we flush the accumulated group first.
+         *
+         * Note: reassemble_packet() requires ALL fragments for a given
+         * packet_id.  If total_symbols for a packet exceeds the number of
+         * source symbols in this block (i.e. fragments span blocks), we
+         * cannot fully reassemble here — we emit what we have and let
+         * reassemble_packet() report the error via LOG_WARN.
+         */
+
+        pkt_sym_count = 0;
+        cur_packet_id = 0;       /* initialised on first valid symbol */
+
+        for (i = 0; i < k; ++i) {
+            symbol_t *meta;
+            symbol_t  reconstructed;
+
+            /* Only source symbols (fec_id < k) with non-zero payload */
+            if ((int)pl->block_buf->symbols[i].fec_id >= k) {
+                continue;
+            }
+            if (pl->block_buf->symbols[i].payload_len == 0) {
+                continue;
+            }
+
+            meta = &pl->block_buf->symbols[i];
+
+            /* Build the reconstructed symbol */
+            memset(&reconstructed, 0, sizeof(reconstructed));
+            reconstructed.packet_id     = meta->packet_id;
+            reconstructed.fec_id        = meta->fec_id;
+            reconstructed.symbol_index  = meta->symbol_index;
+            reconstructed.total_symbols = meta->total_symbols;
+            reconstructed.payload_len   = meta->payload_len;
+            memcpy(reconstructed.data,
+                   pl->recon_buf + (size_t)i * (size_t)sym_size,
+                   meta->payload_len);
+
+            /* Flush accumulated group if packet_id changes */
+            if (pkt_sym_count > 0 &&
+                reconstructed.packet_id != cur_packet_id) {
+
+                memset(reassem_buf, 0, sizeof(reassem_buf));
+                reassem_len = reassemble_packet(pl->pkt_syms_buf,
+                                                (uint16_t)pkt_sym_count,
+                                                reassem_buf,
+                                                sizeof(reassem_buf));
+                if (reassem_len > 0) {
+                    if (packet_io_send(pl->tx_ctx, reassem_buf,
+                                       (size_t)reassem_len) != 0) {
+                        LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
+                                 "for packet_id=%u: %s",
+                                 cur_packet_id,
+                                 packet_io_last_error(pl->tx_ctx));
+                    }
+                } else {
+                    LOG_WARN("[rx_pipeline] drain: reassemble_packet failed "
+                             "for packet_id=%u (sym_count=%d)",
+                             cur_packet_id, pkt_sym_count);
+                }
+                pkt_sym_count = 0;
+            }
+
+            /* Start / continue accumulating for this packet_id */
+            if (pkt_sym_count == 0) {
+                cur_packet_id = reconstructed.packet_id;
+            }
+
+            if (pkt_sym_count < MAX_SYMBOLS_PER_BLOCK) {
+                pl->pkt_syms_buf[pkt_sym_count++] = reconstructed;
+            } else {
+                LOG_WARN("[rx_pipeline] drain: symbol overflow for "
+                         "packet_id=%u, dropping symbol", cur_packet_id);
+            }
+        }
+
+        /* Flush final accumulated group */
+        if (pkt_sym_count > 0) {
+            memset(reassem_buf, 0, sizeof(reassem_buf));
+            reassem_len = reassemble_packet(pl->pkt_syms_buf,
+                                            (uint16_t)pkt_sym_count,
+                                            reassem_buf,
+                                            sizeof(reassem_buf));
+            if (reassem_len > 0) {
+                if (packet_io_send(pl->tx_ctx, reassem_buf,
+                                   (size_t)reassem_len) != 0) {
+                    LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
+                             "for packet_id=%u: %s",
+                             cur_packet_id,
+                             packet_io_last_error(pl->tx_ctx));
+                }
+            } else {
+                LOG_WARN("[rx_pipeline] drain: reassemble_packet failed "
+                         "for packet_id=%u (sym_count=%d)",
+                         cur_packet_id, pkt_sym_count);
+            }
+        }
+
+        /* ---- c. Mark block as successfully processed ------------------- */
+        deinterleaver_mark_result(pl->dil,
+                                  (uint32_t)pl->block_buf->block_id, 1);
+    }
+}
+
 
 --- FILE: src/stats.c ---
 /**
@@ -6107,6 +7499,467 @@ int symbol_verify_crc(const symbol_t *sym)
         return 0;
     }
     return (sym->crc32 == symbol_compute_crc_value(sym)) ? 1 : 0;
+}
+
+
+--- FILE: src/tx_pipeline.c ---
+/*
+ * src/tx_pipeline.c — TX pipeline implementation for the FSO Gateway.
+ *
+ * See include/tx_pipeline.h for the public API.
+ *
+ * Pipeline:
+ *   NIC_LAN receive → fragment → block build → FEC encode →
+ *   interleave → NIC_FSO transmit
+ *
+ * Wire format per symbol (18-byte header + payload):
+ *   Offset  Size  Field
+ *    0       4    packet_id      big-endian uint32
+ *    4       4    fec_id         big-endian uint32
+ *    8       2    symbol_index   big-endian uint16
+ *   10       2    total_symbols  big-endian uint16
+ *   12       2    payload_len    big-endian uint16
+ *   14       4    crc32          big-endian uint32
+ *   18       N    data[0..payload_len-1]
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <arpa/inet.h>   /* htonl, htons */
+#include <stdlib.h>
+#include <string.h>
+
+#include "block_builder.h"
+#include "config.h"
+#include "fec_wrapper.h"
+#include "interleaver.h"
+#include "logging.h"
+#include "packet_fragmenter.h"
+#include "packet_io.h"
+#include "symbol.h"
+#include "tx_pipeline.h"
+#include "types.h"
+
+/* -------------------------------------------------------------------------- */
+/* Internal constants                                                          */
+/* -------------------------------------------------------------------------- */
+
+#define TX_BLOCK_TIMEOUT_MS  10.0
+
+/* Receive buffer size — must hold the largest possible Ethernet frame */
+#define TX_RX_BUF_SIZE       9200U
+
+/* Wire header size in bytes */
+#define WIRE_HDR_SIZE        18U
+
+/* -------------------------------------------------------------------------- */
+/* Internal struct                                                             */
+/* -------------------------------------------------------------------------- */
+
+struct tx_pipeline {
+    struct config     cfg;                /* copy of runtime configuration    */
+    packet_io_ctx_t  *rx_ctx;            /* LAN NIC — receive side           */
+    packet_io_ctx_t  *tx_ctx;            /* FSO NIC — transmit side          */
+    block_builder_t   builder;           /* accumulates K source symbols      */
+    fec_handle_t      fec;              /* Wirehair FEC context              */
+    interleaver_t    *interleaver;       /* matrix interleaver                */
+    uint32_t          packet_id_counter; /* monotonically incrementing ID     */
+    unsigned char    *source_buf;        /* k * symbol_size heap buffer       */
+    symbol_t         *frag_syms;         /* heap, k elements                  */
+    symbol_t         *repair_syms;       /* heap, m elements                  */
+};
+
+/* -------------------------------------------------------------------------- */
+/* Forward declarations                                                        */
+/* -------------------------------------------------------------------------- */
+
+static int encode_and_drain(tx_pipeline_t *pl);
+static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym);
+
+/* -------------------------------------------------------------------------- */
+/* Lifecycle                                                                   */
+/* -------------------------------------------------------------------------- */
+
+tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
+                                  packet_io_ctx_t     *rx_ctx,
+                                  packet_io_ctx_t     *tx_ctx)
+{
+    tx_pipeline_t *pl;
+    size_t         source_buf_size;
+
+    if (cfg == NULL) {
+        LOG_ERROR("[tx_pipeline] create: cfg is NULL");
+        return NULL;
+    }
+    if (rx_ctx == NULL) {
+        LOG_ERROR("[tx_pipeline] create: rx_ctx is NULL");
+        return NULL;
+    }
+    if (tx_ctx == NULL) {
+        LOG_ERROR("[tx_pipeline] create: tx_ctx is NULL");
+        return NULL;
+    }
+
+    pl = (tx_pipeline_t *)malloc(sizeof(tx_pipeline_t));
+    if (pl == NULL) {
+        LOG_ERROR("[tx_pipeline] create: malloc(tx_pipeline_t) failed");
+        return NULL;
+    }
+    memset(pl, 0, sizeof(tx_pipeline_t));
+
+    pl->cfg               = *cfg;
+    pl->rx_ctx            = rx_ctx;
+    pl->tx_ctx            = tx_ctx;
+    pl->packet_id_counter = 0;
+
+    /* Heap-allocate source_buf (k * symbol_size can be up to ~576 kB) */
+    source_buf_size = (size_t)cfg->k * (size_t)cfg->symbol_size;
+    pl->source_buf = (unsigned char *)malloc(source_buf_size);
+    if (pl->source_buf == NULL) {
+        LOG_ERROR("[tx_pipeline] create: malloc(source_buf, %zu) failed",
+                  source_buf_size);
+        free(pl);
+        return NULL;
+    }
+
+    /* Initialise block builder */
+    if (block_builder_init(&pl->builder, cfg->k) != 0) {
+        LOG_ERROR("[tx_pipeline] create: block_builder_init(k=%d) failed",
+                  cfg->k);
+        free(pl->source_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Create FEC context */
+    pl->fec = fec_create(cfg->k, cfg->symbol_size);
+    if (pl->fec == NULL) {
+        LOG_ERROR("[tx_pipeline] create: fec_create(k=%d, sym=%d) failed",
+                  cfg->k, cfg->symbol_size);
+        block_builder_destroy(&pl->builder);
+        free(pl->source_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Create interleaver */
+    pl->interleaver = interleaver_create(cfg->depth,
+                                         cfg->k + cfg->m,
+                                         cfg->symbol_size);
+    if (pl->interleaver == NULL) {
+        LOG_ERROR("[tx_pipeline] create: interleaver_create(d=%d,n=%d,s=%d) failed",
+                  cfg->depth, cfg->k + cfg->m, cfg->symbol_size);
+        fec_destroy(pl->fec);
+        block_builder_destroy(&pl->builder);
+        free(pl->source_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Heap-allocate frag_syms (k elements) */
+    pl->frag_syms = (symbol_t *)malloc(sizeof(symbol_t) * (size_t)cfg->k);
+    if (pl->frag_syms == NULL) {
+        LOG_ERROR("[tx_pipeline] create: malloc(frag_syms, k=%d) failed",
+                  cfg->k);
+        interleaver_destroy(pl->interleaver);
+        fec_destroy(pl->fec);
+        block_builder_destroy(&pl->builder);
+        free(pl->source_buf);
+        free(pl);
+        return NULL;
+    }
+
+    /* Heap-allocate repair_syms (m elements) */
+    pl->repair_syms = (symbol_t *)malloc(sizeof(symbol_t) * (size_t)cfg->m);
+    if (pl->repair_syms == NULL) {
+        LOG_ERROR("[tx_pipeline] create: malloc(repair_syms, m=%d) failed",
+                  cfg->m);
+        free(pl->frag_syms);
+        interleaver_destroy(pl->interleaver);
+        fec_destroy(pl->fec);
+        block_builder_destroy(&pl->builder);
+        free(pl->source_buf);
+        free(pl);
+        return NULL;
+    }
+
+    LOG_INFO("[tx_pipeline] Created: k=%d m=%d depth=%d symbol_size=%d",
+             cfg->k, cfg->m, cfg->depth, cfg->symbol_size);
+
+    return pl;
+}
+
+void tx_pipeline_destroy(tx_pipeline_t *pl)
+{
+    if (pl == NULL) {
+        return;
+    }
+
+    interleaver_destroy(pl->interleaver);
+    fec_destroy(pl->fec);
+    block_builder_destroy(&pl->builder);
+    free(pl->repair_syms);
+    free(pl->frag_syms);
+    free(pl->source_buf);
+    free(pl);
+}
+
+/* -------------------------------------------------------------------------- */
+/* tx_pipeline_run_once                                                        */
+/* -------------------------------------------------------------------------- */
+
+int tx_pipeline_run_once(tx_pipeline_t *pl)
+{
+    unsigned char rx_buf[TX_RX_BUF_SIZE];
+    size_t        pkt_len;
+    int           rc;
+    int           num_frags;
+    int           i;
+    int           add_rc;
+
+    if (pl == NULL) {
+        LOG_ERROR("[tx_pipeline] run_once: pl is NULL");
+        return -1;
+    }
+
+    pkt_len = 0;
+
+    /* ------------------------------------------------------------------ */
+    /* Step 1 — Receive from LAN NIC                                       */
+    /* ------------------------------------------------------------------ */
+    rc = packet_io_receive(pl->rx_ctx, rx_buf, sizeof(rx_buf), &pkt_len);
+
+    if (rc == 0) {
+        /* No packet available — check block timeout */
+        int timeout_rc = block_builder_check_timeout(&pl->builder,
+                                                     TX_BLOCK_TIMEOUT_MS);
+        if (timeout_rc == 1 && pl->builder.symbol_count > 0) {
+            block_builder_finalize_with_padding(&pl->builder);
+            if (encode_and_drain(pl) != 0) {
+                return -1;
+            }
+            block_builder_reset(&pl->builder);
+        }
+        return 0;
+    }
+
+    if (rc == -1) {
+        LOG_WARN("[tx_pipeline] run_once: packet_io_receive error: %s",
+                 packet_io_last_error(pl->rx_ctx));
+        return 0;
+    }
+
+    /* rc == 1: packet received */
+
+    /* ------------------------------------------------------------------ */
+    /* Step 2 — Fragment                                                   */
+    /* ------------------------------------------------------------------ */
+    num_frags = fragment_packet(rx_buf,
+                                pkt_len,
+                                pl->packet_id_counter,
+                                (uint16_t)pl->cfg.symbol_size,
+                                pl->frag_syms,
+                                (uint16_t)pl->cfg.k);
+    if (num_frags < 0) {
+        LOG_WARN("[tx_pipeline] run_once: fragment_packet failed "
+                 "(pkt_len=%zu, packet_id=%u)",
+                 pkt_len, pl->packet_id_counter);
+        return 0;
+    }
+
+    pl->packet_id_counter++;
+
+    /* ------------------------------------------------------------------ */
+    /* Step 3 — Feed symbols into block builder                            */
+    /* ------------------------------------------------------------------ */
+    for (i = 0; i < num_frags; ++i) {
+        add_rc = block_builder_add_symbol(&pl->builder, &pl->frag_syms[i]);
+        if (add_rc == -1) {
+            LOG_WARN("[tx_pipeline] run_once: block_builder_add_symbol "
+                     "failed at frag %d", i);
+            continue;
+        }
+
+        if (add_rc == 1) {
+            /* Block is full — encode and drain */
+            if (encode_and_drain(pl) != 0) {
+                return -1;
+            }
+            block_builder_reset(&pl->builder);
+        }
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Step 4 — Return success                                             */
+    /* ------------------------------------------------------------------ */
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* encode_and_drain — internal helper                                          */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Called when a block is full (either organically or after timeout padding).
+ * Packs source data, generates repair symbols, stamps CRC (if enabled),
+ * pushes all K+M symbols to the interleaver, then drains if ready.
+ */
+static int encode_and_drain(tx_pipeline_t *pl)
+{
+    int      k          = pl->cfg.k;
+    int      m          = pl->cfg.m;
+    int      sym_size   = pl->cfg.symbol_size;
+    int      crc_on     = pl->cfg.internal_symbol_crc_enabled;
+    uint32_t block_id;
+    int      i;
+    int      rc;
+    symbol_t out_sym;
+
+    memset(pl->repair_syms, 0, sizeof(symbol_t) * (size_t)m);
+
+    /* ---- 1. Pack source data ----------------------------------------- */
+    for (i = 0; i < k; ++i) {
+        memcpy(pl->source_buf + (size_t)i * (size_t)sym_size,
+               pl->builder.symbols[i].data,
+               (size_t)sym_size);
+    }
+
+    /* ---- 2. Generate repair symbols ------------------------------------ */
+    rc = fec_encode_block(pl->fec, pl->source_buf, pl->repair_syms, m);
+    if (rc != 0) {
+        LOG_ERROR("[tx_pipeline] encode_and_drain: fec_encode_block failed");
+        return -1;
+    }
+
+    block_id = (uint32_t)pl->builder.block_id;
+
+    /* ---- 3. Set metadata on repair symbols ----------------------------- */
+    for (i = 0; i < m; ++i) {
+        pl->repair_syms[i].packet_id     = block_id;
+        pl->repair_syms[i].fec_id        = (uint32_t)(k + i);
+        pl->repair_syms[i].symbol_index  = (uint16_t)(k + i);
+        pl->repair_syms[i].total_symbols = (uint16_t)(k + m);
+        pl->repair_syms[i].payload_len   = (uint16_t)sym_size;
+    }
+
+    /* ---- 4. Update total_symbols on source symbols --------------------- */
+    for (i = 0; i < k; ++i) {
+        pl->builder.symbols[i].total_symbols = (uint16_t)(k + m);
+    }
+
+    /* ---- 5. CRC stamp -------------------------------------------------- */
+    if (crc_on) {
+        for (i = 0; i < k; ++i) {
+            symbol_compute_crc(&pl->builder.symbols[i]);
+        }
+        for (i = 0; i < m; ++i) {
+            symbol_compute_crc(&pl->repair_syms[i]);
+        }
+    }
+
+    /* ---- 6. Push all K+M symbols to interleaver ----------------------- */
+    for (i = 0; i < k; ++i) {
+        rc = interleaver_push_symbol(pl->interleaver,
+                                     &pl->builder.symbols[i]);
+        if (rc == -1) {
+            LOG_ERROR("[tx_pipeline] encode_and_drain: "
+                      "interleaver_push_symbol(src %d) failed", i);
+            return -1;
+        }
+    }
+    for (i = 0; i < m; ++i) {
+        rc = interleaver_push_symbol(pl->interleaver, &pl->repair_syms[i]);
+        if (rc == -1) {
+            LOG_ERROR("[tx_pipeline] encode_and_drain: "
+                      "interleaver_push_symbol(repair %d) failed", i);
+            return -1;
+        }
+    }
+
+    /* ---- Drain interleaver -------------------------------------------- */
+    if (interleaver_is_ready(pl->interleaver)) {
+        while (1) {
+            rc = interleaver_pop_ready_symbol(pl->interleaver, &out_sym);
+            if (rc == -1) {
+                /* Not ready / empty — stop draining */
+                break;
+            }
+            if (tx_serialize_and_send(pl, &out_sym) != 0) {
+                /* LOG_WARN already emitted inside; continue best-effort */
+            }
+            if (rc == 1) {
+                /* Last symbol in window — matrix reset */
+                break;
+            }
+        }
+    }
+
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* tx_serialize_and_send — internal helper                                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Serialise one symbol_t into the wire format and inject it via packet_io_send.
+ *
+ * Wire layout (18 bytes header + payload):
+ *   [0..3]   packet_id      big-endian uint32
+ *   [4..7]   fec_id         big-endian uint32
+ *   [8..9]   symbol_index   big-endian uint16
+ *   [10..11] total_symbols  big-endian uint16
+ *   [12..13] payload_len    big-endian uint16
+ *   [14..17] crc32          big-endian uint32
+ *   [18..]   data[0..payload_len-1]
+ */
+static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
+{
+    unsigned char wire[WIRE_HDR_SIZE + MAX_SYMBOL_DATA_SIZE];
+    uint32_t      tmp32;
+    uint16_t      tmp16;
+    size_t        wire_len;
+
+    /* packet_id */
+    tmp32 = htonl(sym->packet_id);
+    memcpy(wire + 0, &tmp32, 4);
+
+    /* fec_id */
+    tmp32 = htonl(sym->fec_id);
+    memcpy(wire + 4, &tmp32, 4);
+
+    /* symbol_index */
+    tmp16 = htons(sym->symbol_index);
+    memcpy(wire + 8, &tmp16, 2);
+
+    /* total_symbols */
+    tmp16 = htons(sym->total_symbols);
+    memcpy(wire + 10, &tmp16, 2);
+
+    /* payload_len */
+    tmp16 = htons(sym->payload_len);
+    memcpy(wire + 12, &tmp16, 2);
+
+    /* crc32 */
+    tmp32 = htonl(sym->crc32);
+    memcpy(wire + 14, &tmp32, 4);
+
+    /* payload */
+    if (sym->payload_len > 0) {
+        memcpy(wire + WIRE_HDR_SIZE, sym->data, sym->payload_len);
+    }
+
+    wire_len = WIRE_HDR_SIZE + sym->payload_len;
+
+    if (packet_io_send(pl->tx_ctx, wire, wire_len) != 0) {
+        LOG_WARN("[tx_pipeline] tx_serialize_and_send: "
+                 "packet_io_send failed (packet_id=%u fec_id=%u): %s",
+                 sym->packet_id, sym->fec_id,
+                 packet_io_last_error(pl->tx_ctx));
+        return -1;
+    }
+
+    return 0;
 }
 
 
@@ -14483,7 +16336,7 @@ CFLAGS   := $(CFLAGS_BASE)   $(CFLAGS_EXTRA)
 CXXFLAGS := $(CXXFLAGS_BASE) $(CXXFLAGS_EXTRA)
 
 # Link with g++ so C++ objects (Wirehair) resolve correctly.
-LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++
+LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++ -lpcap
 
 ifeq ($(VERBOSE),1)
     Q :=
@@ -14703,520 +16556,352 @@ clean:
 	$(Q)echo "  CLEAN $(BUILD_DIR)"
 	$(Q)rm -rf $(BUILD_DIR)
 
-
 --- FILE: README.md ---
-FSO Gateway POC - High-Performance Packet Recovery System
-Overview
+# FSO Gateway POC — High-Performance Packet Recovery System
+
+## Overview
 
 The FSO Gateway is a specialized bridge designed to connect standard Ethernet networks over Free Space Optical (FSO) links. FSO communication is highly susceptible to atmospheric turbulence, which causes deep fading and significant "burst" packet losses.
 
 This system mitigates these issues by implementing a robust pipeline of:
 
-Fragmentation
-Matrix Interleaving
-Forward Error Correction (FEC) using Wirehair (Fountain Code)
+- Fragmentation
+- Matrix Interleaving
+- Forward Error Correction (FEC) using Wirehair (Fountain Code)
 
-The system operates strictly on a Packet Erasure Channel model, where packets are either received or lost — not bit-corrected.
+The system operates strictly on a **Packet Erasure Channel** model, where packets are either received or lost — not bit-corrected.
 
-Project Status: March 2026
-Current Milestone:
+---
 
-Phase 6 – Full Simulation + Statistical Validation (Channel Campaign)
+## Project Status: April 2026
 
-System Status Summary:
+### Current Milestone
 
-✔ End-to-End pipeline fully operational
-✔ Receiver state machine stable and deterministic
-✔ FEC layer validated mathematically and empirically
-✔ Interleaving behavior validated under burst conditions
-✔ Statistical campaign framework implemented
-✔ Root-cause diagnostics infrastructure added
+**Phase 7 — Real NIC Integration (complete, pending hardware validation)**
 
-❗ Remaining Gap: Packet Reassembly correctness under stress
+### System Status Summary
 
-Completed Core Components
-1. Infrastructure (Phases 0–1)
-Linux-based development environment
-Makefile (C + C++ integration for Wirehair)
-Logging module (multi-level, timestamped)
-AddressSanitizer (ASan) integration
-2. Packet Processing & Fragmentation (Phase 2)
-Full support for:
-Small packets
-MTU (1500B)
-Jumbo frames (9000B)
-Deterministic fragmentation into fixed-size symbols
-Exact byte-level reassembly validation
-3. Block Management & FEC Wrapper (Phases 3–4)
-Block Builder (K symbols per block)
-Timeout-based block closure
-Wirehair integration via clean wrapper
-Cold Buffer Fix (GF(256) correctness)
-4. Matrix Interleaving (Phase 5)
-Column-based interleaving across blocks
-Burst spreading across time
-Sparse deinterleaver (hole-tolerant)
-5. Receiver Robustness (Phase 5.1)
+✔ End-to-End simulation pipeline fully validated (Phase 6)  
+✔ FEC layer validated mathematically and empirically  
+✔ Interleaving behavior validated under burst conditions  
+✔ Statistical campaign framework: 69 scenarios, 458+ runs, zero regressions  
+✔ CRC integrity layer fully integrated  
+✔ Real NIC integration layer implemented (Phase 7)  
+✔ TX pipeline module implemented and code-reviewed  
+✔ RX pipeline module implemented and code-reviewed  
+✔ Full-duplex gateway module implemented and code-reviewed  
+⏳ Hardware validation pending (requires Linux machine with real NICs)
 
+---
+
+## Repository Structure
+
+```
+fso_gateway/
+├── include/              # All header files
+├── src/                  # All implementation files
+├── tests/                # Automated simulation tests
+├── tools/                # Manual test tools (require real NICs)
+└── third_party/wirehair/ # Wirehair Fountain Code FEC library
+```
+
+---
+
+## Completed Core Components
+
+### 1. Infrastructure (Phases 0–1)
+- Linux-based development environment
+- Makefile (C + C++ integration for Wirehair)
+- Logging module (multi-level, timestamped, thread-safe)
+- AddressSanitizer (ASan) integration
+
+### 2. Packet Processing & Fragmentation (Phase 2)
+- Full support for small packets, MTU (1500B), and jumbo frames (9000B)
+- Deterministic fragmentation into fixed-size symbols
+- Exact byte-level reassembly validation
+
+### 3. Block Management & FEC Wrapper (Phases 3–4)
+- Block Builder (K symbols per block, timeout-based closure)
+- Wirehair integration via clean wrapper
+- Cold Buffer Fix (GF(256) correctness)
+
+### 4. Matrix Interleaving (Phase 5)
+- Column-based interleaving across blocks
+- Burst spreading across time
+- Sparse deinterleaver (hole-tolerant)
+
+### 5. Receiver Robustness (Phase 5.1)
 The receiver was redesigned as a strict deterministic state machine:
+- Block lifecycle FSM: `EMPTY → FILLING → READY → EMPTY`
+- Duplicate rejection (bitmap, O(1))
+- Late symbol handling (drop after closure)
+- Early failure detection (holes > M)
+- Threshold + timeout flush policy
 
-Block lifecycle FSM:
+### 6. Channel Campaign Test Suite (Phase 6)
+- 69 scenarios, 458+ total runs
+- Scenario categories: Very Short Bursts, Single Burst Sweep, Boundary Testing, Time-Based Fades, Multi-Burst, Blackout, Corruption, Mixed, Failure Edge
+- Erasure Recoverability Oracle for theoretical validation
+- Result: `oracle_recoverable_but_not_decoded_successfully = 0` across all runs
 
-EMPTY → FILLING → READY → EMPTY
-Duplicate rejection (bitmap, O(1))
-Late symbol handling (drop after closure)
-Early failure detection (holes > M)
-Threshold + timeout flush policy
-Strict valid-symbol filtering (payload_len > 0 etc.)
-End-to-End Integration (Task 20)
+### 6.1 CRC Integrity Layer (Phase 6 Extension)
+- Per-symbol CRC-32C (Castagnoli) covering 14-byte header + payload
+- Corruption → erasure conversion before FEC
+- `crc_dropped_symbols` and `packet_fail_crc_drop` metrics
+- Validated: no false decode successes, no oracle mismatches
 
-Full pipeline implemented:
+### 7. Real NIC Integration (Phase 7) — NEW
+See full details below.
 
-packet
-→ fragment
-→ block builder
-→ FEC encode
-→ interleave
-→ channel impairments
-→ deinterleave
-→ FEC decode
-→ reassemble
-Critical Bug Discovered
-Missing symbols in final window
-Interleaver not draining
-Partial transmission
-Root Cause
+---
 
-Incorrect fec_id assignment for padded symbols:
+## Phase 7 — Real NIC Integration
 
-Duplicate (block_id, fec_id)
-Missing column in interleaver
-Fix
-sym.fec_id = s;
-Result
+### Architecture
 
-✔ 100% transmission
-✔ 100% block decode
-✔ Exact packet recovery
+The gateway opens **four** libpcap handles and runs two pipelines in parallel threads:
 
-Channel Campaign Test Suite (Phase 6)
-Purpose
+```
+NIC_LAN (promisc=1) ──→ TX pipeline ──→ NIC_FSO (promisc=0)
+                         fragment → FEC encode → interleave → serialize
 
-Move from deterministic validation → statistical robustness validation
+NIC_FSO (promisc=1) ──→ RX pipeline ──→ NIC_LAN (promisc=0)
+                         deserialize → deinterleave → FEC decode → reassemble
+```
 
-The campaign evaluates system behavior under:
+### Wire Format
 
-Burst losses
-Multiple bursts
-Time-based fades
-Corruption
-Mixed impairments
-Campaign Structure
-69 scenarios
-458+ total runs
-Full pipeline execution per run
-Block-level + Packet-level diagnostics
-Scenario Categories
-A — Very Short Bursts
+Every symbol is serialized as an 18-byte header followed by the payload:
 
-Sanity validation (1–10 symbols)
+| Offset | Size | Field         | Byte Order |
+|--------|------|---------------|------------|
+| 0      | 4    | packet_id     | big-endian |
+| 4      | 4    | fec_id        | big-endian |
+| 8      | 2    | symbol_index  | big-endian |
+| 10     | 2    | total_symbols | big-endian |
+| 12     | 2    | payload_len   | big-endian |
+| 14     | 4    | crc32         | big-endian |
+| 18     | N    | data[]        | —          |
 
-B — Single Burst Sweep
+### New Source Files
 
-Wide range burst testing (16 → 1024)
+| File | Description |
+|------|-------------|
+| `include/packet_io.h` + `src/packet_io.c` | libpcap wrapper — non-blocking RX/TX, jumbo frame support (snaplen 9200) |
+| `include/tx_pipeline.h` + `src/tx_pipeline.c` | TX pipeline: receive from LAN NIC → fragment → FEC encode → interleave → transmit to FSO NIC |
+| `include/rx_pipeline.h` + `src/rx_pipeline.c` | RX pipeline: receive from FSO NIC → deserialize → deinterleave → FEC decode → reassemble → transmit to LAN NIC |
+| `include/gateway.h` + `src/gateway.c` | Full-duplex gateway: runs TX and RX pipelines simultaneously in two pthreads |
 
-C — Boundary Testing
+### New Tool Files
 
-Around theoretical limit (≈64 symbols)
+| File | Description |
+|------|-------------|
+| `tools/packet_io_test.c` | Validates Task 22: send/receive raw frames on a real NIC |
+| `tools/echo_test.c` | Task 23 tool: raw Ethernet forwarding between two NICs (no FEC) |
+| `tools/echo_verify.c` | Validates Task 23: injects known frames and verifies they arrive |
+| `tools/tx_pipeline_test.c` | Validates Task 24: confirms symbols appear on FSO NIC after TX pipeline |
+| `tools/rx_pipeline_test.c` | Validates Task 25: confirms packets reconstructed on LAN NIC after RX pipeline |
+| `tools/gateway_test.c` | Validates Task 26: full-duplex test with injector, observer, and timer threads |
 
-D — Time-Based Fades
+---
 
-µs → symbols conversion
+## Build
 
-E — Multi-Burst
+### Prerequisites (Linux only)
 
-Distributed impairments
+```bash
+sudo apt-get install libpcap-dev build-essential
+```
 
-F — Blackout
+### Build all
 
-Long continuous loss
+```bash
+make clean && make
+```
 
-G — Corruption
+### Build with AddressSanitizer
 
-Invalid symbols (not erasures)
+```bash
+make clean && make DEBUG=1
+```
 
-H — Mixed
+---
 
-Erasure + corruption
+## Automated Tests (Simulation — no NIC required)
 
-I — Failure Edge
+These run on any machine (including WSL/Windows).
 
-Post-threshold degradation
-
-Theoretical Model (Oracle)
-
-The campaign introduced an Erasure Recoverability Oracle:
-
-recoverable ⇔ received_symbols ≥ K
-
-Important:
-
-✔ Oracle valid ONLY for erasure-only runs
-❌ Disabled for corruption/mixed scenarios
-
-Metrics Collected
-Block-Level
-total_blocks_attempted
-total_blocks_passed
-total_blocks_failed
-fail_too_many_holes
-fail_insufficient_symbols
-Packet-Level (NEW)
-packet_fail_missing
-packet_fail_corrupted
-packet_fail_after_successful_block_decode
-Critical Discovery #1 — Packet-Level Failure After FEC
-
-Observed:
-
-blocks_passed = 100%
-blocks_failed = 0
-BUT:
-packet_fail_after_successful_block_decode > 0
-Meaning
-
-✔ FEC works perfectly
-❌ Packet reconstruction is broken
-
-Root Cause Area
-Fragment tracking
-Packet completion logic
-Late/duplicate handling
-Critical Discovery #2 — Recoverable Blocks Discarded Before Decode
-
-New metric:
-
-oracle_recoverable_but_discarded_before_decode
-Meaning
-
-Blocks that:
-
-✔ Had enough symbols to decode
-❌ Were discarded by system before decode
-
-Root Cause
-
-Receiver lifecycle bug:
-
-Blocks remained in FILLING
-Evicted before reaching READY
-Not decoded despite being recoverable
-Diagnostics Infrastructure (NEW)
-
-To debug this class of issues, we added:
-
-1. Source-of-Truth Block Final Reasons
-
-Each block now ends with a single explicit reason:
-
-decode_success
-fail_too_many_holes
-fail_insufficient_symbols
-discarded_before_decode
-2. Eviction Trace System
-
-For each evicted block we record:
-
-state at eviction
-symbol_count
-holes
-time since first symbol
-whether it was recoverable
-3. Suspicious Block Reporting
-
-Focused diagnostics for:
-
-oracle_recoverable_but_discarded_before_decode
-
-Including:
-
-exact block state
-timing conditions
-eviction reason
-4. Accounting Fixes
-
-Corrected inconsistency:
-
-❌ blocks_decode_success > 0 while attempts = 0
-
-✔ Now:
-
-blocks_attempted_for_decode = actual decoder calls
-Fundamental Design Insight
-Wirehair Behavior
-Wirehair DOES NOT fix corrupted data
-Wirehair ONLY fixes missing data
-
-Therefore:
-
-✔ System must convert corruption → erasure
-✔ Invalid symbols must be rejected BEFORE FEC
-
-This aligns with the architecture:
-
-→ Packet Erasure Channel model
-
-Current System State
-✔ Fully Solved
-FEC correctness
-Interleaving gain
-Burst resilience
-Block lifecycle management
-Theoretical boundary validation
-❗ Remaining Work (Phase 6 continuation)
-
-Focus areas:
-
-Packet reassembly correctness
-Fragment completion logic
-Handling duplicates / late arrivals
-Prevent premature packet discard
-Key Achievements
-
-✔ Mathematically validated FEC limits
-✔ Identified exact burst tolerance (64 symbols)
-✔ Built full statistical validation framework
-✔ Discovered non-FEC bottleneck
-✔ Reduced debugging scope dramatically
-
-Build & Execution
-Run Campaign
+```bash
+# Full channel campaign (recommended)
 make clean
-make ctest > build/ctest_full.log 2>&1
-View Results
-tail -n 120 build/ctest_full.log
-Summary
-
-The system has reached a critical milestone:
-
-✔ FEC and interleaving are fully validated
-✔ System behaves exactly as theory predicts
-
-The remaining gap is:
-
-❗ purely software-level (packet reconstruction)
-
-This means:
-
-👉 The hard problem (channel + coding) is solved
-👉 The rest is deterministic debugging
-
-
-
-
-
-CRC Integrity Layer (NEW – Phase 6 Extension)
-Motivation
-
-While the system is designed as a Packet Erasure Channel, real-world channels may introduce corrupted symbols, not just losses.
-
-Wirehair (Fountain Code):
-
-❌ Cannot fix corrupted data
-✔ Can recover from missing symbols
-
-Therefore:
-
-👉 Any corrupted symbol must be converted into an erasure BEFORE FEC decoding
-
-Design Overview
-
-A lightweight per-symbol CRC validation layer was introduced.
-
-Flow Integration
-
-TX:
-
-packet
-→ fragment → symbol
-→ FEC encode
-→ CRC calculation (per symbol)
-→ interleave
-→ TX
-
-RX:
-
-RX
-→ deinterleave
-→ CRC validation
-    → valid → pass to FEC
-    → invalid → DROP (treated as erasure)
-→ FEC decode
-→ reassemble
-Key Principle
-
-✔ Corruption is converted into erasure
-✔ FEC sees only valid or missing symbols
-✔ System remains mathematically consistent
-
-CRC Behavior
-
-Each symbol now contains:
-
-payload
-metadata (block_id, fec_id, etc.)
-CRC field
-On Receive:
-CRC is recomputed
-Compared to stored value
-
-If mismatch:
-
-symbol → DROPPED
-→ counted as "missing"
-→ increases holes
-New Metrics (Campaign + Runtime)
-Symbol-Level
-crc_dropped_symbols
-Number of symbols rejected due to CRC mismatch
-Packet-Level
-packet_fail_crc_drop
-Packets that failed directly due to CRC drops
-
-(Currently expected to be 0 in most runs — CRC contributes indirectly via missing blocks)
-
-Observed Behavior (Validated)
-
-From campaign runs:
-
-CRC actively drops corrupted symbols ✔
-No false decode successes ✔
-No oracle mismatches ✔
-System still aligns with erasure model ✔
-
-Example:
-
-crc_dropped_symbols > 0
-blocks_decode_failed = 0
-oracle_recoverable_but_not_decoded_successfully = 0
-
-Meaning:
-
-👉 CRC integration is correct and safe
-
-Important Implementation Detail
-
-CRC is calculated:
-
-AFTER FEC encode
-
-Reason:
-
-FEC modifies payload
-CRC must reflect final transmitted data
-Campaign Impact
-
-CRC introduces:
-
-More "missing symbols" (converted corruption)
-Higher stress on FEC
-More realistic channel modeling
-
-But:
-
-✔ No degradation in correct recoverable scenarios
-✔ No increase in suspicious discards
-✔ No violation of theoretical limits
-
-How to Run with CRC
-Default (CRC enabled)
-make clean
-mkdir -p build
 make ctest DEBUG=1 > build/ctest_full.log 2>&1
-Disable CRC (for comparison)
-
-If supported via runtime flag:
-
-./build/channel_campaign_test --crc 0
-
-or (depending on implementation):
-
-./build/channel_campaign_test --enable-crc=0
-Compare Modes
-Mode	Behavior
-CRC ON	corruption → erasure
-CRC OFF	corrupted symbols reach FEC (undefined behavior risk)
-How to Analyze Results
-View Summary
 tail -n 120 build/ctest_full.log
-Key Fields to Check
-Correctness
+
+# Individual test suites
+make itest    # interleaver
+make dtest    # deinterleaver
+make btest    # burst simulation
+make rtest    # receiver robustness
+make ftest    # FEC stress
+make e2etest  # end-to-end simulation (Task 20)
+make alltest  # all of the above
+```
+
+### Expected Campaign Results
+
+```
 blocks_decode_failed = 0
 oracle_recoverable_but_not_decoded_successfully = 0
 oracle_recoverable_but_discarded_before_decode = 0
-CRC Behavior
-crc_dropped_symbols > 0 (expected in corruption scenarios)
-packet_fail_crc_drop ≈ 0
-System Health
 suspicious_blocks_total = 0
-Interpretation Guide
-Case 1 — Healthy System
-decode_success = full
-oracle mismatch = 0
-suspicious = 0
+longest_recoverable_burst = 64 symbols (76.80 µs)
+first_failing_burst = 65 symbols (78.00 µs)
+```
 
-✔ System correct
+---
 
-Case 2 — Too Many Holes
-fail_too_many_holes > 0
+## Hardware Validation (Linux machine with real NICs required)
 
-✔ Expected — beyond FEC capability
+Run these in order. Each must pass before proceeding to the next.
 
-Case 3 — CRC Active
-crc_dropped_symbols > 0
+> **All tools require `sudo` (libpcap needs root for raw socket access).**  
+> Replace `eth0` / `eth1` with your actual interface names.
 
-✔ Corruption handled correctly
+---
 
-Case 4 — Problem (Should NOT happen)
-oracle_recoverable_but_not_decoded_successfully > 0
+### Task 22 — Validate packet_io module
 
-❌ Indicates real bug
+**TX test** (sends 10 broadcast frames):
+```bash
+sudo ./build/packet_io_test --iface eth0 --mode tx --count 10
+```
 
-Design Insight (Updated)
+**RX test** (waits to receive 10 frames, run in parallel terminal):
+```bash
+sudo ./build/packet_io_test --iface eth0 --mode rx --count 10
+```
 
-System model refined:
+**Pass criterion:** both print `PASSED`.
 
-Real Channel
-→ corruption + erasure
+---
 
-CRC Layer
-→ converts corruption → erasure
+### Task 23 — Validate echo forwarding (no FEC)
 
-Effective Channel to FEC
-→ PURE ERASURE CHANNEL
+**Terminal 1 — start echo forwarder:**
+```bash
+sudo ./build/echo_test --lan-iface eth0 --fso-iface eth1 --duration 30
+```
 
-This ensures:
+**Terminal 2 — RX observer:**
+```bash
+sudo ./build/echo_verify --iface eth1 --mode rx --count 20
+```
 
-✔ Mathematical alignment with FEC assumptions
-✔ Predictable behavior
-✔ Clean theoretical validation
+**Terminal 3 — TX sender:**
+```bash
+sudo ./build/echo_verify --iface eth0 --mode tx --count 20
+```
 
-Final Status After CRC Integration
+**Pass criterion:** RX observer prints `RX TEST PASSED`.
 
-✔ CRC layer fully integrated
-✔ No regression in FEC performance
-✔ No new inconsistencies introduced
-✔ Campaign validation remains stable
-✔ System behavior matches theory
+---
 
-Conclusion Update
+### Task 24 — Validate TX pipeline
 
-The system now handles:
+**Terminal 1 — RX observer (start first):**
+```bash
+sudo ./build/tx_pipeline_test \
+  --lan-iface eth0 --fso-iface eth1 \
+  --mode rx --duration 15
+```
 
-✔ Burst erasures (via interleaving + FEC)
-✔ Corrupted symbols (via CRC → erasure)
+**Terminal 2 — TX pipeline:**
+```bash
+sudo ./build/tx_pipeline_test \
+  --lan-iface eth0 --fso-iface eth1 \
+  --mode tx --duration 10
+```
 
-Meaning:
+**Pass criterion:** RX observer prints `TX PIPELINE TEST PASSED`.
 
-👉 The channel abstraction is now complete and realistic
+---
+
+### Task 25 — Validate RX pipeline
+
+**Terminal 1 — observer (start first):**
+```bash
+sudo ./build/rx_pipeline_test \
+  --lan-iface eth0 --fso-iface eth1 \
+  --mode obs --duration 20
+```
+
+**Terminal 2 — RX pipeline:**
+```bash
+sudo ./build/rx_pipeline_test \
+  --lan-iface eth0 --fso-iface eth1 \
+  --mode rx --duration 15
+```
+
+**Terminal 3 — TX pipeline:**
+```bash
+sudo ./build/rx_pipeline_test \
+  --lan-iface eth0 --fso-iface eth1 \
+  --mode tx --duration 10
+```
+
+**Pass criterion:** observer prints `RX PIPELINE TEST PASSED`.
+
+---
+
+### Task 26 — Validate full-duplex gateway
+
+```bash
+sudo ./build/gateway_test \
+  --lan-iface eth0 \
+  --fso-iface eth1 \
+  --duration 20
+```
+
+**Pass criterion:** prints `FULL DUPLEX TEST PASSED`.
+
+---
+
+### Recommended FEC parameters for hardware testing
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| `--k` | 8 | Source symbols per block |
+| `--m` | 4 | Repair symbols (50% overhead) |
+| `--depth` | 2 | Interleave depth |
+| `--symbol-size` | 1500 | Bytes per symbol (MTU) |
+
+Example with explicit parameters:
+```bash
+sudo ./build/gateway_test \
+  --lan-iface eth0 --fso-iface eth1 \
+  --k 8 --m 4 --depth 2 --symbol-size 1500 \
+  --duration 30
+```
+
+---
+
+## Design Notes
+
+### Memory management
+All large buffers (`source_buf`, `block_buf`, `recon_buf`, `pkt_syms_buf`, `frag_syms`, `repair_syms`) are heap-allocated to avoid stack overflow. `sizeof(block_t)` ≈ 2.3 MB and `sizeof(symbol_t[256])` ≈ 2.3 MB — both too large for stack frames.
+
+### Threading model
+`gateway_run()` creates two pthreads (TX and RX). Each loops its respective `*_pipeline_run_once()`. A fatal error in either thread sets `running = 0`, causing the other to exit cleanly. Signal handlers call `gateway_stop()` which sets the same flag.
+
+### CRC
+CRC-32C (Castagnoli) is computed on TX **after** FEC encode (so CRC covers the final transmitted payload). On RX, CRC is verified **before** the symbol enters the deinterleaver. Failing symbols are counted as erasures.
+
+---
+
+## Next Steps — Phase 8
+
+- Task 27: Memory validation (Valgrind + AddressSanitizer under real traffic)
+- Task 28: Load testing (sustained traffic, no crashes)
+- Task 29: Packet size sweep (small, MTU, jumbo, mixed)
+- Task 30: Real FSO link trial — baseline vs interleaving vs interleaving+FEC
 

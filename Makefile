@@ -101,7 +101,7 @@ CFLAGS   := $(CFLAGS_BASE)   $(CFLAGS_EXTRA)
 CXXFLAGS := $(CXXFLAGS_BASE) $(CXXFLAGS_EXTRA)
 
 # Link with g++ so C++ objects (Wirehair) resolve correctly.
-LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++
+LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++ -lpcap
 
 ifeq ($(VERBOSE),1)
     Q :=
