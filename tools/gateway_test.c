@@ -37,6 +37,7 @@
 
 #include "config.h"
 #include "gateway.h"
+#include <wirehair/wirehair.h>
 #include "logging.h"
 #include "packet_io.h"
 
