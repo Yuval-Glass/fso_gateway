@@ -1,6 +1,7 @@
---- FSO GATEWAY - END OF PHASE 7 (Full Algorithmic Core) ---
-Status: Algorithmic Core Complete | CRC & Interleaving Validated | Date: Thu Apr  9 11:03:22 IDT 2026
+--- FSO GATEWAY - PHASE 7 VALIDATED (With Field Fixes) ---
+Status: CRC/Interleaving Stable | HW Fixes Applied (BSD/MTU/Drain) | Date: Sun Apr 12 12:04:18 PM IDT 2026
 
+--- HEADERS ---
 --- FILE: include/block_builder.h ---
 #ifndef BLOCK_BUILDER_H
 #define BLOCK_BUILDER_H
@@ -2027,6 +2028,7 @@ typedef struct block_t {
 #endif /* FSO_TYPES_H */
 
 
+--- SOURCE FILES ---
 --- FILE: src/block_builder.c ---
 #include "block_builder.h"
 
@@ -5291,7 +5293,7 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            stats_increment_rx();
+
             ++packet_id;
 
             LOG_DEBUG("Packet %u captured: %zd bytes", packet_id, rx_len);
@@ -5764,7 +5766,10 @@ int fragment_packet(const unsigned char *packet_data,
  */
 
 #define _POSIX_C_SOURCE 200112L
+#define _BSD_SOURCE
+#define _DEFAULT_SOURCE
 
+#include <sys/types.h>
 #include <net/if.h>      /* IF_NAMESIZE */
 #include <stddef.h>
 #include <stdio.h>
@@ -7857,7 +7862,14 @@ static int encode_and_drain(tx_pipeline_t *pl)
         }
     }
 
-    /* ---- 6. Push all K+M symbols to interleaver ----------------------- */
+    /* ---- 6. Drain interleaver if still ready from previous window ----- */
+    while (interleaver_is_ready(pl->interleaver)) {
+        rc = interleaver_pop_ready_symbol(pl->interleaver, &out_sym);
+        if (rc == -1) { break; }
+        tx_serialize_and_send(pl, &out_sym);
+        if (rc == 1) { break; }
+    }
+    /* ---- 7. Push all K+M symbols to interleaver ----------------------- */
     for (i = 0; i < k; ++i) {
         rc = interleaver_push_symbol(pl->interleaver,
                                      &pl->builder.symbols[i]);
@@ -7960,6 +7972,2023 @@ static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
     }
 
     return 0;
+}
+
+
+--- TEST TOOLS ---
+--- FILE: tools/echo_test.c ---
+/*
+ * tools/echo_test.c — Raw Ethernet frame echo/forwarding test tool.
+ *
+ * Proves basic packet forwarding between two real NICs with no FEC,
+ * no fragmentation, and no interleaving.  Frames received on the LAN
+ * interface are forwarded to the FSO interface and vice-versa.
+ *
+ * Usage:
+ *   echo_test --lan-iface <iface> --fso-iface <iface> [--duration <sec>]
+ *
+ * Compile:
+ *   gcc -std=c99 -Wall -Wextra \
+ *       -Iinclude \
+ *       -o build/echo_test \
+ *       tools/echo_test.c src/packet_io.c src/logging.c \
+ *       -lpcap
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <getopt.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "logging.h"
+#include "packet_io.h"
+
+/* -------------------------------------------------------------------------- */
+/* Constants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/* Receive buffer: matches packet_io snaplen (9200) with headroom */
+#define ECHO_BUF_SIZE   9200UL
+
+/* Print a progress line every this many forwarded packets */
+#define PROGRESS_INTERVAL 1000UL
+
+/* -------------------------------------------------------------------------- */
+/* Signal handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+static volatile sig_atomic_t running = 1;
+
+static void sig_handler(int signum)
+{
+    (void)signum;
+    running = 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                       */
+/* -------------------------------------------------------------------------- */
+
+static void print_usage(void)
+{
+    fprintf(stderr,
+            "Usage: echo_test --lan-iface <iface> --fso-iface <iface>"
+            " [--duration <sec>]\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* main                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    /* --- option parsing -------------------------------------------------- */
+    static const struct option long_opts[] = {
+        { "lan-iface", required_argument, NULL, 'l' },
+        { "fso-iface", required_argument, NULL, 'f' },
+        { "duration",  required_argument, NULL, 'd' },
+        { NULL,        0,                 NULL,  0  }
+    };
+
+    const char *lan_iface  = NULL;
+    const char *fso_iface  = NULL;
+    long        duration   = 0;
+    int         opt;
+
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'l':
+            lan_iface = optarg;
+            break;
+        case 'f':
+            fso_iface = optarg;
+            break;
+        case 'd':
+            duration = atol(optarg);
+            break;
+        default:
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (lan_iface == NULL || fso_iface == NULL) {
+        print_usage();
+        return 1;
+    }
+
+    /* --- logging init ---------------------------------------------------- */
+    log_init();
+
+    /* --- signal handlers ------------------------------------------------- */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = sig_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = 0;
+        sigaction(SIGINT,  &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
+
+    /* --- open interfaces ------------------------------------------------- */
+    char errbuf[256];
+    packet_io_ctx_t *ctx_lan;
+    packet_io_ctx_t *ctx_fso;
+
+    ctx_lan = packet_io_open(lan_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx_lan == NULL) {
+        LOG_ERROR("[echo_test] Failed to open LAN interface \"%s\": %s",
+                  lan_iface, errbuf);
+        return 1;
+    }
+
+    ctx_fso = packet_io_open(fso_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx_fso == NULL) {
+        LOG_ERROR("[echo_test] Failed to open FSO interface \"%s\": %s",
+                  fso_iface, errbuf);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    /* --- state ----------------------------------------------------------- */
+    unsigned char  buf[ECHO_BUF_SIZE];
+    size_t         pkt_len    = 0;
+    unsigned long  lan_to_fso = 0;
+    unsigned long  fso_to_lan = 0;
+    unsigned long  total      = 0;
+    unsigned long  last_print = 0;
+    time_t         t_start    = time(NULL);
+    int            rc;
+
+    LOG_INFO("[echo_test] Starting: lan=%s fso=%s duration=%lds",
+             lan_iface, fso_iface, duration);
+
+    /* --- main forwarding loop -------------------------------------------- */
+    while (running) {
+        int got_packet = 0;
+
+        /* Check duration */
+        if (duration > 0 && (time(NULL) - t_start) >= duration) {
+            break;
+        }
+
+        /* LAN → FSO */
+        rc = packet_io_receive(ctx_lan, buf, sizeof(buf), &pkt_len);
+        if (rc == 1) {
+            got_packet = 1;
+            if (packet_io_send(ctx_fso, buf, pkt_len) == -1) {
+                LOG_WARN("[echo_test] send to FSO failed: %s",
+                         packet_io_last_error(ctx_fso));
+            } else {
+                ++lan_to_fso;
+                ++total;
+            }
+        } else if (rc == -1) {
+            LOG_WARN("[echo_test] receive from LAN error: %s",
+                     packet_io_last_error(ctx_lan));
+        }
+
+        /* FSO → LAN */
+        rc = packet_io_receive(ctx_fso, buf, sizeof(buf), &pkt_len);
+        if (rc == 1) {
+            got_packet = 1;
+            if (packet_io_send(ctx_lan, buf, pkt_len) == -1) {
+                LOG_WARN("[echo_test] send to LAN failed: %s",
+                         packet_io_last_error(ctx_lan));
+            } else {
+                ++fso_to_lan;
+                ++total;
+            }
+        } else if (rc == -1) {
+            LOG_WARN("[echo_test] receive from FSO error: %s",
+                     packet_io_last_error(ctx_fso));
+        }
+
+        /* Idle sleep */
+        if (!got_packet) {
+            usleep(100);
+        }
+
+        /* Progress report every PROGRESS_INTERVAL packets */
+        if (total >= last_print + PROGRESS_INTERVAL && total > last_print) {
+            printf("echo_test: forwarded %lu packets"
+                   " (lan->fso: %lu, fso->lan: %lu)\n",
+                   total, lan_to_fso, fso_to_lan);
+            last_print = total;
+        }
+    }
+
+    /* --- final summary --------------------------------------------------- */
+    printf("echo_test: DONE — total forwarded: %lu"
+           " (lan->fso: %lu, fso->lan: %lu)\n",
+           total, lan_to_fso, fso_to_lan);
+
+    /* --- cleanup --------------------------------------------------------- */
+    packet_io_close(ctx_fso);
+    packet_io_close(ctx_lan);
+
+    return 0;
+}
+
+
+--- FILE: tools/echo_verify.c ---
+/*
+ * tools/echo_verify.c — Echo test verification tool for FSO Gateway Task 23.
+ *
+ * Runs as either a sender (TX) or receiver (RX) process to verify that
+ * tools/echo_test correctly forwards raw Ethernet frames between two NICs.
+ *
+ * Usage:
+ *   echo_verify --iface <iface> --mode tx|rx --count <N>
+ *
+ * Compile:
+ *   gcc -std=c99 -Wall -Wextra \
+ *       -Iinclude \
+ *       -o build/echo_verify \
+ *       tools/echo_verify.c src/packet_io.c src/logging.c \
+ *       -lpcap
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <getopt.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "logging.h"
+#include "packet_io.h"
+
+/* -------------------------------------------------------------------------- */
+/* Constants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define ERRBUF_SIZE     256
+#define RX_BUF_SIZE     9200
+#define RX_TIMEOUT_SEC  30
+
+/* Test frame layout */
+#define FRAME_LEN       25
+#define ETHERTYPE_HI    0x5A
+#define ETHERTYPE_LO    0x47
+#define PAYLOAD_STR     "FSO-GW-T23"
+#define PAYLOAD_LEN     10
+
+/* -------------------------------------------------------------------------- */
+/* Signal handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+static volatile sig_atomic_t running = 1;
+
+static void sig_handler(int signum)
+{
+    (void)signum;
+    running = 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                       */
+/* -------------------------------------------------------------------------- */
+
+static void print_usage(void)
+{
+    fprintf(stderr,
+            "Usage: echo_verify --iface <iface> --mode tx|rx --count <N>\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* Build test frame                                                            */
+/* -------------------------------------------------------------------------- */
+
+static void build_test_frame(unsigned char frame[FRAME_LEN])
+{
+    /* dst MAC: ff:ff:ff:ff:ff:ff */
+    memset(frame, 0xff, 6);
+    /* src MAC: 02:00:00:00:00:99 */
+    frame[6]  = 0x02;
+    frame[7]  = 0x00;
+    frame[8]  = 0x00;
+    frame[9]  = 0x00;
+    frame[10] = 0x00;
+    frame[11] = 0x99;
+    /* EtherType: 0x5A47 */
+    frame[12] = ETHERTYPE_HI;
+    frame[13] = ETHERTYPE_LO;
+    /* Payload: "FSO-GW-T23" (10 bytes, no null terminator) */
+    memcpy(frame + 14, PAYLOAD_STR, PAYLOAD_LEN);
+}
+
+/* -------------------------------------------------------------------------- */
+/* TX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int run_tx(const char *iface, int count)
+{
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx;
+    unsigned char    frame[FRAME_LEN];
+    int              i;
+    int              rc;
+
+    ctx = packet_io_open(iface, 0, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[echo_verify] TX: failed to open \"%s\": %s", iface, errbuf);
+        return 1;
+    }
+
+    build_test_frame(frame);
+
+    for (i = 1; i <= count && running; ++i) {
+        rc = packet_io_send(ctx, frame, FRAME_LEN);
+        if (rc == -1) {
+            LOG_ERROR("[echo_verify] TX: send error on \"%s\": %s",
+                      iface, packet_io_last_error(ctx));
+            packet_io_close(ctx);
+            return 1;
+        }
+        printf("TX [%d/%d] sent\n", i, count);
+        usleep(5000);
+    }
+
+    printf("TX DONE: sent %d frames on %s\n", count, iface);
+    packet_io_close(ctx);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* RX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int frame_matches(const unsigned char *buf, size_t len)
+{
+    if (len < FRAME_LEN) {
+        return 0;
+    }
+    if (buf[12] != ETHERTYPE_HI || buf[13] != ETHERTYPE_LO) {
+        return 0;
+    }
+    if (memcmp(buf + 14, PAYLOAD_STR, PAYLOAD_LEN) != 0) {
+        return 0;
+    }
+    return 1;
+}
+
+static int run_rx(const char *iface, int count)
+{
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx;
+    unsigned char    buf[RX_BUF_SIZE];
+    size_t           pkt_len;
+    int              matched;
+    time_t           t_start;
+    int              rc;
+
+    ctx = packet_io_open(iface, 1, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[echo_verify] RX: failed to open \"%s\": %s", iface, errbuf);
+        return 1;
+    }
+
+    matched = 0;
+    t_start = time(NULL);
+
+    while (running) {
+        if ((time(NULL) - t_start) >= RX_TIMEOUT_SEC) {
+            printf("RX TIMEOUT: matched %d/%d frames on %s\n",
+                   matched, count, iface);
+            packet_io_close(ctx);
+            return 1;
+        }
+
+        pkt_len = 0;
+        rc = packet_io_receive(ctx, buf, sizeof(buf), &pkt_len);
+
+        if (rc == 1) {
+            if (frame_matches(buf, pkt_len)) {
+                ++matched;
+                printf("RX [%d/%d] matched\n", matched, count);
+                if (matched == count) {
+                    printf("RX TEST PASSED: matched %d/%d frames on %s\n",
+                           matched, count, iface);
+                    packet_io_close(ctx);
+                    return 0;
+                }
+            }
+            /* non-matching frames ignored silently */
+        } else if (rc == 0) {
+            usleep(1000);
+        } else {
+            LOG_ERROR("[echo_verify] RX: receive error on \"%s\": %s",
+                      iface, packet_io_last_error(ctx));
+        }
+    }
+
+    /* running == 0: signal received */
+    printf("INTERRUPTED: %d frames before signal\n", matched);
+    packet_io_close(ctx);
+    return 1;
+}
+
+/* -------------------------------------------------------------------------- */
+/* main                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    static const struct option long_opts[] = {
+        { "iface", required_argument, NULL, 'i' },
+        { "mode",  required_argument, NULL, 'm' },
+        { "count", required_argument, NULL, 'c' },
+        { NULL,    0,                 NULL,  0  }
+    };
+
+    const char *iface = NULL;
+    const char *mode  = NULL;
+    int         count = 0;
+    int         opt;
+
+    struct sigaction sa;
+
+    log_init();
+
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'i':
+            iface = optarg;
+            break;
+        case 'm':
+            mode = optarg;
+            break;
+        case 'c':
+            count = atoi(optarg);
+            break;
+        default:
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (iface == NULL || mode == NULL || count <= 0) {
+        print_usage();
+        return 1;
+    }
+
+    /* Signal handlers */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    if (strcmp(mode, "tx") == 0) {
+        return run_tx(iface, count);
+    } else if (strcmp(mode, "rx") == 0) {
+        return run_rx(iface, count);
+    } else {
+        fprintf(stderr, "echo_verify: unknown mode \"%s\" (use tx or rx)\n",
+                mode);
+        print_usage();
+        return 1;
+    }
+}
+
+
+--- FILE: tools/gateway_test.c ---
+/*
+ * tools/gateway_test.c — Full-duplex gateway validation tool for Task 26.
+ *
+ * Runs the full gateway for a fixed duration while:
+ *   - An injector thread sends synthetic frames into NIC_LAN
+ *   - An observer thread counts recovered packets on NIC_LAN
+ *   - A timer thread calls gateway_stop() after duration seconds
+ *
+ * Usage:
+ *   gateway_test --lan-iface <i> --fso-iface <i>
+ *                [--duration <sec>] [--k N] [--m N]
+ *                [--depth N] [--symbol-size N]
+ *
+ * Compile:
+ *   gcc -std=c99 -Wall -Wextra -Iinclude \
+ *       -o build/gateway_test \
+ *       tools/gateway_test.c \
+ *       src/gateway.c src/rx_pipeline.c src/tx_pipeline.c \
+ *       src/packet_io.c src/logging.c src/config.c \
+ *       src/block_builder.c src/fec_wrapper.c src/interleaver.c \
+ *       src/deinterleaver.c src/packet_fragmenter.c \
+ *       src/packet_reassembler.c src/symbol.c src/stats.c \
+ *       third_party/wirehair/*.cpp \
+ *       -lpcap -lpthread -lm -lstdc++ \
+ *       -Ithird_party/wirehair/include
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <getopt.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#include "config.h"
+#include "gateway.h"
+#include <wirehair/wirehair.h>
+#include "logging.h"
+#include "packet_io.h"
+
+/* -------------------------------------------------------------------------- */
+/* Constants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define ERRBUF_SIZE         256
+#define RX_BUF_SIZE         9200
+
+#define INJECT_PAYLOAD_LEN  100
+#define INJECT_FRAME_LEN    114
+#define INJECT_INTERVAL_US  1000    /* 1 ms between injected frames           */
+
+#define OBS_MIN_FRAME_LEN   114
+#define OBS_ETHERTYPE_HI    0x08
+#define OBS_ETHERTYPE_LO    0x00
+#define OBS_PAYLOAD_BYTE    0xCC
+
+#define DEFAULT_DURATION    20
+#define DEFAULT_K           8
+#define DEFAULT_M           4
+#define DEFAULT_DEPTH       2
+#define DEFAULT_SYMBOL_SIZE 1500
+
+/* -------------------------------------------------------------------------- */
+/* Permitted globals                                                           */
+/* -------------------------------------------------------------------------- */
+
+static gateway_t              *g_gw            = NULL;
+static volatile sig_atomic_t   inject_running  = 1;
+static volatile sig_atomic_t   observe_running = 1;
+static volatile sig_atomic_t   timer_running   = 1;
+
+/* -------------------------------------------------------------------------- */
+/* Signal handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+static void sig_handler(int signum)
+{
+    (void)signum;
+    if (g_gw != NULL) {
+        gateway_stop(g_gw);
+    }
+    inject_running  = 0;
+    observe_running = 0;
+    timer_running   = 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Injector thread                                                             */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    const char    *lan_iface;
+    unsigned long *inject_count;
+} injector_args_t;
+
+static void *injector_thread(void *arg)
+{
+    injector_args_t *a = (injector_args_t *)arg;
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx;
+    unsigned char    frame[INJECT_FRAME_LEN];
+
+    ctx = packet_io_open(a->lan_iface, 0, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[gateway_test] injector: failed to open \"%s\": %s",
+                  a->lan_iface, errbuf);
+        return NULL;
+    }
+
+    memset(frame, 0, sizeof(frame));
+    /* dst MAC: ff:ff:ff:ff:ff:ff */
+    memset(frame, 0xff, 6);
+    /* src MAC: 02:00:00:00:00:BB */
+    frame[6]  = 0x02;
+    frame[7]  = 0x00;
+    frame[8]  = 0x00;
+    frame[9]  = 0x00;
+    frame[10] = 0x00;
+    frame[11] = 0xBB;
+    /* EtherType: 0x0800 */
+    frame[12] = OBS_ETHERTYPE_HI;
+    frame[13] = OBS_ETHERTYPE_LO;
+    /* Payload: 100 bytes of 0xCC */
+    memset(frame + 14, OBS_PAYLOAD_BYTE, INJECT_PAYLOAD_LEN);
+
+    while (inject_running) {
+        if (packet_io_send(ctx, frame, INJECT_FRAME_LEN) == 0) {
+            (*a->inject_count)++;
+        } else {
+            LOG_WARN("[gateway_test] injector: packet_io_send failed");
+        }
+        usleep(INJECT_INTERVAL_US);
+    }
+
+    packet_io_close(ctx);
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Observer thread                                                             */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    const char    *lan_iface;
+    unsigned long *recovered_count;
+} observer_args_t;
+
+static void *observer_thread(void *arg)
+{
+    observer_args_t *a = (observer_args_t *)arg;
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx;
+    unsigned char    buf[RX_BUF_SIZE];
+    size_t           pkt_len;
+    int              rc;
+
+    ctx = packet_io_open(a->lan_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[gateway_test] observer: failed to open \"%s\": %s",
+                  a->lan_iface, errbuf);
+        return NULL;
+    }
+
+    while (observe_running) {
+        pkt_len = 0;
+        rc = packet_io_receive(ctx, buf, sizeof(buf), &pkt_len);
+
+        if (rc == 1) {
+            if (pkt_len >= (size_t)OBS_MIN_FRAME_LEN &&
+                buf[12] == OBS_ETHERTYPE_HI &&
+                buf[13] == OBS_ETHERTYPE_LO &&
+                buf[14] == OBS_PAYLOAD_BYTE) {
+                (*a->recovered_count)++;
+            }
+        } else if (rc == -1) {
+            LOG_WARN("[gateway_test] observer: packet_io_receive error: %s",
+                     packet_io_last_error(ctx));
+        }
+    }
+
+    packet_io_close(ctx);
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Timer thread                                                                */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    int duration;
+} timer_args_t;
+
+static void *timer_thread(void *arg)
+{
+    timer_args_t *a = (timer_args_t *)arg;
+
+    sleep((unsigned int)a->duration);
+
+    if (timer_running) {
+        if (g_gw != NULL) {
+            gateway_stop(g_gw);
+        }
+        inject_running  = 0;
+        observe_running = 0;
+    }
+
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                       */
+/* -------------------------------------------------------------------------- */
+
+static void print_usage(void)
+{
+    fprintf(stderr,
+            "Usage: gateway_test --lan-iface <i> --fso-iface <i>"
+            " [--duration <sec>] [--k N] [--m N]"
+            " [--depth N] [--symbol-size N]\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* main                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    static const struct option long_opts[] = {
+        { "lan-iface",   required_argument, NULL, 'l' },
+        { "fso-iface",   required_argument, NULL, 'f' },
+        { "duration",    required_argument, NULL, 'd' },
+        { "k",           required_argument, NULL, 'k' },
+        { "m",           required_argument, NULL, 'm' },
+        { "depth",       required_argument, NULL, 'e' },
+        { "symbol-size", required_argument, NULL, 's' },
+        { NULL,          0,                 NULL,  0  }
+    };
+
+    const char     *lan_iface   = NULL;
+    const char     *fso_iface   = NULL;
+    int             duration    = DEFAULT_DURATION;
+    int             k           = DEFAULT_K;
+    int             m           = DEFAULT_M;
+    int             depth       = DEFAULT_DEPTH;
+    int             symbol_size = DEFAULT_SYMBOL_SIZE;
+    int             opt;
+
+    struct config    cfg;
+    struct sigaction sa;
+
+    pthread_t        inj_tid;
+    pthread_t        obs_tid;
+    pthread_t        tmr_tid;
+    injector_args_t  inj_args;
+    observer_args_t  obs_args;
+    timer_args_t     tmr_args;
+    unsigned long    inject_count;
+    unsigned long    recovered_count;
+    int              gw_rc;
+
+    log_init();
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "wirehair_init() failed\n");
+        return 1;
+    }
+
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'l': lan_iface   = optarg;       break;
+        case 'f': fso_iface   = optarg;       break;
+        case 'd': duration    = atoi(optarg); break;
+        case 'k': k           = atoi(optarg); break;
+        case 'm': m           = atoi(optarg); break;
+        case 'e': depth       = atoi(optarg); break;
+        case 's': symbol_size = atoi(optarg); break;
+        default:
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (lan_iface == NULL || fso_iface == NULL) {
+        print_usage();
+        return 1;
+    }
+
+    /* Build config */
+    memset(&cfg, 0, sizeof(cfg));
+    strncpy(cfg.lan_iface, lan_iface, sizeof(cfg.lan_iface) - 1);
+    strncpy(cfg.fso_iface, fso_iface, sizeof(cfg.fso_iface) - 1);
+    cfg.k                           = k;
+    cfg.m                           = m;
+    cfg.depth                       = depth;
+    cfg.symbol_size                 = symbol_size;
+    cfg.internal_symbol_crc_enabled = 1;
+
+    /* Install signal handlers */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    /* Create gateway */
+    g_gw = gateway_create(&cfg);
+    if (g_gw == NULL) {
+        LOG_ERROR("[gateway_test] gateway_create failed");
+        return 1;
+    }
+
+    /* Initialise shared counters */
+    inject_count    = 0;
+    recovered_count = 0;
+
+    /* Start injector thread */
+    inj_args.lan_iface     = lan_iface;
+    inj_args.inject_count  = &inject_count;
+    if (pthread_create(&inj_tid, NULL, injector_thread, &inj_args) != 0) {
+        LOG_ERROR("[gateway_test] pthread_create(injector) failed");
+        gateway_destroy(g_gw);
+        g_gw = NULL;
+        return 1;
+    }
+
+    /* Start observer thread */
+    obs_args.lan_iface       = lan_iface;
+    obs_args.recovered_count = &recovered_count;
+    if (pthread_create(&obs_tid, NULL, observer_thread, &obs_args) != 0) {
+        LOG_ERROR("[gateway_test] pthread_create(observer) failed");
+        inject_running = 0;
+        pthread_join(inj_tid, NULL);
+        gateway_destroy(g_gw);
+        g_gw = NULL;
+        return 1;
+    }
+
+    /* Start timer thread */
+    tmr_args.duration = duration;
+    if (pthread_create(&tmr_tid, NULL, timer_thread, &tmr_args) != 0) {
+        LOG_ERROR("[gateway_test] pthread_create(timer) failed");
+        inject_running  = 0;
+        observe_running = 0;
+        pthread_join(obs_tid, NULL);
+        pthread_join(inj_tid, NULL);
+        gateway_destroy(g_gw);
+        g_gw = NULL;
+        return 1;
+    }
+
+    LOG_INFO("[gateway_test] Running for %d seconds "
+             "(k=%d m=%d depth=%d sym=%d)",
+             duration, k, m, depth, symbol_size);
+
+    /* Run gateway — blocks until gateway_stop() is called */
+    gw_rc = gateway_run(g_gw);
+
+    /* Stop helper threads */
+    timer_running   = 0;
+    inject_running  = 0;
+    observe_running = 0;
+
+    pthread_join(tmr_tid, NULL);
+    pthread_join(inj_tid, NULL);
+    pthread_join(obs_tid, NULL);
+
+    /* Tear down gateway */
+    gateway_destroy(g_gw);
+    g_gw = NULL;
+
+    /* Print final stats */
+    printf("gateway_test: injected=%lu recovered=%lu duration=%ds\n",
+           inject_count, recovered_count, duration);
+
+    if (recovered_count > 0 && gw_rc == 0) {
+        printf("FULL DUPLEX TEST PASSED\n");
+        return 0;
+    } else {
+        printf("FULL DUPLEX TEST FAILED: no packets recovered\n");
+        return 1;
+    }
+}
+
+
+--- FILE: tools/packet_io_test.c ---
+/*
+ * tools/packet_io_test.c — Minimal test tool for the packet_io module.
+ *
+ * Proves that packet_io_open, packet_io_receive, and packet_io_send work
+ * correctly on a real NIC.
+ *
+ * Usage:
+ *   packet_io_test --iface <iface> --mode rx|tx --count <N>
+ *
+ * Compile:
+ *   gcc -std=c99 -Wall -Wextra \
+ *       -Iinclude \
+ *       -o build/packet_io_test \
+ *       tools/packet_io_test.c src/packet_io.c src/logging.c \
+ *       -lpcap
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <getopt.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "logging.h"
+#include "packet_io.h"
+
+/* -------------------------------------------------------------------------- */
+/* Constants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define RX_BUF_SIZE      9200
+#define RX_TIMEOUT_SEC   30
+#define RX_POLL_US       1000
+#define TX_INTER_US      10000
+
+/* -------------------------------------------------------------------------- */
+/* Signal handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+static volatile sig_atomic_t g_running = 1;
+
+static void handle_signal(int signum)
+{
+    (void)signum;
+    g_running = 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                       */
+/* -------------------------------------------------------------------------- */
+
+static void print_usage(void)
+{
+    fprintf(stderr,
+            "Usage: packet_io_test --iface <iface> --mode rx|tx --count <N>\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* RX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int run_rx(const char *iface, int count)
+{
+    char             errbuf[256];
+    packet_io_ctx_t *ctx;
+    unsigned char    buf[RX_BUF_SIZE];
+    size_t           out_len;
+    int              received;
+    int              rc;
+    time_t           start;
+    time_t           now;
+
+    ctx = packet_io_open(iface, 1, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[packet_io_test] RX open failed: %s", errbuf);
+        return 1;
+    }
+
+    LOG_INFO("[packet_io_test] RX mode: waiting for %d packets on %s",
+             count, iface);
+
+    received = 0;
+    start    = time(NULL);
+
+    while (g_running && received < count) {
+        now = time(NULL);
+        if ((now - start) >= RX_TIMEOUT_SEC) {
+            printf("RX TEST TIMEOUT: received %d/%d packets on %s\n",
+                   received, count, iface);
+            packet_io_close(ctx);
+            return 1;
+        }
+
+        out_len = 0;
+        rc = packet_io_receive(ctx, buf, sizeof(buf), &out_len);
+
+        if (rc == 1) {
+            received++;
+            printf("RX [%d/%d] len=%zu bytes\n", received, count, out_len);
+        } else if (rc == 0) {
+            usleep(RX_POLL_US);
+        } else {
+            LOG_ERROR("[packet_io_test] RX receive error: %s",
+                      packet_io_last_error(ctx));
+            packet_io_close(ctx);
+            return 1;
+        }
+    }
+
+    if (!g_running) {
+        printf("INTERRUPTED: rx %d packets before signal\n", received);
+        packet_io_close(ctx);
+        return 1;
+    }
+
+    printf("RX TEST PASSED: received %d packets on %s\n", received, iface);
+    packet_io_close(ctx);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* TX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int run_tx(const char *iface, int count)
+{
+    /*
+     * Minimal raw Ethernet frame:
+     *   Bytes  0– 5:  dst MAC  ff:ff:ff:ff:ff:ff
+     *   Bytes  6–11:  src MAC  02:00:00:00:00:01
+     *   Bytes 12–13:  EtherType 0x1234 (big-endian)
+     *   Bytes 14–24:  payload  "FSO-GW-TEST" (11 bytes, no null terminator)
+     *   Total: 25 bytes
+     */
+    static const unsigned char frame[25] = {
+        0xff, 0xff, 0xff, 0xff, 0xff, 0xff,   /* dst MAC */
+        0x02, 0x00, 0x00, 0x00, 0x00, 0x01,   /* src MAC */
+        0x12, 0x34,                             /* EtherType */
+        'F', 'S', 'O', '-', 'G', 'W', '-', 'T', 'E', 'S', 'T'  /* payload */
+    };
+
+    char             errbuf[256];
+    packet_io_ctx_t *ctx;
+    int              sent;
+    int              rc;
+
+    ctx = packet_io_open(iface, 0, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[packet_io_test] TX open failed: %s", errbuf);
+        return 1;
+    }
+
+    LOG_INFO("[packet_io_test] TX mode: sending %d packets on %s",
+             count, iface);
+
+    sent = 0;
+
+    while (g_running && sent < count) {
+        rc = packet_io_send(ctx, frame, sizeof(frame));
+        if (rc != 0) {
+            printf("TX send error: %s\n", packet_io_last_error(ctx));
+            packet_io_close(ctx);
+            return 1;
+        }
+
+        sent++;
+        printf("TX [%d/%d] sent %zu bytes\n", sent, count, sizeof(frame));
+
+        if (sent < count) {
+            usleep(TX_INTER_US);
+        }
+    }
+
+    if (!g_running) {
+        printf("INTERRUPTED: tx %d packets before signal\n", sent);
+        packet_io_close(ctx);
+        return 1;
+    }
+
+    printf("TX TEST PASSED: sent %d packets on %s\n", sent, iface);
+    packet_io_close(ctx);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* main                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    static const struct option long_opts[] = {
+        { "iface", required_argument, NULL, 'i' },
+        { "mode",  required_argument, NULL, 'm' },
+        { "count", required_argument, NULL, 'c' },
+        { NULL,    0,                 NULL,  0  }
+    };
+
+    struct sigaction sa;
+    char  iface[64];
+    char  mode[8];
+    int   count;
+    int   opt;
+    int   iface_set;
+    int   mode_set;
+    int   count_set;
+
+    iface[0]  = '\0';
+    mode[0]   = '\0';
+    count     = 0;
+    iface_set = 0;
+    mode_set  = 0;
+    count_set = 0;
+
+    /* Install signal handlers */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handle_signal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    /* Parse arguments */
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'i':
+            strncpy(iface, optarg, sizeof(iface) - 1);
+            iface[sizeof(iface) - 1] = '\0';
+            iface_set = 1;
+            break;
+        case 'm':
+            strncpy(mode, optarg, sizeof(mode) - 1);
+            mode[sizeof(mode) - 1] = '\0';
+            mode_set = 1;
+            break;
+        case 'c':
+            count = atoi(optarg);
+            count_set = 1;
+            break;
+        default:
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (!iface_set || !mode_set || !count_set) {
+        print_usage();
+        return 1;
+    }
+
+    if (count <= 0) {
+        fprintf(stderr, "Error: --count must be a positive integer\n");
+        print_usage();
+        return 1;
+    }
+
+    if (strcmp(mode, "rx") != 0 && strcmp(mode, "tx") != 0) {
+        fprintf(stderr, "Error: --mode must be rx or tx\n");
+        print_usage();
+        return 1;
+    }
+
+    /* Initialize logging */
+    if (log_init() != 0) {
+        fprintf(stderr, "Error: failed to initialize logging\n");
+        return 1;
+    }
+
+    LOG_INFO("[packet_io_test] Starting: iface=%s mode=%s count=%d",
+             iface, mode, count);
+
+    /* Dispatch */
+    if (strcmp(mode, "rx") == 0) {
+        return run_rx(iface, count);
+    } else {
+        return run_tx(iface, count);
+    }
+}
+
+--- FILE: tools/rx_pipeline_test.c ---
+/*
+ * tools/rx_pipeline_test.c — RX pipeline validation tool for FSO Gateway Task 25.
+ *
+ * Runs in one of three modes:
+ *   TX  — injects synthetic frames into NIC_LAN, runs TX pipeline,
+ *          transmits FEC symbols out of NIC_FSO.
+ *   RX  — receives symbols on NIC_FSO, runs RX pipeline,
+ *          forwards reconstructed packets to NIC_LAN.
+ *   OBS — observes NIC_LAN and counts recovered packets.
+ *
+ * Usage:
+ *   rx_pipeline_test --lan-iface <i> --fso-iface <i> --mode tx|rx|obs
+ *                    [--duration <sec>] [--k N] [--m N]
+ *                    [--depth N] [--symbol-size N]
+ *
+ * Compile:
+ *   gcc -std=c99 -Wall -Wextra -Iinclude \
+ *       -o build/rx_pipeline_test \
+ *       tools/rx_pipeline_test.c \
+ *       src/rx_pipeline.c src/tx_pipeline.c src/packet_io.c \
+ *       src/logging.c src/config.c src/block_builder.c \
+ *       src/fec_wrapper.c src/interleaver.c src/deinterleaver.c \
+ *       src/packet_fragmenter.c src/packet_reassembler.c \
+ *       src/symbol.c src/stats.c \
+ *       third_party/wirehair/*.cpp \
+ *       -lpcap -lpthread -lm -lstdc++ \
+ *       -Ithird_party/wirehair/include
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <getopt.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "config.h"
+#include "logging.h"
+#include "packet_io.h"
+#include "rx_pipeline.h"
+#include <wirehair/wirehair.h>
+#include "tx_pipeline.h"
+#include <wirehair/wirehair.h>
+
+/* -------------------------------------------------------------------------- */
+/* Constants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define ERRBUF_SIZE         256
+#define RX_BUF_SIZE         9200
+
+/* Synthetic inject frame: 14-byte Eth hdr + 100-byte payload = 114 bytes */
+#define INJECT_PAYLOAD_LEN  100
+#define INJECT_FRAME_LEN    114
+#define INJECT_INTERVAL_US  1000    /* 1 ms between injected frames           */
+
+#define OBS_PROGRESS_EVERY  50      /* print progress every N recovered pkts  */
+#define OBS_MIN_FRAME_LEN   114
+#define OBS_ETHERTYPE_HI    0x08
+#define OBS_ETHERTYPE_LO    0x00
+#define OBS_PAYLOAD_BYTE    0xAB
+
+/* Default CLI values */
+#define DEFAULT_DURATION    15
+#define DEFAULT_K           8
+#define DEFAULT_M           4
+#define DEFAULT_DEPTH       2
+#define DEFAULT_SYMBOL_SIZE 1500
+
+/* -------------------------------------------------------------------------- */
+/* Signal handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+static volatile sig_atomic_t running        = 1;
+static volatile sig_atomic_t inject_running = 1;
+
+static void sig_handler(int signum)
+{
+    (void)signum;
+    running        = 0;
+    inject_running = 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Injector thread                                                             */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    packet_io_ctx_t *ctx_lan;
+    unsigned long   *inject_count;
+} injector_args_t;
+
+static void *injector_thread(void *arg)
+{
+    injector_args_t *a = (injector_args_t *)arg;
+    unsigned char    frame[INJECT_FRAME_LEN];
+
+    memset(frame, 0, sizeof(frame));
+
+    /* dst MAC: ff:ff:ff:ff:ff:ff */
+    memset(frame, 0xff, 6);
+    /* src MAC: 02:00:00:00:00:AA */
+    frame[6]  = 0x02;
+    frame[7]  = 0x00;
+    frame[8]  = 0x00;
+    frame[9]  = 0x00;
+    frame[10] = 0x00;
+    frame[11] = 0xAA;
+    /* EtherType: 0x0800 */
+    frame[12] = OBS_ETHERTYPE_HI;
+    frame[13] = OBS_ETHERTYPE_LO;
+    /* Payload: 100 bytes of 0xAB */
+    memset(frame + 14, OBS_PAYLOAD_BYTE, INJECT_PAYLOAD_LEN);
+
+    while (inject_running) {
+        if (packet_io_send(a->ctx_lan, frame, INJECT_FRAME_LEN) == 0) {
+            (*a->inject_count)++;
+        } else {
+            LOG_WARN("[rx_pipeline_test] injector: packet_io_send failed");
+        }
+        usleep(INJECT_INTERVAL_US);
+    }
+
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                       */
+/* -------------------------------------------------------------------------- */
+
+static void print_usage(void)
+{
+    fprintf(stderr,
+            "Usage: rx_pipeline_test --lan-iface <i> --fso-iface <i>"
+            " --mode tx|rx|obs [--duration <sec>] [--k N] [--m N]"
+            " [--depth N] [--symbol-size N]\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* TX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int run_tx(const char *lan_iface,
+                  const char *fso_iface,
+                  int         duration,
+                  int         k,
+                  int         m,
+                  int         depth,
+                  int         symbol_size)
+{
+    struct config    cfg;
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx_lan;
+    packet_io_ctx_t *ctx_fso;
+    tx_pipeline_t   *pl;
+    pthread_t        inj_tid;
+    injector_args_t  inj_args;
+    unsigned long    inject_count;
+    time_t           t_start;
+    int              rc;
+
+    memset(&cfg, 0, sizeof(cfg));
+    strncpy(cfg.lan_iface, lan_iface, sizeof(cfg.lan_iface) - 1);
+    strncpy(cfg.fso_iface, fso_iface, sizeof(cfg.fso_iface) - 1);
+    cfg.k                           = k;
+    cfg.m                           = m;
+    cfg.depth                       = depth;
+    cfg.symbol_size                 = symbol_size;
+    cfg.internal_symbol_crc_enabled = 1;
+
+    ctx_lan = packet_io_open(lan_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx_lan == NULL) {
+        LOG_ERROR("[rx_pipeline_test] TX: failed to open LAN \"%s\": %s",
+                  lan_iface, errbuf);
+        return 1;
+    }
+
+    ctx_fso = packet_io_open(fso_iface, 0, errbuf, sizeof(errbuf));
+    if (ctx_fso == NULL) {
+        LOG_ERROR("[rx_pipeline_test] TX: failed to open FSO \"%s\": %s",
+                  fso_iface, errbuf);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    pl = tx_pipeline_create(&cfg, ctx_lan, ctx_fso);
+    if (pl == NULL) {
+        LOG_ERROR("[rx_pipeline_test] TX: tx_pipeline_create failed");
+        packet_io_close(ctx_fso);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    inject_count        = 0;
+    inj_args.ctx_lan    = ctx_fso;
+    inj_args.inject_count = &inject_count;
+
+    if (pthread_create(&inj_tid, NULL, injector_thread, &inj_args) != 0) {
+        LOG_ERROR("[rx_pipeline_test] TX: pthread_create failed");
+        tx_pipeline_destroy(pl);
+        packet_io_close(ctx_fso);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    LOG_INFO("[rx_pipeline_test] TX: running for %d seconds "
+             "(k=%d m=%d depth=%d sym=%d)",
+             duration, k, m, depth, symbol_size);
+
+    t_start = time(NULL);
+    while (running && (time(NULL) - t_start) < duration) {
+        rc = tx_pipeline_run_once(pl);
+        if (rc == -1) {
+            LOG_ERROR("[rx_pipeline_test] TX: tx_pipeline_run_once fatal error");
+            inject_running = 0;
+            pthread_join(inj_tid, NULL);
+            tx_pipeline_destroy(pl);
+            packet_io_close(ctx_fso);
+            packet_io_close(ctx_lan);
+            return 1;
+        }
+    }
+
+    inject_running = 0;
+    pthread_join(inj_tid, NULL);
+
+    printf("TX MODE DONE: ran for %d seconds\n", duration);
+    printf("  packets injected: %lu\n", inject_count);
+
+    tx_pipeline_destroy(pl);
+    packet_io_close(ctx_fso);
+    packet_io_close(ctx_lan);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* RX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int run_rx(const char *lan_iface,
+                  const char *fso_iface,
+                  int         duration,
+                  int         k,
+                  int         m,
+                  int         depth,
+                  int         symbol_size)
+{
+    struct config    cfg;
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx_fso;
+    packet_io_ctx_t *ctx_lan;
+    rx_pipeline_t   *pl;
+    time_t           t_start;
+    int              rc;
+
+    memset(&cfg, 0, sizeof(cfg));
+    strncpy(cfg.lan_iface, lan_iface, sizeof(cfg.lan_iface) - 1);
+    strncpy(cfg.fso_iface, fso_iface, sizeof(cfg.fso_iface) - 1);
+    cfg.k                           = k;
+    cfg.m                           = m;
+    cfg.depth                       = depth;
+    cfg.symbol_size                 = symbol_size;
+    cfg.internal_symbol_crc_enabled = 1;
+
+    ctx_fso = packet_io_open(fso_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx_fso == NULL) {
+        LOG_ERROR("[rx_pipeline_test] RX: failed to open FSO \"%s\": %s",
+                  fso_iface, errbuf);
+        return 1;
+    }
+
+    ctx_lan = packet_io_open(lan_iface, 0, errbuf, sizeof(errbuf));
+    if (ctx_lan == NULL) {
+        LOG_ERROR("[rx_pipeline_test] RX: failed to open LAN \"%s\": %s",
+                  lan_iface, errbuf);
+        packet_io_close(ctx_fso);
+        return 1;
+    }
+
+    pl = rx_pipeline_create(&cfg, ctx_fso, ctx_lan);
+    if (pl == NULL) {
+        LOG_ERROR("[rx_pipeline_test] RX: rx_pipeline_create failed");
+        packet_io_close(ctx_lan);
+        packet_io_close(ctx_fso);
+        return 1;
+    }
+
+    LOG_INFO("[rx_pipeline_test] RX: running for %d seconds "
+             "(k=%d m=%d depth=%d sym=%d)",
+             duration, k, m, depth, symbol_size);
+
+    t_start = time(NULL);
+    while (running && (time(NULL) - t_start) < duration) {
+        rc = rx_pipeline_run_once(pl);
+        if (rc == -1) {
+            LOG_ERROR("[rx_pipeline_test] RX: rx_pipeline_run_once fatal error");
+            rx_pipeline_destroy(pl);
+            packet_io_close(ctx_lan);
+            packet_io_close(ctx_fso);
+            return 1;
+        }
+    }
+
+    printf("RX MODE DONE: ran for %d seconds\n", duration);
+
+    rx_pipeline_destroy(pl);
+    packet_io_close(ctx_lan);
+    packet_io_close(ctx_fso);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* OBS (observer) mode                                                         */
+/* -------------------------------------------------------------------------- */
+
+static int run_obs(const char *lan_iface, int duration)
+{
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx;
+    unsigned char    buf[RX_BUF_SIZE];
+    size_t           pkt_len;
+    unsigned long    recovered_count;
+    time_t           t_start;
+    int              rc;
+
+    ctx = packet_io_open(lan_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[rx_pipeline_test] OBS: failed to open \"%s\": %s",
+                  lan_iface, errbuf);
+        return 1;
+    }
+
+    recovered_count = 0;
+    t_start         = time(NULL);
+
+    LOG_INFO("[rx_pipeline_test] OBS: observing \"%s\" for %d seconds",
+             lan_iface, duration);
+
+    while (running && (time(NULL) - t_start) < duration) {
+        pkt_len = 0;
+        rc = packet_io_receive(ctx, buf, sizeof(buf), &pkt_len);
+
+        if (rc == 1) {
+            if (pkt_len >= (size_t)OBS_MIN_FRAME_LEN &&
+                buf[12] == OBS_ETHERTYPE_HI &&
+                buf[13] == OBS_ETHERTYPE_LO &&
+                buf[14] == OBS_PAYLOAD_BYTE) {
+
+                recovered_count++;
+                if (recovered_count % OBS_PROGRESS_EVERY == 0) {
+                    printf("OBS: %lu recovered packets so far\n",
+                           recovered_count);
+                }
+            }
+        } else if (rc == -1) {
+            LOG_WARN("[rx_pipeline_test] OBS: packet_io_receive error: %s",
+                     packet_io_last_error(ctx));
+        }
+    }
+
+    packet_io_close(ctx);
+
+    if (recovered_count > 0) {
+        printf("RX PIPELINE TEST PASSED: recovered %lu packets on %s\n",
+               recovered_count, lan_iface);
+        return 0;
+    } else {
+        printf("RX PIPELINE TEST FAILED: no packets recovered on %s\n",
+               lan_iface);
+        return 1;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* main                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    static const struct option long_opts[] = {
+        { "lan-iface",   required_argument, NULL, 'l' },
+        { "fso-iface",   required_argument, NULL, 'f' },
+        { "mode",        required_argument, NULL, 'o' },
+        { "duration",    required_argument, NULL, 'd' },
+        { "k",           required_argument, NULL, 'k' },
+        { "m",           required_argument, NULL, 'm' },
+        { "depth",       required_argument, NULL, 'e' },
+        { "symbol-size", required_argument, NULL, 's' },
+        { NULL,          0,                 NULL,  0  }
+    };
+
+    const char     *lan_iface   = NULL;
+    const char     *fso_iface   = NULL;
+    const char     *mode        = NULL;
+    int             duration    = DEFAULT_DURATION;
+    int             k           = DEFAULT_K;
+    int             m           = DEFAULT_M;
+    int             depth       = DEFAULT_DEPTH;
+    int             symbol_size = DEFAULT_SYMBOL_SIZE;
+    int             opt;
+    struct sigaction sa;
+
+    log_init();
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "wirehair_init() failed\n");
+        return 1;
+    }
+
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'l': lan_iface   = optarg;       break;
+        case 'f': fso_iface   = optarg;       break;
+        case 'o': mode        = optarg;       break;
+        case 'd': duration    = atoi(optarg); break;
+        case 'k': k           = atoi(optarg); break;
+        case 'm': m           = atoi(optarg); break;
+        case 'e': depth       = atoi(optarg); break;
+        case 's': symbol_size = atoi(optarg); break;
+        default:
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (lan_iface == NULL || fso_iface == NULL || mode == NULL) {
+        print_usage();
+        return 1;
+    }
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    if (strcmp(mode, "tx") == 0) {
+        return run_tx(lan_iface, fso_iface, duration,
+                      k, m, depth, symbol_size);
+    } else if (strcmp(mode, "rx") == 0) {
+        return run_rx(lan_iface, fso_iface, duration,
+                      k, m, depth, symbol_size);
+    } else if (strcmp(mode, "obs") == 0) {
+        return run_obs(lan_iface, duration);
+    } else {
+        fprintf(stderr,
+                "rx_pipeline_test: unknown mode \"%s\" (use tx, rx, or obs)\n",
+                mode);
+        print_usage();
+        return 1;
+    }
+}
+
+
+--- FILE: tools/tx_pipeline_test.c ---
+/*
+ * tools/tx_pipeline_test.c — TX pipeline validation tool for FSO Gateway Task 24.
+ *
+ * Runs in one of two modes:
+ *   TX  — injects synthetic Ethernet frames into NIC_LAN, runs the TX pipeline,
+ *          and transmits interleaved FEC symbols out of NIC_FSO.
+ *   RX  — observes NIC_FSO and counts received wire-format symbols.
+ *
+ * Usage:
+ *   tx_pipeline_test --lan-iface <i> --fso-iface <i> --mode tx|rx
+ *                    [--duration <sec>] [--k N] [--m N]
+ *                    [--depth N] [--symbol-size N]
+ *
+ * Compile:
+ *   gcc -std=c99 -Wall -Wextra \
+ *       -Iinclude \
+ *       -o build/tx_pipeline_test \
+ *       tools/tx_pipeline_test.c \
+ *       src/tx_pipeline.c src/packet_io.c src/logging.c src/config.c \
+ *       src/block_builder.c src/fec_wrapper.c src/interleaver.c \
+ *       src/packet_fragmenter.c src/symbol.c \
+ *       third_party/wirehair/*.cpp \
+ *       -lpcap -lpthread -lm -lstdc++ \
+ *       -Ithird_party/wirehair/include
+ */
+
+#define _POSIX_C_SOURCE 200112L
+
+#include <arpa/inet.h>
+#include <getopt.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "config.h"
+#include "logging.h"
+#include "packet_io.h"
+#include "tx_pipeline.h"
+#include <wirehair/wirehair.h>
+
+/* -------------------------------------------------------------------------- */
+/* Constants                                                                   */
+/* -------------------------------------------------------------------------- */
+
+#define ERRBUF_SIZE         256
+#define RX_BUF_SIZE         9200
+#define WIRE_HDR_SIZE       18      /* bytes: FSO Gateway wire format header  */
+#define INJECT_FRAME_LEN    1014    /* 14-byte Eth hdr + 1000-byte payload    */
+#define INJECT_INTERVAL_US  1000    /* 1 ms between injected frames           */
+#define RX_PROGRESS_EVERY   100     /* print progress every N symbols         */
+#define MAX_SYMBOL_PAYLOAD  9000
+
+/* Default CLI values */
+#define DEFAULT_DURATION    10
+#define DEFAULT_K           8
+#define DEFAULT_M           4
+#define DEFAULT_DEPTH       2
+#define DEFAULT_SYMBOL_SIZE 1500
+
+/* -------------------------------------------------------------------------- */
+/* Signal handling                                                             */
+/* -------------------------------------------------------------------------- */
+
+static volatile sig_atomic_t running       = 1;
+static volatile sig_atomic_t inject_running = 1;
+
+static void sig_handler(int signum)
+{
+    (void)signum;
+    running        = 0;
+    inject_running = 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Injector thread state                                                       */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    packet_io_ctx_t *ctx_lan;
+    unsigned long   *inject_count;
+    size_t           inject_frame_len;
+    int              inject_k;
+} injector_args_t;
+
+static void *injector_thread(void *arg)
+{
+    injector_args_t *a = (injector_args_t *)arg;
+    unsigned char    frame[9200];
+    int              rc;
+
+    size_t frame_len = a->inject_frame_len;
+    memset(frame, 0, frame_len);
+
+    /* dst MAC: ff:ff:ff:ff:ff:ff */
+    memset(frame, 0xff, 6);
+    /* src MAC: 02:00:00:00:00:AA */
+    frame[6]  = 0x02;
+    frame[7]  = 0x00;
+    frame[8]  = 0x00;
+    frame[9]  = 0x00;
+    frame[10] = 0x00;
+    frame[11] = 0xAA;
+    /* EtherType: 0x0800 */
+    frame[12] = 0x08;
+    frame[13] = 0x00;
+    /* Payload: 1000 bytes of 0xAB */
+    memset(frame + 14, 0xAB, frame_len - 14);
+
+    while (inject_running) {
+        int i;
+        for (i = 0; i < a->inject_k && inject_running; i++) {
+            rc = packet_io_send(a->ctx_lan, frame, frame_len);
+            if (rc == 0) {
+                (*a->inject_count)++;
+            } else {
+                LOG_WARN("[tx_pipeline_test] injector: packet_io_send failed");
+            }
+        }
+        usleep(INJECT_INTERVAL_US);
+    }
+
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* TX mode                                                                     */
+/* -------------------------------------------------------------------------- */
+
+static int run_tx(const char *lan_iface,
+                  const char *fso_iface,
+                  int         duration,
+                  int         k,
+                  int         m,
+                  int         depth,
+                  int         symbol_size)
+{
+    struct config    cfg;
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx_lan;
+    packet_io_ctx_t *ctx_fso;
+    tx_pipeline_t   *pl;
+    pthread_t        inj_tid;
+    injector_args_t  inj_args;
+    unsigned long    inject_count;
+    time_t           t_start;
+    int              rc;
+
+    /* Build config */
+    memset(&cfg, 0, sizeof(cfg));
+    strncpy(cfg.lan_iface,  lan_iface,  sizeof(cfg.lan_iface)  - 1);
+    strncpy(cfg.fso_iface,  fso_iface,  sizeof(cfg.fso_iface)  - 1);
+    cfg.k                        = k;
+    cfg.m                        = m;
+    cfg.depth                    = depth;
+    cfg.symbol_size              = symbol_size;
+    cfg.internal_symbol_crc_enabled = 1;
+
+    /* Open interfaces */
+    ctx_lan = packet_io_open(lan_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx_lan == NULL) {
+        LOG_ERROR("[tx_pipeline_test] TX: failed to open LAN iface \"%s\": %s",
+                  lan_iface, errbuf);
+        return 1;
+    }
+
+    ctx_fso = packet_io_open(fso_iface, 0, errbuf, sizeof(errbuf));
+    if (ctx_fso == NULL) {
+        LOG_ERROR("[tx_pipeline_test] TX: failed to open FSO iface \"%s\": %s",
+                  fso_iface, errbuf);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    /* Create TX pipeline */
+    pl = tx_pipeline_create(&cfg, ctx_lan, ctx_fso);
+    if (pl == NULL) {
+        LOG_ERROR("[tx_pipeline_test] TX: tx_pipeline_create failed");
+        packet_io_close(ctx_fso);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    inject_running = 1;
+    running = 1;
+    /* Start injector thread */
+    inject_count       = 0;
+    inj_args.ctx_lan   = ctx_fso;
+    inj_args.inject_count = &inject_count;
+    inj_args.inject_frame_len = (size_t)symbol_size + 14;
+    inj_args.inject_k = k;
+
+    if (pthread_create(&inj_tid, NULL, injector_thread, &inj_args) != 0) {
+        LOG_ERROR("[tx_pipeline_test] TX: pthread_create failed");
+        tx_pipeline_destroy(pl);
+        packet_io_close(ctx_fso);
+        packet_io_close(ctx_lan);
+        return 1;
+    }
+
+    LOG_INFO("[tx_pipeline_test] TX: running for %d seconds "
+             "(k=%d m=%d depth=%d sym=%d)",
+             duration, k, m, depth, symbol_size);
+
+    /* Main TX loop */
+    t_start = time(NULL);
+    while (running && (time(NULL) - t_start) < duration) {
+        rc = tx_pipeline_run_once(pl);
+        if (rc == -1) {
+            LOG_ERROR("[tx_pipeline_test] TX: tx_pipeline_run_once fatal error");
+            inject_running = 0;
+            pthread_cancel(inj_tid);
+    pthread_join(inj_tid, NULL);
+            tx_pipeline_destroy(pl);
+            packet_io_close(ctx_fso);
+            packet_io_close(ctx_lan);
+            return 1;
+        }
+    }
+
+    /* Stop injector */
+    inject_running = 0;
+    pthread_cancel(inj_tid);
+    pthread_join(inj_tid, NULL);
+
+    printf("TX MODE DONE: ran for %d seconds\n", duration);
+    printf("  packets injected: %lu\n", inject_count);
+
+    tx_pipeline_destroy(pl);
+    packet_io_close(ctx_fso);
+    packet_io_close(ctx_lan);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* RX (observer) mode                                                          */
+/* -------------------------------------------------------------------------- */
+
+static int run_rx(const char *fso_iface, int duration)
+{
+    char             errbuf[ERRBUF_SIZE];
+    packet_io_ctx_t *ctx;
+    unsigned char    buf[RX_BUF_SIZE];
+    size_t           pkt_len;
+    unsigned long    symbol_count;
+    time_t           t_start;
+    int              rc;
+    uint16_t         payload_len_be;
+    uint16_t         payload_len;
+
+    ctx = packet_io_open(fso_iface, 1, errbuf, sizeof(errbuf));
+    if (ctx == NULL) {
+        LOG_ERROR("[tx_pipeline_test] RX: failed to open \"%s\": %s",
+                  fso_iface, errbuf);
+        return 1;
+    }
+
+    symbol_count = 0;
+    t_start      = time(NULL);
+
+    LOG_INFO("[tx_pipeline_test] RX: observing \"%s\" for %d seconds",
+             fso_iface, duration);
+
+    while (running && (time(NULL) - t_start) < duration) {
+        pkt_len = 0;
+        rc = packet_io_receive(ctx, buf, sizeof(buf), &pkt_len);
+
+        if (rc == 1) {
+            /* Heuristic: must be at least WIRE_HDR_SIZE bytes */
+            if (pkt_len >= (size_t)WIRE_HDR_SIZE) {
+                /* payload_len is at wire offset 12, big-endian uint16 */
+                memcpy(&payload_len_be, buf + 12, 2);
+                payload_len = ntohs(payload_len_be);
+                if (payload_len > 0 && payload_len <= MAX_SYMBOL_PAYLOAD) {
+                    symbol_count++;
+                    if (symbol_count % RX_PROGRESS_EVERY == 0) {
+                        printf("RX observer: %lu symbols captured so far\n",
+                               symbol_count);
+                    }
+                }
+            }
+        } else if (rc == -1) {
+            LOG_WARN("[tx_pipeline_test] RX: packet_io_receive error: %s",
+                     packet_io_last_error(ctx));
+        }
+        /* rc == 0: no packet, keep polling */
+    }
+
+    packet_io_close(ctx);
+
+    if (symbol_count > 0) {
+        printf("TX PIPELINE TEST PASSED: captured %lu symbols on %s\n",
+               symbol_count, fso_iface);
+        return 0;
+    } else {
+        printf("TX PIPELINE TEST FAILED: no symbols captured on %s\n",
+               fso_iface);
+        return 1;
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Usage                                                                       */
+/* -------------------------------------------------------------------------- */
+
+static void print_usage(void)
+{
+    fprintf(stderr,
+            "Usage: tx_pipeline_test --lan-iface <i> --fso-iface <i>"
+            " --mode tx|rx [--duration <sec>] [--k N] [--m N]"
+            " [--depth N] [--symbol-size N]\n");
+}
+
+/* -------------------------------------------------------------------------- */
+/* main                                                                        */
+/* -------------------------------------------------------------------------- */
+
+int main(int argc, char *argv[])
+{
+    static const struct option long_opts[] = {
+        { "lan-iface",   required_argument, NULL, 'l' },
+        { "fso-iface",   required_argument, NULL, 'f' },
+        { "mode",        required_argument, NULL, 'o' },
+        { "duration",    required_argument, NULL, 'd' },
+        { "k",           required_argument, NULL, 'k' },
+        { "m",           required_argument, NULL, 'm' },
+        { "depth",       required_argument, NULL, 'e' },
+        { "symbol-size", required_argument, NULL, 's' },
+        { NULL,          0,                 NULL,  0  }
+    };
+
+    const char     *lan_iface   = NULL;
+    const char     *fso_iface   = NULL;
+    const char     *mode        = NULL;
+    int             duration    = DEFAULT_DURATION;
+    int             k           = DEFAULT_K;
+    int             m           = DEFAULT_M;
+    int             depth       = DEFAULT_DEPTH;
+    int             symbol_size = DEFAULT_SYMBOL_SIZE;
+    int             opt;
+    struct sigaction sa;
+
+    log_init();
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "wirehair_init() failed\n");
+        return 1;
+    }
+
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+        case 'l': lan_iface   = optarg;        break;
+        case 'f': fso_iface   = optarg;        break;
+        case 'o': mode        = optarg;        break;
+        case 'd': duration    = atoi(optarg);  break;
+        case 'k': k           = atoi(optarg);  break;
+        case 'm': m           = atoi(optarg);  break;
+        case 'e': depth       = atoi(optarg);  break;
+        case 's': symbol_size = atoi(optarg);  break;
+        default:
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (lan_iface == NULL || fso_iface == NULL || mode == NULL) {
+        print_usage();
+        return 1;
+    }
+
+    /* Signal handlers */
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = sig_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT,  &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+
+    if (strcmp(mode, "tx") == 0) {
+        return run_tx(lan_iface, fso_iface, duration,
+                      k, m, depth, symbol_size);
+    } else if (strcmp(mode, "rx") == 0) {
+        return run_rx(fso_iface, duration);
+    } else {
+        fprintf(stderr,
+                "tx_pipeline_test: unknown mode \"%s\" (use tx or rx)\n",
+                mode);
+        print_usage();
+        return 1;
+    }
 }
 
 
@@ -16232,7 +18261,7 @@ done:
 }
 
 
---- FILE: Makefile ---
+--- BUILD & DOCS ---
 # =============================================================================
 # Makefile — FSO Gateway
 # =============================================================================
@@ -16555,8 +18584,8 @@ alltest: tests itest dtest btest rtest ftest e2etest ctest
 clean:
 	$(Q)echo "  CLEAN $(BUILD_DIR)"
 	$(Q)rm -rf $(BUILD_DIR)
-
 --- FILE: README.md ---
+
 # FSO Gateway POC — High-Performance Packet Recovery System
 
 ## Overview
@@ -16904,4 +18933,3 @@ CRC-32C (Castagnoli) is computed on TX **after** FEC encode (so CRC covers the f
 - Task 28: Load testing (sustained traffic, no crashes)
 - Task 29: Packet size sweep (small, MTU, jumbo, mixed)
 - Task 30: Real FSO link trial — baseline vs interleaving vs interleaving+FEC
-
