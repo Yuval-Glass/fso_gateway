@@ -1,45 +1,24 @@
-/*
- * tools/gateway_test.c — Full-duplex gateway validation tool for Task 26.
- *
- * Runs the full gateway for a fixed duration while:
- *   - An injector thread sends synthetic frames into NIC_LAN
- *   - An observer thread counts recovered packets on NIC_LAN
- *   - A timer thread calls gateway_stop() after duration seconds
- *
- * Usage:
- *   gateway_test --lan-iface <i> --fso-iface <i>
- *                [--duration <sec>] [--k N] [--m N]
- *                [--depth N] [--symbol-size N]
- *
- * Compile:
- *   gcc -std=c99 -Wall -Wextra -Iinclude \
- *       -o build/gateway_test \
- *       tools/gateway_test.c \
- *       src/gateway.c src/rx_pipeline.c src/tx_pipeline.c \
- *       src/packet_io.c src/logging.c src/config.c \
- *       src/block_builder.c src/fec_wrapper.c src/interleaver.c \
- *       src/deinterleaver.c src/packet_fragmenter.c \
- *       src/packet_reassembler.c src/symbol.c src/stats.c \
- *       third_party/wirehair/*.cpp \
- *       -lpcap -lpthread -lm -lstdc++ \
- *       -Ithird_party/wirehair/include
- */
+/* tools/gateway_test.c */
 
 #define _POSIX_C_SOURCE 200112L
 
+#include <errno.h>
 #include <getopt.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "config.h"
 #include "gateway.h"
-#include <wirehair/wirehair.h>
+#include "hw_stats.h"
 #include "logging.h"
 #include "packet_io.h"
+#include <wirehair/wirehair.h>
 
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                   */
@@ -68,9 +47,11 @@
 /* -------------------------------------------------------------------------- */
 
 static gateway_t              *g_gw            = NULL;
+static hw_stats_t             *g_stats         = NULL;
 static volatile sig_atomic_t   inject_running  = 1;
 static volatile sig_atomic_t   observe_running = 1;
 static volatile sig_atomic_t   timer_running   = 1;
+static volatile sig_atomic_t   live_running    = 1;
 
 /* -------------------------------------------------------------------------- */
 /* Signal handling                                                             */
@@ -79,12 +60,15 @@ static volatile sig_atomic_t   timer_running   = 1;
 static void sig_handler(int signum)
 {
     (void)signum;
+
     if (g_gw != NULL) {
         gateway_stop(g_gw);
     }
+
     inject_running  = 0;
     observe_running = 0;
     timer_running   = 0;
+    live_running    = 0;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -174,6 +158,12 @@ static void *observer_thread(void *arg)
                 buf[13] == OBS_ETHERTYPE_LO &&
                 buf[14] == OBS_PAYLOAD_BYTE) {
                 (*a->recovered_count)++;
+
+                if (g_stats != NULL) {
+                    hw_stats_block_success(g_stats);
+                    hw_stats_packet_recovered(g_stats);
+                    hw_stats_record_block_holes(g_stats, 0);
+                }
             }
         } else if (rc == -1) {
             LOG_WARN("[gateway_test] observer: packet_io_receive error: %s",
@@ -205,6 +195,45 @@ static void *timer_thread(void *arg)
         }
         inject_running  = 0;
         observe_running = 0;
+        live_running    = 0;
+    }
+
+    return NULL;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Live stats thread                                                           */
+/* -------------------------------------------------------------------------- */
+
+typedef struct {
+    hw_stats_t *stats;
+    int         duration;
+} live_args_t;
+
+static void *live_stats_thread(void *arg)
+{
+    live_args_t *a = (live_args_t *)arg;
+    int          elapsed;
+    int          sleep_step;
+    int          remaining;
+
+    elapsed = 0;
+
+    while (live_running && elapsed < a->duration) {
+        remaining = a->duration - elapsed;
+        sleep_step = 5;
+        if (remaining < sleep_step) {
+            sleep_step = remaining;
+        }
+
+        sleep((unsigned int)sleep_step);
+        elapsed += sleep_step;
+
+        if (!live_running) {
+            break;
+        }
+
+        hw_stats_print_live(a->stats, elapsed);
     }
 
     return NULL;
@@ -239,13 +268,13 @@ int main(int argc, char *argv[])
         { NULL,          0,                 NULL,  0  }
     };
 
-    const char     *lan_iface   = NULL;
-    const char     *fso_iface   = NULL;
-    int             duration    = DEFAULT_DURATION;
-    int             k           = DEFAULT_K;
-    int             m           = DEFAULT_M;
-    int             depth       = DEFAULT_DEPTH;
-    int             symbol_size = DEFAULT_SYMBOL_SIZE;
+    const char     *lan_iface;
+    const char     *fso_iface;
+    int             duration;
+    int             k;
+    int             m;
+    int             depth;
+    int             symbol_size;
     int             opt;
 
     struct config    cfg;
@@ -254,12 +283,25 @@ int main(int argc, char *argv[])
     pthread_t        inj_tid;
     pthread_t        obs_tid;
     pthread_t        tmr_tid;
+    pthread_t        live_tid;
     injector_args_t  inj_args;
     observer_args_t  obs_args;
     timer_args_t     tmr_args;
+    live_args_t      live_args;
     unsigned long    inject_count;
     unsigned long    recovered_count;
+    unsigned long    failed_count;
     int              gw_rc;
+    unsigned long    i;
+
+    lan_iface   = NULL;
+    fso_iface   = NULL;
+    duration    = DEFAULT_DURATION;
+    k           = DEFAULT_K;
+    m           = DEFAULT_M;
+    depth       = DEFAULT_DEPTH;
+    symbol_size = DEFAULT_SYMBOL_SIZE;
+    gw_rc       = -1;
 
     log_init();
 
@@ -268,15 +310,35 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    if (mkdir("build/stats", 0755) != 0 && errno != EEXIST) {
+        LOG_ERROR("[gateway_test] mkdir(\"build/stats\") failed: %s",
+                  strerror(errno));
+        return 1;
+    }
+
     while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
         switch (opt) {
-        case 'l': lan_iface   = optarg;       break;
-        case 'f': fso_iface   = optarg;       break;
-        case 'd': duration    = atoi(optarg); break;
-        case 'k': k           = atoi(optarg); break;
-        case 'm': m           = atoi(optarg); break;
-        case 'e': depth       = atoi(optarg); break;
-        case 's': symbol_size = atoi(optarg); break;
+        case 'l':
+            lan_iface = optarg;
+            break;
+        case 'f':
+            fso_iface = optarg;
+            break;
+        case 'd':
+            duration = atoi(optarg);
+            break;
+        case 'k':
+            k = atoi(optarg);
+            break;
+        case 'm':
+            m = atoi(optarg);
+            break;
+        case 'e':
+            depth = atoi(optarg);
+            break;
+        case 's':
+            symbol_size = atoi(optarg);
+            break;
         default:
             print_usage();
             return 1;
@@ -306,24 +368,36 @@ int main(int argc, char *argv[])
     sigaction(SIGINT,  &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
+    /* Create hardware stats */
+    g_stats = hw_stats_create();
+    if (g_stats == NULL) {
+        LOG_ERROR("[gateway_test] hw_stats_create failed");
+        return 1;
+    }
+
     /* Create gateway */
     g_gw = gateway_create(&cfg);
     if (g_gw == NULL) {
         LOG_ERROR("[gateway_test] gateway_create failed");
+        hw_stats_destroy(g_stats);
+        g_stats = NULL;
         return 1;
     }
 
     /* Initialise shared counters */
     inject_count    = 0;
     recovered_count = 0;
+    failed_count    = 0;
 
     /* Start injector thread */
-    inj_args.lan_iface     = lan_iface;
-    inj_args.inject_count  = &inject_count;
+    inj_args.lan_iface    = lan_iface;
+    inj_args.inject_count = &inject_count;
     if (pthread_create(&inj_tid, NULL, injector_thread, &inj_args) != 0) {
         LOG_ERROR("[gateway_test] pthread_create(injector) failed");
         gateway_destroy(g_gw);
         g_gw = NULL;
+        hw_stats_destroy(g_stats);
+        g_stats = NULL;
         return 1;
     }
 
@@ -336,6 +410,8 @@ int main(int argc, char *argv[])
         pthread_join(inj_tid, NULL);
         gateway_destroy(g_gw);
         g_gw = NULL;
+        hw_stats_destroy(g_stats);
+        g_stats = NULL;
         return 1;
     }
 
@@ -349,6 +425,27 @@ int main(int argc, char *argv[])
         pthread_join(inj_tid, NULL);
         gateway_destroy(g_gw);
         g_gw = NULL;
+        hw_stats_destroy(g_stats);
+        g_stats = NULL;
+        return 1;
+    }
+
+    /* Start live stats thread */
+    live_args.stats    = g_stats;
+    live_args.duration = duration;
+    if (pthread_create(&live_tid, NULL, live_stats_thread, &live_args) != 0) {
+        LOG_ERROR("[gateway_test] pthread_create(live_stats) failed");
+        timer_running   = 0;
+        inject_running  = 0;
+        observe_running = 0;
+        live_running    = 0;
+        pthread_join(tmr_tid, NULL);
+        pthread_join(obs_tid, NULL);
+        pthread_join(inj_tid, NULL);
+        gateway_destroy(g_gw);
+        g_gw = NULL;
+        hw_stats_destroy(g_stats);
+        g_stats = NULL;
         return 1;
     }
 
@@ -363,14 +460,35 @@ int main(int argc, char *argv[])
     timer_running   = 0;
     inject_running  = 0;
     observe_running = 0;
+    live_running    = 0;
 
     pthread_join(tmr_tid, NULL);
+    pthread_join(live_tid, NULL);
     pthread_join(inj_tid, NULL);
     pthread_join(obs_tid, NULL);
 
     /* Tear down gateway */
     gateway_destroy(g_gw);
     g_gw = NULL;
+
+    /* Finalise hw stats */
+    hw_stats_set_packets_injected(g_stats, (uint64_t)inject_count);
+
+    if (inject_count > recovered_count) {
+        failed_count = inject_count - recovered_count;
+        for (i = 0; i < failed_count; ++i) {
+            hw_stats_packet_failed(g_stats);
+        }
+    }
+
+    hw_stats_print_report(g_stats);
+
+    if (hw_stats_save_csv(g_stats, "build/stats") != 0) {
+        LOG_ERROR("[gateway_test] hw_stats_save_csv failed");
+    }
+
+    hw_stats_destroy(g_stats);
+    g_stats = NULL;
 
     /* Print final stats */
     printf("gateway_test: injected=%lu recovered=%lu duration=%ds\n",
