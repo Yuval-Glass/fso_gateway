@@ -262,6 +262,11 @@ int main(int argc, char *argv[])
 
     log_init();
 
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "wirehair_init() failed\n");
+        return 1;
+    }
+
     while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
         switch (opt) {
         case 'l': lan_iface   = optarg;       break;

@@ -42,7 +42,9 @@
 #include "logging.h"
 #include "packet_io.h"
 #include "rx_pipeline.h"
+#include <wirehair/wirehair.h>
 #include "tx_pipeline.h"
+#include <wirehair/wirehair.h>
 
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                   */
@@ -194,7 +196,7 @@ static int run_tx(const char *lan_iface,
     }
 
     inject_count        = 0;
-    inj_args.ctx_lan    = ctx_lan;
+    inj_args.ctx_lan    = ctx_fso;
     inj_args.inject_count = &inject_count;
 
     if (pthread_create(&inj_tid, NULL, injector_thread, &inj_args) != 0) {
@@ -403,6 +405,11 @@ int main(int argc, char *argv[])
     struct sigaction sa;
 
     log_init();
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "wirehair_init() failed\n");
+        return 1;
+    }
 
     while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
         switch (opt) {

@@ -352,7 +352,14 @@ static int encode_and_drain(tx_pipeline_t *pl)
         }
     }
 
-    /* ---- 6. Push all K+M symbols to interleaver ----------------------- */
+    /* ---- 6. Drain interleaver if still ready from previous window ----- */
+    while (interleaver_is_ready(pl->interleaver)) {
+        rc = interleaver_pop_ready_symbol(pl->interleaver, &out_sym);
+        if (rc == -1) { break; }
+        tx_serialize_and_send(pl, &out_sym);
+        if (rc == 1) { break; }
+    }
+    /* ---- 7. Push all K+M symbols to interleaver ----------------------- */
     for (i = 0; i < k; ++i) {
         rc = interleaver_push_symbol(pl->interleaver,
                                      &pl->builder.symbols[i]);

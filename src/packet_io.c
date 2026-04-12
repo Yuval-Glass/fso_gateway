@@ -23,7 +23,10 @@
  */
 
 #define _POSIX_C_SOURCE 200112L
+#define _BSD_SOURCE
+#define _DEFAULT_SOURCE
 
+#include <sys/types.h>
 #include <net/if.h>      /* IF_NAMESIZE */
 #include <stddef.h>
 #include <stdio.h>

@@ -40,6 +40,7 @@
 #include "logging.h"
 #include "packet_io.h"
 #include "tx_pipeline.h"
+#include <wirehair/wirehair.h>
 
 /* -------------------------------------------------------------------------- */
 /* Constants                                                                   */
@@ -80,16 +81,19 @@ static void sig_handler(int signum)
 
 typedef struct {
     packet_io_ctx_t *ctx_lan;
-    unsigned long   *inject_count; /* pointer into main's local variable     */
+    unsigned long   *inject_count;
+    size_t           inject_frame_len;
+    int              inject_k;
 } injector_args_t;
 
 static void *injector_thread(void *arg)
 {
     injector_args_t *a = (injector_args_t *)arg;
-    unsigned char    frame[INJECT_FRAME_LEN];
+    unsigned char    frame[9200];
     int              rc;
 
-    memset(frame, 0, sizeof(frame));
+    size_t frame_len = a->inject_frame_len;
+    memset(frame, 0, frame_len);
 
     /* dst MAC: ff:ff:ff:ff:ff:ff */
     memset(frame, 0xff, 6);
@@ -104,14 +108,17 @@ static void *injector_thread(void *arg)
     frame[12] = 0x08;
     frame[13] = 0x00;
     /* Payload: 1000 bytes of 0xAB */
-    memset(frame + 14, 0xAB, 1000);
+    memset(frame + 14, 0xAB, frame_len - 14);
 
     while (inject_running) {
-        rc = packet_io_send(a->ctx_lan, frame, INJECT_FRAME_LEN);
-        if (rc == 0) {
-            (*a->inject_count)++;
-        } else {
-            LOG_WARN("[tx_pipeline_test] injector: packet_io_send failed");
+        int i;
+        for (i = 0; i < a->inject_k && inject_running; i++) {
+            rc = packet_io_send(a->ctx_lan, frame, frame_len);
+            if (rc == 0) {
+                (*a->inject_count)++;
+            } else {
+                LOG_WARN("[tx_pipeline_test] injector: packet_io_send failed");
+            }
         }
         usleep(INJECT_INTERVAL_US);
     }
@@ -177,10 +184,14 @@ static int run_tx(const char *lan_iface,
         return 1;
     }
 
+    inject_running = 1;
+    running = 1;
     /* Start injector thread */
     inject_count       = 0;
-    inj_args.ctx_lan   = ctx_lan;
+    inj_args.ctx_lan   = ctx_fso;
     inj_args.inject_count = &inject_count;
+    inj_args.inject_frame_len = (size_t)symbol_size + 14;
+    inj_args.inject_k = k;
 
     if (pthread_create(&inj_tid, NULL, injector_thread, &inj_args) != 0) {
         LOG_ERROR("[tx_pipeline_test] TX: pthread_create failed");
@@ -201,7 +212,8 @@ static int run_tx(const char *lan_iface,
         if (rc == -1) {
             LOG_ERROR("[tx_pipeline_test] TX: tx_pipeline_run_once fatal error");
             inject_running = 0;
-            pthread_join(inj_tid, NULL);
+            pthread_cancel(inj_tid);
+    pthread_join(inj_tid, NULL);
             tx_pipeline_destroy(pl);
             packet_io_close(ctx_fso);
             packet_io_close(ctx_lan);
@@ -211,6 +223,7 @@ static int run_tx(const char *lan_iface,
 
     /* Stop injector */
     inject_running = 0;
+    pthread_cancel(inj_tid);
     pthread_join(inj_tid, NULL);
 
     printf("TX MODE DONE: ran for %d seconds\n", duration);
@@ -331,6 +344,11 @@ int main(int argc, char *argv[])
     struct sigaction sa;
 
     log_init();
+
+    if (wirehair_init() != Wirehair_Success) {
+        fprintf(stderr, "wirehair_init() failed\n");
+        return 1;
+    }
 
     while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
         switch (opt) {

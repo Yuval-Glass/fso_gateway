@@ -367,7 +367,7 @@ int main(int argc, char *argv[])
                 continue;
             }
 
-            stats_increment_rx();
+
             ++packet_id;
 
             LOG_DEBUG("Packet %u captured: %zd bytes", packet_id, rx_len);
