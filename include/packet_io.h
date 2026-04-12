@@ -58,6 +58,11 @@ packet_io_ctx_t *packet_io_open(const char *iface,
  */
 void packet_io_close(packet_io_ctx_t *ctx);
 
+int packet_io_set_direction_in(packet_io_ctx_t *ctx);
+/* Restricts capture to ingress-only (PCAP_D_IN).
+ * Call on RX handles to prevent loopback of locally-injected frames.
+ * Returns 0 on success, -1 on failure (non-fatal). */
+
 /* -------------------------------------------------------------------------- */
 /* I/O                                                                        */
 /* -------------------------------------------------------------------------- */

@@ -272,3 +272,25 @@ const char *packet_io_last_error(const packet_io_ctx_t *ctx)
 
     return ctx->last_error;
 }
+
+/* -------------------------------------------------------------------------- */
+int packet_io_set_direction_in(packet_io_ctx_t *ctx)
+{
+    int rc;
+
+    if (ctx == NULL) {
+        LOG_ERROR("[packet_io] set_direction_in: NULL context");
+        return -1;
+    }
+
+    rc = pcap_setdirection(ctx->handle, PCAP_D_IN);
+    if (rc == -1) {
+        LOG_WARN("[packet_io] set_direction_in(%s): %s",
+                 ctx->iface, pcap_geterr(ctx->handle));
+        return -1;
+    }
+
+    LOG_INFO("[packet_io] set_direction_in: interface \"%s\" now captures ingress only",
+             ctx->iface);
+    return 0;
+}
