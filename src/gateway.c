@@ -127,7 +127,6 @@ gateway_t *gateway_create(const struct config *cfg)
 
     gw->ctx_lan_rx = packet_io_open(cfg->lan_iface, 1,
                                      errbuf, sizeof(errbuf));
-    packet_io_set_direction_in(gw->ctx_lan_rx);
     if (gw->ctx_lan_rx == NULL) {
         LOG_ERROR("[gateway] create: packet_io_open(lan_rx \"%s\") failed: %s",
                   cfg->lan_iface, errbuf);
