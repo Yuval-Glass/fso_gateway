@@ -134,6 +134,7 @@ gateway_t *gateway_create(const struct config *cfg)
         return NULL;
     }
 
+    packet_io_set_direction_in(gw->ctx_lan_rx);
     gw->ctx_fso_tx = packet_io_open(cfg->fso_iface, 0,
                                      errbuf, sizeof(errbuf));
     if (gw->ctx_fso_tx == NULL) {
