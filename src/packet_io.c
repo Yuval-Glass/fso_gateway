@@ -34,6 +34,11 @@
 #include <string.h>
 
 #include <pcap/pcap.h>
+#include <net/if.h>
+#include <sys/socket.h>
+#include <netpacket/packet.h>
+#include <net/ethernet.h>
+#include <sys/ioctl.h>
 
 #include "logging.h"
 #include "packet_io.h"
@@ -61,6 +66,7 @@
 
 struct packet_io_ctx {
     pcap_t *handle;
+    int     raw_fd;
     char    last_error[PCAP_ERRBUF_SIZE];
     char    iface[IF_NAMESIZE];
 };
@@ -101,6 +107,7 @@ packet_io_ctx_t *packet_io_open(const char *iface,
     memset(ctx, 0, sizeof(packet_io_ctx_t));
     strncpy(ctx->iface, iface, IF_NAMESIZE - 1);
     ctx->iface[IF_NAMESIZE - 1] = '\0';
+    ctx->raw_fd = -1;
 
     pcap_errbuf[0] = '\0';
     ctx->handle = pcap_open_live(iface,
