@@ -330,7 +330,7 @@ static int encode_and_drain(tx_pipeline_t *pl)
 
     /* ---- 3. Set metadata on repair symbols ----------------------------- */
     for (i = 0; i < m; ++i) {
-        pl->repair_syms[i].packet_id     = block_id;
+        pl->repair_syms[i].packet_id     = pl->builder.symbols[0].packet_id;
         pl->repair_syms[i].fec_id        = (uint32_t)(k + i);
         pl->repair_syms[i].symbol_index  = (uint16_t)(k + i);
         pl->repair_syms[i].total_symbols = (uint16_t)(k + m);
