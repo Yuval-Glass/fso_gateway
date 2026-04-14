@@ -346,7 +346,7 @@ int fec_decode_block(fec_handle_t   handle,
         wr = wirehair_decode(decoder,
                              sym->fec_id,
                              sym->data,
-                             (uint32_t)sym->payload_len);
+                             (uint32_t)ctx->symbol_size);
 
         if ((int)sym->fec_id >= ctx->k) {
             repair_used++;
