@@ -392,6 +392,10 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
             reconstructed.fec_id        = meta->fec_id;
             reconstructed.symbol_index  = meta->symbol_index;
             reconstructed.total_symbols = meta->total_symbols;
+            LOG_DEBUG("[rx_pipeline] drain: packet_id=%u fec_id=%u symbol_index=%u total_symbols=%u payload_len=%u",
+                      (unsigned)meta->packet_id, (unsigned)meta->fec_id,
+                      (unsigned)meta->symbol_index, (unsigned)meta->total_symbols,
+                      (unsigned)meta->payload_len);
             reconstructed.payload_len   = meta->payload_len;
             memcpy(reconstructed.data,
                    pl->recon_buf + (size_t)i * (size_t)sym_size,
