@@ -21,6 +21,7 @@
 #define _POSIX_C_SOURCE 200112L
 
 #include <arpa/inet.h>   /* htonl, htons */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -63,6 +64,7 @@ struct tx_pipeline {
     unsigned char    *source_buf;
     symbol_t         *frag_syms;
     symbol_t         *repair_syms;
+    uint8_t           lan_mac[6];
 };
 
 /* -------------------------------------------------------------------------- */
@@ -106,6 +108,25 @@ tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
     memset(pl, 0, sizeof(tx_pipeline_t));
 
     pl->cfg = *cfg;
+    /* Read LAN interface MAC to filter out self-injected frames */
+    {
+        char sys_path[64];
+        FILE *f;
+        snprintf(sys_path, sizeof(sys_path),
+                 "/sys/class/net/%s/address", cfg->lan_iface);
+        f = fopen(sys_path, "r");
+        if (f) {
+            unsigned int m[6] = {0};
+            fscanf(f, "%x:%x:%x:%x:%x:%x",
+                   &m[0],&m[1],&m[2],&m[3],&m[4],&m[5]);
+            fclose(f);
+            for (int mi = 0; mi < 6; mi++)
+                pl->lan_mac[mi] = (uint8_t)m[mi];
+            LOG_INFO("[tx_pipeline] LAN MAC filter: "
+                     "%02x:%02x:%02x:%02x:%02x:%02x",
+                     m[0],m[1],m[2],m[3],m[4],m[5]);
+        }
+    }
     pl->rx_ctx = rx_ctx;
     pl->tx_ctx = tx_ctx;
     pl->packet_id_counter = 0;
@@ -256,6 +277,10 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
         return 0;
     }
 
+    /* Drop frames injected by this gateway (src MAC == lan interface MAC) */
+    if (pkt_len >= 12 && memcmp(rx_buf + 6, pl->lan_mac, 6) == 0) {
+        return 0;
+    }
     num_frags = fragment_packet(rx_buf,
                                 pkt_len,
                                 pl->packet_id_counter,
