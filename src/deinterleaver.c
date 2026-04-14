@@ -691,8 +691,6 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
 
     /* Store symbol at its sparse fec_id position */
     slot->block.symbols[fec_pos] = *sym;
-    slot->block.symbols[fec_pos].total_symbols =
-        (uint16_t)self->symbols_per_block;
 
     bitset_set(slot->received_mask, fec_pos);
     slot->valid_symbols++;
