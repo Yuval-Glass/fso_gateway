@@ -447,6 +447,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                             reassem_buf,
                                             sizeof(reassem_buf));
             if (reassem_len > 0) {
+                LOG_INFO("[rx_pipeline] ATTEMPTING SEND packet_id=%u len=%d to LAN", cur_packet_id, reassem_len);
                 if (packet_io_send(pl->tx_ctx, reassem_buf,
                                    (size_t)reassem_len) != 0) {
                     LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
