@@ -336,7 +336,9 @@ static int encode_and_drain(tx_pipeline_t *pl)
     block_id = (uint32_t)pl->builder.block_id;
 
     for (i = 0; i < k; ++i) {
-        pl->builder.symbols[i].packet_id = block_id;
+        pl->builder.symbols[i].packet_id    = block_id;
+        pl->builder.symbols[i].fec_id       = (uint32_t)i;
+        pl->builder.symbols[i].symbol_index = (uint16_t)i;
         pl->builder.symbols[i].total_symbols = (uint16_t)(k + m);
     }
 

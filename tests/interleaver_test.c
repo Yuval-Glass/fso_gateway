@@ -154,7 +154,7 @@ static void test_column_major_order(results_t *r)
     /* ------------------------------------------------------------------ */
     /* Create interleaver                                                  */
     /* ------------------------------------------------------------------ */
-    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE, 0);
     if (il == NULL) {
         fail(r, "interleaver_create() returned NULL");
         return;
@@ -451,7 +451,7 @@ static void test_payload_integrity(results_t *r)
 
     printf("\n--- Test: payload byte integrity (second window cycle) ---\n\n");
 
-    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE, 0);
     if (il == NULL) {
         fail(r, "interleaver_create() for payload test returned NULL");
         return;
@@ -523,7 +523,7 @@ static void test_push_while_draining(results_t *r)
 
     printf("\n--- Test: push rejected while matrix is draining ---\n\n");
 
-    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE, 0);
     if (il == NULL) {
         fail(r, "interleaver_create() for drain-reject test returned NULL");
         return;
@@ -566,7 +566,7 @@ static void test_invalid_fec_id(results_t *r)
 
     printf("\n--- Test: out-of-range fec_id rejected ---\n\n");
 
-    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE, 0);
     if (il == NULL) {
         fail(r, "interleaver_create() for invalid-fec test returned NULL");
         return;

@@ -379,7 +379,7 @@ static int run_iteration_internal(int                 burst_len,
         goto cleanup;
     }
 
-    il = interleaver_create(depth, n, DEFAULT_SYMBOL_SIZE);
+    il = interleaver_create(depth, n, DEFAULT_SYMBOL_SIZE, 0);
 
     /*
      * deinterleaver_create() — updated 6-argument signature:

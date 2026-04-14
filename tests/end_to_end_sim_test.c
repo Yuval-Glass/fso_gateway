@@ -469,7 +469,7 @@ static int run_tx_pipeline(sim_t *ctx)
         goto cleanup;
     }
 
-    il = interleaver_create(SIM_DEPTH, SIM_N, SIM_SYMBOL_SIZE);
+    il = interleaver_create(SIM_DEPTH, SIM_N, SIM_SYMBOL_SIZE, 0);
     if (!il) {
         LOG_ERROR("[E2E] interleaver_create failed");
         goto cleanup_bb;

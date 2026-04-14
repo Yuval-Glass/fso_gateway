@@ -102,7 +102,7 @@ static int build_interleaved_stream(symbol_t *out_stream, results_t *r)
     int            b, f, i, rc;
     char           desc[128];
 
-    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE);
+    il = interleaver_create(TEST_DEPTH, TEST_N, TEST_SYMBOL_SIZE, 0);
     if (il == NULL) {
         fail(r, "Phase 1: interleaver_create() returned NULL");
         return -1;

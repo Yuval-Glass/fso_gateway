@@ -1163,7 +1163,7 @@ static int sr_run_tx_pipeline(sr_ctx_t *ctx)
         goto cleanup_bb;
     }
 
-    il = interleaver_create(ctx->depth, ctx->n, ctx->symbol_size);
+    il = interleaver_create(ctx->depth, ctx->n, ctx->symbol_size, 0);
     if (!il) {
         goto cleanup_bb;
     }
