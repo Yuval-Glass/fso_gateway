@@ -247,10 +247,11 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
     memcpy(&tmp32, wire_buf + 14, 4); sym.crc32         = ntohl(tmp32);
 
     if (sym.payload_len == 0) {
-        LOG_DEBUG("[rx_pipeline] dropping padding symbol packet_id=%u fec_id=%u",
+        LOG_DEBUG("[rx_pipeline] padding symbol packet_id=%u fec_id=%u -> erasure",
                   (unsigned)sym.packet_id,
                   (unsigned)sym.fec_id);
-        deinterleaver_tick(pl->dil, 0.0);
+        deinterleaver_push_symbol(pl->dil, &sym);
+        drain_ready_blocks(pl);
         return 0;
     }
 
