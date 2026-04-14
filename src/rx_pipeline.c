@@ -246,11 +246,15 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
     memcpy(&tmp16, wire_buf + 12, 2); sym.payload_len   = ntohs(tmp16);
     memcpy(&tmp32, wire_buf + 14, 4); sym.crc32         = ntohl(tmp32);
 
-    /* Validate payload_len */
     if (sym.payload_len == 0) {
-        LOG_DEBUG("[rx_pipeline] run_once: payload_len==0, dropping");
+        LOG_DEBUG("[rx_pipeline] dropping padding symbol packet_id=%u fec_id=%u",
+                  (unsigned)sym.packet_id,
+                  (unsigned)sym.fec_id);
+        deinterleaver_tick(pl->dil, 0.0);
         return 0;
     }
+
+    /* Validate payload_len */
     if ((int)sym.payload_len > pl->cfg.symbol_size) {
         LOG_DEBUG("[rx_pipeline] run_once: payload_len=%u > symbol_size=%d, "
                   "dropping", sym.payload_len, pl->cfg.symbol_size);
