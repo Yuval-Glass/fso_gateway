@@ -345,3 +345,91 @@ CRC-32C (Castagnoli) is computed on TX **after** FEC encode (so CRC covers the f
 - Task 28: Load testing (sustained traffic, no crashes)
 - Task 29: Packet size sweep (small, MTU, jumbo, mixed)
 - Task 30: Real FSO link trial — baseline vs interleaving vs interleaving+FEC
+---
+
+## Phase 7.5 — Hardware End-to-End Validation: Status & Open Problems (April 15, 2026)
+
+### Goal
+
+The goal of this phase is to **prove**, on real hardware, that two Linux machines can communicate through the FSO Gateway software — meaning that L3 traffic (e.g. ICMP ping) originating on machine A reaches machine B **exclusively** via the gateway pipeline. No direct L2 cable between the LAN interfaces should be present, otherwise it is impossible to prove that traffic traverses the gateway.
+
+---
+
+### Physical Setup
+
+Two Linux machines:
+
+| Machine | Hostname | LAN NIC | FSO NIC |
+|---------|----------|---------|---------|
+| A | c4net-13g | enp1s0f0np0 (08:c0:eb:62:34:98) | enp1s0f1np1 |
+| B | c4net-10g5th | enp1s0f0np0 (08:c0:eb:62:34:50) | enp1s0f1np1 |
+
+FSO link: direct Ethernet cable between enp1s0f1np1 on A and enp1s0f1np1 on B (simulating FSO). LAN interfaces are Mellanox/ConnectX NICs — they go to NO-CARRIER/DOWN when no cable is connected.
+
+---
+
+### What We Proved Works
+
+1. Full simulation pipeline — zero decode failures across 458+ runs ✅
+2. Gateway TX pipeline — captures, fragments, FEC-encodes, interleaves, sends over FSO ✅
+3. Gateway RX pipeline — receives, deinterleaves, FEC-decodes (success=YES), calls pcap_sendpacket ✅
+4. Full duplex — both directions show ATTEMPTING SEND and sent N bytes ✅
+5. pcap_setdirection(PCAP_D_IN) on FSO RX handle works correctly ✅
+
+---
+
+### The Core Problem: Proving End-to-End with Ping
+
+Despite the pipeline working correctly, we have **not yet achieved a successful ping reply**. The obstacle is a loop/routing problem at the network layer, not in the gateway code itself.
+
+#### Attempt 1: Direct cable between LAN NICs
+
+**Result:** Ping succeeds but with massive DUP! (30-40 duplicates per packet, growing every ~33ms).
+
+**Root cause:** The direct LAN cable provides a second path (0.3ms) alongside the gateway path (33ms). The gateway runs in promiscuous mode, so it captures traffic that already arrived via the direct path and re-forwards it, creating an infinite loop. The existing MAC filter in tx_pipeline.c:281 (drop if src MAC == own LAN MAC) is insufficient to stop this.
+
+**Attempted fix 1:** `pcap_setdirection(PCAP_D_IN)` on ctx_lan_rx — broke the TX pipeline entirely because locally-originated packets are egress from the kernel's perspective and are no longer captured.
+
+**Attempted fix 2:** Remove the direct LAN cable — enp1s0f0np0 goes to NO-CARRIER/DOWN, pcap cannot function.
+
+**Conclusion:** Cannot use the direct LAN cable setup for a clean end-to-end proof.
+
+#### Attempt 2: veth pairs as virtual LAN interfaces
+
+Create virtual Ethernet pairs (veth-a/veth-a-gw on A, veth-b/veth-b-gw on B). The gateway listens on the -gw side, the user pings from the non-gw side. No physical LAN cable needed.
+
+- A: veth-a = 10.1.0.1/24, veth-a-gw = 10.1.0.254/24, gateway on --lan-iface veth-a or veth-a-gw
+- B: veth-b = 10.1.0.2/24, veth-b-gw = 10.1.0.253/24, gateway on --lan-iface veth-b or veth-b-gw
+- Static ARP entries manually configured on both sides
+
+**Partial result:** Pipeline runs correctly. Both machines show ATTEMPTING SEND and sent N bytes in logs. tcpdump on veth-b of B confirms ICMP echo requests arrive with correct MAC addressing. ✅
+
+**Remaining problem:** No ICMP reply is ever observed. The following sub-problems were encountered:
+
+**a) MAC filter blocks locally-originated traffic:** When the gateway LAN interface is veth-a and the ping originates from veth-a, the src MAC matches the gateway's own MAC filter and the packet is silently dropped. Workaround: ping from veth-a-gw instead.
+
+**b) pcap_sendpacket on veth does not deliver to peer:** When gateway LAN interface is veth-a-gw, pcap_inject sends the frame as egress on veth-a-gw — but this does NOT cause the frame to appear as ingress on the peer veth-a. This is a known Linux kernel limitation: pcap_inject on a veth interface goes into the TX path and is not looped back to the peer. Switching to --lan-iface veth-a partially resolves this (pcap_sendpacket on veth-a DOES deliver to veth-a-gw), but re-introduces the MAC filter problem.
+
+**c) dst MAC addressing:** The ping from A must have dst MAC = MAC of veth-b (c6:f8:30:83:42:2f), not the MAC of enp1s0f0np0 of B. Required manual ip neigh replace entries pointing to the correct veth MAC.
+
+**d) Reply never arrives:** Even with all the above resolved, ICMP echo requests are confirmed to arrive at veth-b on B (tcpdump verified), but no reply is ever seen on A. The exact failure point of the reply path has not been isolated.
+
+---
+
+### Current State (April 15, 2026)
+
+- Gateway code is correct and the pipeline is fully functional.
+- veth setup is configured on both machines with correct IPs, MACs, and static ARP entries.
+- ICMP echo requests confirmed to arrive at veth-b on B via tcpdump.
+- No ICMP reply observed anywhere.
+- Gateway logs show sent N bytes in both directions for every ping interval.
+
+---
+
+### Recommended Next Steps
+
+**Option A (cleanest for production):** Implement gateway LAN TX using AF_PACKET raw socket with SO_MARK + iptables rules to prevent the loop. This is how production transparent bridges are implemented on Linux and avoids all the veth complexity.
+
+**Option B (quickest for validation):** Accept the direct LAN cable, but add a TTL-based or custom EtherType filter to the BPF filter on the LAN RX pcap handle, so the gateway only forwards "fresh" packets and not packets it already injected.
+
+**Option C (simplest test):** Use a third machine connected to both A and B on their LAN interfaces as a real external traffic source, eliminating the self-injection problem entirely.
