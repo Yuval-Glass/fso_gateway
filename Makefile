@@ -320,3 +320,27 @@ alltest: tests itest dtest btest rtest ftest e2etest ctest
 clean:
 	$(Q)echo "  CLEAN $(BUILD_DIR)"
 	$(Q)rm -rf $(BUILD_DIR)
+# =============================================================================
+# fso_gw_runner — gateway runner binary
+# =============================================================================
+
+TOOLS_DIR := tools
+TOOLS_OBJS_DIR := $(OBJ_DIR)/tools
+
+$(TOOLS_OBJS_DIR)/%.o: $(TOOLS_DIR)/%.c | $(TOOLS_OBJS_DIR)
+	$(Q)echo "  CC    $<"
+	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
+
+GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner
+GW_RUNNER_OBJ  := $(TOOLS_OBJS_DIR)/fso_gw_runner.o
+GW_RUNNER_DEPS := $(OBJS_NO_MAIN) $(WIREHAIR_OBJS)
+
+$(TOOLS_OBJS_DIR):
+	$(Q)mkdir -p $@
+
+$(GW_RUNNER_BIN): $(GW_RUNNER_OBJ) $(GW_RUNNER_DEPS) | $(BIN_DIR) $(TOOLS_OBJS_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+.PHONY: runner
+runner: $(GW_RUNNER_BIN)
