@@ -448,6 +448,15 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                             sizeof(reassem_buf));
             if (reassem_len > 0) {
                 LOG_INFO("[rx_pipeline] ATTEMPTING SEND packet_id=%u len=%d to LAN", cur_packet_id, reassem_len);
+                printf("\n[DEBUG] TX to LAN (len=%d)\n", reassem_len); 
+                printf("DST MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+                       reassem_buf[0], reassem_buf[1], reassem_buf[2], 
+                       reassem_buf[3], reassem_buf[4], reassem_buf[5]); 
+                printf("SRC MAC: %02x:%02x:%02x:%02x:%02x:%02x\n", 
+                       reassem_buf[6], reassem_buf[7], reassem_buf[8], 
+                       reassem_buf[9], reassem_buf[10], reassem_buf[11]); 
+                printf("EtherType: %02x%02x\n", 
+                       reassem_buf[12], reassem_buf[13]);
                 if (packet_io_send(pl->tx_ctx, reassem_buf,
                                    (size_t)reassem_len) != 0) {
                     LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
