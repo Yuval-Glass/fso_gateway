@@ -369,7 +369,7 @@ static int encode_and_drain(tx_pipeline_t *pl)
         pl->repair_syms[i].packet_id = pl->builder.symbols[0].packet_id;
         pl->repair_syms[i].fec_id = (uint32_t)(k + i);
         pl->repair_syms[i].symbol_index = (uint16_t)(k + i);
-        pl->repair_syms[i].total_symbols = (uint16_t)(k + m);
+        pl->repair_syms[i].total_symbols = 1;
         pl->repair_syms[i].payload_len = (uint16_t)sym_size;
     }
 
