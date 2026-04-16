@@ -134,6 +134,7 @@ gateway_t *gateway_create(const struct config *cfg)
         return NULL;
     }
 
+    packet_io_set_direction_in(gw->ctx_lan_rx);
     gw->ctx_fso_tx = packet_io_open(cfg->fso_iface, 0,
                                      errbuf, sizeof(errbuf));
     if (gw->ctx_fso_tx == NULL) {
@@ -146,7 +147,6 @@ gateway_t *gateway_create(const struct config *cfg)
 
     gw->ctx_fso_rx = packet_io_open(cfg->fso_iface, 1,
                                      errbuf, sizeof(errbuf));
-    packet_io_set_direction_in(gw->ctx_fso_rx);
     if (gw->ctx_fso_rx == NULL) {
         LOG_ERROR("[gateway] create: packet_io_open(fso_rx \"%s\") failed: %s",
                   cfg->fso_iface, errbuf);
@@ -156,6 +156,7 @@ gateway_t *gateway_create(const struct config *cfg)
         return NULL;
     }
 
+    packet_io_set_direction_in(gw->ctx_fso_rx);
     gw->ctx_lan_tx = packet_io_open(cfg->lan_iface, 0,
                                      errbuf, sizeof(errbuf));
     if (gw->ctx_lan_tx == NULL) {
