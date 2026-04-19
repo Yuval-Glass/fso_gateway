@@ -63,6 +63,12 @@ int packet_io_set_direction_in(packet_io_ctx_t *ctx);
  * Call on RX handles to prevent loopback of locally-injected frames.
  * Returns 0 on success, -1 on failure (non-fatal). */
 
+int packet_io_ignore_outgoing(packet_io_ctx_t *ctx);
+/* Instructs the kernel not to deliver self-sent (egress) frames to this
+ * socket (PACKET_IGNORE_OUTGOING, available since Linux 4.20).
+ * Use on ctx_fso_rx to prevent a gateway from processing its own TX symbols.
+ * Returns 0 on success, -1 on failure (non-fatal, logged as WARN). */
+
 /* -------------------------------------------------------------------------- */
 /* I/O                                                                        */
 /* -------------------------------------------------------------------------- */

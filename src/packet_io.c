@@ -282,6 +282,39 @@ const char *packet_io_last_error(const packet_io_ctx_t *ctx)
 }
 
 /* -------------------------------------------------------------------------- */
+int packet_io_ignore_outgoing(packet_io_ctx_t *ctx)
+{
+    int fd;
+    int val = 1;
+
+#ifndef PACKET_IGNORE_OUTGOING
+#define PACKET_IGNORE_OUTGOING 23
+#endif
+
+    if (ctx == NULL) {
+        LOG_ERROR("[packet_io] ignore_outgoing: NULL context");
+        return -1;
+    }
+
+    fd = pcap_get_selectable_fd(ctx->handle);
+    if (fd == -1) {
+        LOG_WARN("[packet_io] ignore_outgoing(%s): pcap_get_selectable_fd failed",
+                 ctx->iface);
+        return -1;
+    }
+
+    if (setsockopt(fd, SOL_PACKET, PACKET_IGNORE_OUTGOING, &val, sizeof(val)) != 0) {
+        LOG_WARN("[packet_io] ignore_outgoing(%s): setsockopt failed (kernel < 4.20?)",
+                 ctx->iface);
+        return -1;
+    }
+
+    LOG_INFO("[packet_io] ignore_outgoing: \"%s\" will not capture self-sent frames",
+             ctx->iface);
+    return 0;
+}
+
+/* -------------------------------------------------------------------------- */
 int packet_io_set_direction_in(packet_io_ctx_t *ctx)
 {
     int rc;

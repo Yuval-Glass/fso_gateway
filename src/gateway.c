@@ -155,6 +155,7 @@ gateway_t *gateway_create(const struct config *cfg)
         free(gw);
         return NULL;
     }
+    packet_io_ignore_outgoing(gw->ctx_fso_rx);
 
     gw->ctx_lan_tx = packet_io_open(cfg->lan_iface, 0,
                                      errbuf, sizeof(errbuf));
