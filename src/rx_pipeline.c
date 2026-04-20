@@ -401,10 +401,63 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                    pl->recon_buf + (size_t)i * (size_t)sym_size,
                    meta->payload_len);
 
-            /* Flush accumulated group if packet_id changes */
-            if (pkt_sym_count > 0 &&
-                reconstructed.packet_id != cur_packet_id) {
+            /* Flush the accumulated group when a new original packet starts.
+             *
+             * Two conditions both indicate a packet boundary:
+             *   1. symbol_index == 0: this is the first fragment of a new
+             *      original packet.
+             *   2. pkt_sym_count >= total_symbols of the first buffered
+             *      symbol: all expected fragments for the current packet
+             *      have been collected and it is complete.
+             *
+             * Checking both covers the case where a complete single-fragment
+             * packet (total_symbols=1) is followed by a continuation fragment
+             * (symbol_index > 0) belonging to a different original packet
+             * that spans blocks — without condition 2 the flush would be
+             * missed because the continuation fragment does not set
+             * symbol_index to 0. */
+            if (pkt_sym_count > 0) {
+                int complete = (pkt_sym_count >=
+                                (int)pl->pkt_syms_buf[0].total_symbols);
+                int new_pkt  = (reconstructed.symbol_index == 0);
 
+                if (complete || new_pkt) {
+                    memset(reassem_buf, 0, sizeof(reassem_buf));
+                    reassem_len = reassemble_packet(pl->pkt_syms_buf,
+                                                    (uint16_t)pkt_sym_count,
+                                                    reassem_buf,
+                                                    sizeof(reassem_buf));
+                    if (reassem_len > 0) {
+                        if (packet_io_send(pl->tx_ctx, reassem_buf,
+                                           (size_t)reassem_len) != 0) {
+                            LOG_WARN("[rx_pipeline] drain: packet_io_send "
+                                     "failed for packet_id=%u: %s",
+                                     cur_packet_id,
+                                     packet_io_last_error(pl->tx_ctx));
+                        }
+                    } else {
+                        LOG_WARN("[rx_pipeline] drain: reassemble_packet "
+                                 "failed for packet_id=%u (sym_count=%d)",
+                                 cur_packet_id, pkt_sym_count);
+                    }
+                    pkt_sym_count = 0;
+                }
+            }
+
+            if (pkt_sym_count == 0) {
+                cur_packet_id = reconstructed.packet_id;
+            }
+
+            if (pkt_sym_count < MAX_SYMBOLS_PER_BLOCK) {
+                pl->pkt_syms_buf[pkt_sym_count++] = reconstructed;
+            } else {
+                LOG_WARN("[rx_pipeline] drain: symbol overflow for "
+                         "packet_id=%u, dropping symbol", cur_packet_id);
+            }
+
+            /* Flush immediately if this symbol completes the packet */
+            if (pkt_sym_count > 0 &&
+                pkt_sym_count >= (int)pl->pkt_syms_buf[0].total_symbols) {
                 memset(reassem_buf, 0, sizeof(reassem_buf));
                 reassem_len = reassemble_packet(pl->pkt_syms_buf,
                                                 (uint16_t)pkt_sym_count,
@@ -424,18 +477,6 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                              cur_packet_id, pkt_sym_count);
                 }
                 pkt_sym_count = 0;
-            }
-
-            /* Start / continue accumulating for this packet_id */
-            if (pkt_sym_count == 0) {
-                cur_packet_id = reconstructed.packet_id;
-            }
-
-            if (pkt_sym_count < MAX_SYMBOLS_PER_BLOCK) {
-                pl->pkt_syms_buf[pkt_sym_count++] = reconstructed;
-            } else {
-                LOG_WARN("[rx_pipeline] drain: symbol overflow for "
-                         "packet_id=%u, dropping symbol", cur_packet_id);
             }
         }
 

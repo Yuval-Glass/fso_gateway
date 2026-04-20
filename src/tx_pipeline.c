@@ -281,6 +281,14 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
     if (pkt_len >= 12 && memcmp(rx_buf + 6, pl->lan_mac, 6) == 0) {
         return 0;
     }
+
+    if (pkt_len >= 12) {
+        LOG_INFO("[tx_pipeline] LAN CAPTURE: len=%zu DST=%02x:%02x:%02x:%02x:%02x:%02x SRC=%02x:%02x:%02x:%02x:%02x:%02x",
+                 pkt_len,
+                 rx_buf[0],rx_buf[1],rx_buf[2],rx_buf[3],rx_buf[4],rx_buf[5],
+                 rx_buf[6],rx_buf[7],rx_buf[8],rx_buf[9],rx_buf[10],rx_buf[11]);
+    }
+
     num_frags = fragment_packet(rx_buf,
                                 pkt_len,
                                 pl->packet_id_counter,

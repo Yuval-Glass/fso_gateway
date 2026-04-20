@@ -18,7 +18,7 @@ The system operates strictly on a **Packet Erasure Channel** model, where packet
 
 ### Current Milestone
 
-**Phase 7 — Real NIC Integration (complete, pending hardware validation)**
+**Phase 8 — Two-Machine End-to-End Hardware Validation (ping validated ✅)**
 
 ### System Status Summary
 
@@ -31,7 +31,8 @@ The system operates strictly on a **Packet Erasure Channel** model, where packet
 ✔ TX pipeline module implemented and code-reviewed  
 ✔ RX pipeline module implemented and code-reviewed  
 ✔ Full-duplex gateway module implemented and code-reviewed  
-⏳ Hardware validation pending (requires Linux machine with real NICs)
+✔ Two-machine hardware validation: bidirectional ICMP ping confirmed working (Phase 8)  
+⏳ iperf3 throughput test pending
 
 ---
 
@@ -433,3 +434,140 @@ Create virtual Ethernet pairs (veth-a/veth-a-gw on A, veth-b/veth-b-gw on B). Th
 **Option B (quickest for validation):** Accept the direct LAN cable, but add a TTL-based or custom EtherType filter to the BPF filter on the LAN RX pcap handle, so the gateway only forwards "fresh" packets and not packets it already injected.
 
 **Option C (simplest test):** Use a third machine connected to both A and B on their LAN interfaces as a real external traffic source, eliminating the self-injection problem entirely.
+
+---
+
+## Phase 8 — Two-Machine End-to-End Hardware Validation (April 2026)
+
+### Goal
+
+Prove bidirectional L2 transparency using two real Windows endpoints connected to the two gateway LAN ports, with the FSO link simulated by a direct cable between the gateway FSO NICs.
+
+---
+
+### Physical Setup
+
+```
+Win1 ──────── GW-A ══════════ GW-B ──────── Win2
+(192.168.50.1)  LAN    FSO cable   LAN   (192.168.50.2)
+```
+
+| Machine | Role     | LAN NIC         | FSO NIC         | LAN IP         | LAN MAC               |
+|---------|----------|-----------------|-----------------|----------------|-----------------------|
+| GW-A    | Gateway  | enp1s0f0np0     | enp1s0f1np1     | —              | 08:c0:eb:62:34:98     |
+| GW-B    | Gateway  | enp1s0f0np0     | enp1s0f1np1     | —              | 08:c0:eb:62:34:50     |
+| Win1    | Endpoint | Ethernet (→GW-A)| —               | 192.168.50.1   | 90:2e:16:d6:96:ba     |
+| Win2    | Endpoint | Ethernet (→GW-B)| —               | 192.168.50.2   | c4:ef:bb:5f:cd:5c     |
+
+FSO link: direct Ethernet cable between `enp1s0f1np1` on GW-A and `enp1s0f1np1` on GW-B.  
+Win1 connected to `enp1s0f0np0` on GW-A. Win2 connected to `enp1s0f0np0` on GW-B.
+
+---
+
+### Bugs Fixed in This Phase
+
+#### Bug 1 — Self-loop on FSO RX handle (MAC corruption)
+
+**Symptom:** Packets forwarded by the gateway were captured again by the FSO RX pcap handle (the gateway was reading its own transmitted symbols), causing garbage MACs to be injected into the pipeline and ultimately corrupting destination MACs seen by Win1.
+
+**Fix in `gateway.c`:** After opening `ctx_fso_rx`, call `packet_io_ignore_outgoing()` (sets `PACKET_IGNORE_OUTGOING` socket option, Linux ≥ 4.20) so self-sent frames are never delivered to the FSO RX handle.
+
+**Fix in `gateway.c`:** After opening `ctx_lan_rx`, call `packet_io_set_direction_in()` (sets `pcap_setdirection(PCAP_D_IN)`) so only ingress frames are captured on the LAN side, preventing the gateway's own injected LAN frames from re-entering the TX pipeline.
+
+#### Bug 2 — Reassembly packet boundary detection
+
+**Symptom:** `reassemble_packet: num_symbols=2 does not match expected total_symbols=1` — two consecutive single-fragment original packets that happened to land in the same FEC block (k=2) were incorrectly grouped together, causing reassembly failure and dropped packets.
+
+**Root cause:** All symbols belonging to a single FEC block share the same `packet_id` (= block_id). The original code flushed the symbol accumulator only when `packet_id` changed, so when two distinct original packets both had the same `packet_id`, the boundary between them was not detected.
+
+**Fix in `src/rx_pipeline.c` — `drain_ready_blocks()`:** Replaced the single `packet_id != cur_packet_id` flush condition with two conditions, either of which triggers a flush:
+
+1. `symbol_index == 0` — the incoming symbol is the first fragment of a new original packet.
+2. `pkt_sym_count >= total_symbols` of the first buffered symbol — all expected fragments for the current packet have been collected.
+
+Checking both conditions covers all boundary cases:
+- Two single-fragment packets in the same FEC block (condition 2 fires after first, condition 1 fires at start of second).
+- A complete single-fragment packet followed by a continuation fragment (symbol_index > 0) of a different packet that spans blocks (condition 2 fires for the first; condition 1 would not fire for the continuation).
+
+---
+
+### Build
+
+Always use `make runner` (not plain `make`) to build the gateway binary:
+
+```bash
+make clean && make runner
+```
+
+The output binary is `build/bin/fso_gw_runner`.  
+(`make` alone builds only `fso_gateway`, which is an older single-machine test tool, **not** the full two-machine gateway.)
+
+---
+
+### Run Commands
+
+Run the following on **GW-A** and **GW-B** simultaneously (in separate terminals or screens):
+
+```bash
+# GW-A
+sudo ./build/bin/fso_gw_runner \
+  --lan-iface enp1s0f0np0 \
+  --fso-iface enp1s0f1np1 \
+  --k 2 --m 1 --depth 2 --symbol-size 750
+
+# GW-B  (identical command — same interface names on both machines)
+sudo ./build/bin/fso_gw_runner \
+  --lan-iface enp1s0f0np0 \
+  --fso-iface enp1s0f1np1 \
+  --k 2 --m 1 --depth 2 --symbol-size 750
+```
+
+Stop with **Ctrl+C**.
+
+---
+
+### ARP Reset (required after each gateway restart)
+
+Previous gateway sessions with the MAC-corruption bug (now fixed) may have left corrupted ARP entries in the Windows ARP cache. Windows ARP TTL is ~10 minutes, so without a manual reset, pings will fail silently until the cache expires.
+
+Run these commands on **Win2** (PowerShell / cmd as Administrator) after every gateway restart:
+
+```cmd
+netsh interface ip delete neighbors "Ethernet" 192.168.50.1
+netsh interface ip add neighbors "Ethernet" 192.168.50.1 90-2e-16-d6-96-ba
+```
+
+Run these commands on **Win1** after every gateway restart:
+
+```cmd
+netsh interface ip delete neighbors "Ethernet" 192.168.50.2
+netsh interface ip add neighbors "Ethernet" 192.168.50.2 c4-ef-bb-5f-cd-5c
+```
+
+> **Note:** This manual reset is only needed during the transition period from the old buggy binary. Once the deployment has been running with the fixed binary long enough for all Windows ARP entries to have been refreshed organically (one ARP request/reply cycle per endpoint), the reset will no longer be necessary.
+
+---
+
+### Verification
+
+After starting both gateways and resetting ARP, run from **Win1**:
+
+```cmd
+ping 192.168.50.2 -t
+```
+
+And from **Win2**:
+
+```cmd
+ping 192.168.50.1 -t
+```
+
+Expected: continuous replies with ~1–5ms RTT over the simulated FSO cable.
+
+### Current Status (April 2026)
+
+✔ Bidirectional ICMP ping Win1↔Win2 confirmed working  
+✔ Both TX and RX pipelines stable under continuous traffic  
+✔ MAC corruption bug resolved  
+✔ Reassembly packet boundary bug resolved  
+⏳ iperf3 throughput validation pending
