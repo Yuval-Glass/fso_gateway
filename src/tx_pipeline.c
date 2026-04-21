@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arp_cache.h"
 #include "block_builder.h"
 #include "config.h"
 #include "fec_wrapper.h"
@@ -69,6 +70,7 @@ struct tx_pipeline {
     int               max_frags_per_packet;
     symbol_t         *repair_syms;
     uint8_t           lan_mac[6];
+    arp_cache_t      *arp_cache;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -79,6 +81,8 @@ static int encode_and_drain(tx_pipeline_t *pl);
 static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym);
 static void drain_interleaver(tx_pipeline_t *pl);
 static int tick_and_drain_interleaver(tx_pipeline_t *pl);
+static int try_proxy_arp(tx_pipeline_t *pl,
+                         const unsigned char *pkt, size_t pkt_len);
 
 /* -------------------------------------------------------------------------- */
 /* Lifecycle                                                                   */
@@ -86,7 +90,8 @@ static int tick_and_drain_interleaver(tx_pipeline_t *pl);
 
 tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
                                   packet_io_ctx_t     *rx_ctx,
-                                  packet_io_ctx_t     *tx_ctx)
+                                  packet_io_ctx_t     *tx_ctx,
+                                  arp_cache_t         *arp_cache)
 {
     tx_pipeline_t *pl;
     size_t         source_buf_size;
@@ -131,8 +136,9 @@ tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
                      m[0],m[1],m[2],m[3],m[4],m[5]);
         }
     }
-    pl->rx_ctx = rx_ctx;
-    pl->tx_ctx = tx_ctx;
+    pl->rx_ctx    = rx_ctx;
+    pl->tx_ctx    = tx_ctx;
+    pl->arp_cache = arp_cache;
     pl->packet_id_counter = 0;
 
     source_buf_size = (size_t)cfg->k * (size_t)cfg->symbol_size;
@@ -290,6 +296,14 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
     /* Drop frames injected by this gateway (src MAC == lan interface MAC) */
     if (pkt_len >= 12 && memcmp(rx_buf + 6, pl->lan_mac, 6) == 0) {
         return 0;
+    }
+
+    /* Proxy-ARP: answer ARP requests locally if target IP is cached */
+    if (pl->arp_cache != NULL) {
+        int proxy_rc = try_proxy_arp(pl, rx_buf, pkt_len);
+        if (proxy_rc == 1) {
+            return 0;   /* answered locally, don't forward via FSO */
+        }
     }
 
     num_frags = fragment_packet(rx_buf,
@@ -531,4 +545,94 @@ static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
     }
 
     return 0;
+}
+
+/* -------------------------------------------------------------------------- */
+/* try_proxy_arp — answer ARP requests locally from cache                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * ARP packet layout (Ethernet frame, 42 bytes minimum):
+ *   [0..5]   dst_mac
+ *   [6..11]  src_mac
+ *   [12..13] ethertype (0x0806)
+ *   [14..15] htype (0x0001)
+ *   [16..17] ptype (0x0800)
+ *   [18]     hlen (6)
+ *   [19]     plen (4)
+ *   [20..21] oper (1=request, 2=reply)
+ *   [22..27] sender MAC
+ *   [28..31] sender IP
+ *   [32..37] target MAC
+ *   [38..41] target IP
+ *
+ * Returns 1 if an ARP reply was sent (caller should NOT forward via FSO).
+ * Returns 0 if not handled (caller proceeds normally).
+ */
+static int try_proxy_arp(tx_pipeline_t       *pl,
+                         const unsigned char *pkt,
+                         size_t               pkt_len)
+{
+    uint32_t      target_ip;
+    uint8_t       cached_mac[6];
+    unsigned char reply[60];  /* minimum Ethernet frame */
+    uint16_t      oper;
+
+    /* Minimum length: 14 (Ethernet hdr) + 28 (ARP body) = 42 */
+    if (pkt_len < 42) {
+        return 0;
+    }
+
+    /* Check EtherType == 0x0806 */
+    if (pkt[12] != 0x08 || pkt[13] != 0x06) {
+        return 0;
+    }
+
+    /* Check ARP oper == 1 (request) */
+    memcpy(&oper, pkt + 20, 2);
+    if (oper != htons(1)) {
+        return 0;
+    }
+
+    /* Extract target IP (network byte order, 4 bytes at offset 38) */
+    memcpy(&target_ip, pkt + 38, 4);
+
+    /* Look up target IP in cache */
+    if (!arp_cache_lookup(pl->arp_cache, target_ip, cached_mac)) {
+        return 0;
+    }
+
+    LOG_INFO("[tx_pipeline] proxy-ARP: answering request for "
+             "%u.%u.%u.%u with cached MAC %02x:%02x:%02x:%02x:%02x:%02x",
+             pkt[38], pkt[39], pkt[40], pkt[41],
+             cached_mac[0], cached_mac[1], cached_mac[2],
+             cached_mac[3], cached_mac[4], cached_mac[5]);
+
+    /* Build ARP reply */
+    memset(reply, 0, sizeof(reply));
+
+    /* Ethernet header */
+    memcpy(reply + 0, pkt + 6, 6);       /* dst = requester MAC */
+    memcpy(reply + 6, cached_mac, 6);    /* src = cached (target) MAC */
+    reply[12] = 0x08;
+    reply[13] = 0x06;
+
+    /* ARP body */
+    reply[14] = 0x00; reply[15] = 0x01;  /* htype = Ethernet */
+    reply[16] = 0x08; reply[17] = 0x00;  /* ptype = IPv4 */
+    reply[18] = 6;                        /* hlen */
+    reply[19] = 4;                        /* plen */
+    reply[20] = 0x00; reply[21] = 0x02;  /* oper = reply */
+    memcpy(reply + 22, cached_mac, 6);   /* sender MAC = cached (target) MAC */
+    memcpy(reply + 28, pkt + 38, 4);     /* sender IP  = target IP from request */
+    memcpy(reply + 32, pkt + 22, 6);     /* target MAC = requester (ARP sender MAC) */
+    memcpy(reply + 38, pkt + 28, 4);     /* target IP  = sender IP from request */
+
+    if (packet_io_send(pl->rx_ctx, reply, sizeof(reply)) != 0) {
+        LOG_WARN("[tx_pipeline] proxy-ARP: packet_io_send failed: %s",
+                 packet_io_last_error(pl->rx_ctx));
+        return 0;
+    }
+
+    return 1;
 }

@@ -11,6 +11,7 @@
 #ifndef TX_PIPELINE_H
 #define TX_PIPELINE_H
 
+#include "arp_cache.h"
 #include "config.h"
 #include "packet_io.h"
 
@@ -47,7 +48,8 @@ typedef struct tx_pipeline tx_pipeline_t;
  */
 tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
                                   packet_io_ctx_t     *rx_ctx,
-                                  packet_io_ctx_t     *tx_ctx);
+                                  packet_io_ctx_t     *tx_ctx,
+                                  arp_cache_t         *arp_cache);
 
 /*
  * tx_pipeline_run_once() — execute one iteration of the TX pipeline.

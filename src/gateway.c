@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arp_cache.h"
 #include "config.h"
 #include "gateway.h"
 #include "logging.h"
@@ -45,6 +46,7 @@ struct gateway {
     packet_io_ctx_t  *ctx_fso_tx;   /* FSO NIC — non-promiscuous, TX sink    */
     packet_io_ctx_t  *ctx_fso_rx;   /* FSO NIC — promiscuous, RX source      */
     packet_io_ctx_t  *ctx_lan_tx;   /* LAN NIC — non-promiscuous, RX sink    */
+    arp_cache_t      *arp_cache;
     tx_pipeline_t    *tx_pl;
     rx_pipeline_t    *rx_pl;
     volatile int      running;
@@ -169,11 +171,26 @@ gateway_t *gateway_create(const struct config *cfg)
         return NULL;
     }
 
+    /* ---- Create shared ARP cache --------------------------------------- */
+
+    gw->arp_cache = arp_cache_create();
+    if (gw->arp_cache == NULL) {
+        LOG_ERROR("[gateway] create: arp_cache_create failed");
+        packet_io_close(gw->ctx_lan_tx);
+        packet_io_close(gw->ctx_fso_rx);
+        packet_io_close(gw->ctx_fso_tx);
+        packet_io_close(gw->ctx_lan_rx);
+        free(gw);
+        return NULL;
+    }
+
     /* ---- Create TX pipeline -------------------------------------------- */
 
-    gw->tx_pl = tx_pipeline_create(cfg, gw->ctx_lan_rx, gw->ctx_fso_tx);
+    gw->tx_pl = tx_pipeline_create(cfg, gw->ctx_lan_rx, gw->ctx_fso_tx,
+                                   gw->arp_cache);
     if (gw->tx_pl == NULL) {
         LOG_ERROR("[gateway] create: tx_pipeline_create failed");
+        arp_cache_destroy(gw->arp_cache);
         packet_io_close(gw->ctx_lan_tx);
         packet_io_close(gw->ctx_fso_rx);
         packet_io_close(gw->ctx_fso_tx);
@@ -184,10 +201,12 @@ gateway_t *gateway_create(const struct config *cfg)
 
     /* ---- Create RX pipeline -------------------------------------------- */
 
-    gw->rx_pl = rx_pipeline_create(cfg, gw->ctx_fso_rx, gw->ctx_lan_tx);
+    gw->rx_pl = rx_pipeline_create(cfg, gw->ctx_fso_rx, gw->ctx_lan_tx,
+                                   gw->arp_cache);
     if (gw->rx_pl == NULL) {
         LOG_ERROR("[gateway] create: rx_pipeline_create failed");
         tx_pipeline_destroy(gw->tx_pl);
+        arp_cache_destroy(gw->arp_cache);
         packet_io_close(gw->ctx_lan_tx);
         packet_io_close(gw->ctx_fso_rx);
         packet_io_close(gw->ctx_fso_tx);
@@ -261,6 +280,7 @@ void gateway_destroy(gateway_t *gw)
 
     rx_pipeline_destroy(gw->rx_pl);
     tx_pipeline_destroy(gw->tx_pl);
+    arp_cache_destroy(gw->arp_cache);
 
     packet_io_close(gw->ctx_lan_tx);
     packet_io_close(gw->ctx_fso_rx);

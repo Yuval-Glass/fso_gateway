@@ -10,6 +10,7 @@
 #ifndef RX_PIPELINE_H
 #define RX_PIPELINE_H
 
+#include "arp_cache.h"
 #include "config.h"
 #include "packet_io.h"
 
@@ -50,7 +51,8 @@ typedef struct rx_pipeline rx_pipeline_t;
  */
 rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
                                   packet_io_ctx_t     *rx_ctx,
-                                  packet_io_ctx_t     *tx_ctx);
+                                  packet_io_ctx_t     *tx_ctx,
+                                  arp_cache_t         *arp_cache);
 
 /*
  * rx_pipeline_run_once() — execute one iteration of the RX pipeline.

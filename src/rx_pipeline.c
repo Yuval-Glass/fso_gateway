@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "arp_cache.h"
 #include "config.h"
 #include "deinterleaver.h"
 #include "fec_wrapper.h"
@@ -62,6 +63,7 @@ struct rx_pipeline {
     unsigned char    *recon_buf; /* k * symbol_size, heap-allocated           */
     block_t          *block_buf;     /* heap-allocated, one block_t            */
     symbol_t         *pkt_syms_buf;  /* heap, MAX_SYMBOLS_PER_BLOCK elements   */
+    arp_cache_t      *arp_cache;    /* optional: populate on decoded ARP pkts */
 };
 
 /* -------------------------------------------------------------------------- */
@@ -69,6 +71,8 @@ struct rx_pipeline {
 /* -------------------------------------------------------------------------- */
 
 static void drain_ready_blocks(rx_pipeline_t *pl);
+static void arp_learn_from_packet(rx_pipeline_t *pl,
+                                  const unsigned char *pkt, int pkt_len);
 
 /* -------------------------------------------------------------------------- */
 /* Lifecycle                                                                   */
@@ -76,7 +80,8 @@ static void drain_ready_blocks(rx_pipeline_t *pl);
 
 rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
                                   packet_io_ctx_t     *rx_ctx,
-                                  packet_io_ctx_t     *tx_ctx)
+                                  packet_io_ctx_t     *tx_ctx,
+                                  arp_cache_t         *arp_cache)
 {
     rx_pipeline_t *pl;
     size_t         recon_size;
@@ -101,9 +106,10 @@ rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
     }
     memset(pl, 0, sizeof(rx_pipeline_t));
 
-    pl->cfg    = *cfg;
-    pl->rx_ctx = rx_ctx;
-    pl->tx_ctx = tx_ctx;
+    pl->cfg       = *cfg;
+    pl->rx_ctx    = rx_ctx;
+    pl->tx_ctx    = tx_ctx;
+    pl->arp_cache = arp_cache;
 
     /* Heap-allocate recon_buf (k * symbol_size can be up to ~576 kB) */
     recon_size = (size_t)cfg->k * (size_t)cfg->symbol_size;
@@ -428,6 +434,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                                     reassem_buf,
                                                     sizeof(reassem_buf));
                     if (reassem_len > 0) {
+                        arp_learn_from_packet(pl, reassem_buf, reassem_len);
                         if (packet_io_send(pl->tx_ctx, reassem_buf,
                                            (size_t)reassem_len) != 0) {
                             LOG_WARN("[rx_pipeline] drain: packet_io_send "
@@ -464,6 +471,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                                 reassem_buf,
                                                 sizeof(reassem_buf));
                 if (reassem_len > 0) {
+                    arp_learn_from_packet(pl, reassem_buf, reassem_len);
                     if (packet_io_send(pl->tx_ctx, reassem_buf,
                                        (size_t)reassem_len) != 0) {
                         LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
@@ -488,6 +496,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                             reassem_buf,
                                             sizeof(reassem_buf));
             if (reassem_len > 0) {
+                arp_learn_from_packet(pl, reassem_buf, reassem_len);
                 if (packet_io_send(pl->tx_ctx, reassem_buf,
                                    (size_t)reassem_len) != 0) {
                     LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
@@ -506,4 +515,39 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
         deinterleaver_mark_result(pl->dil,
                                   (uint32_t)pl->block_buf->block_id, 1);
     }
+}
+
+/* -------------------------------------------------------------------------- */
+/* arp_learn_from_packet — populate arp_cache from decoded ARP packets         */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Inspect a fully reassembled packet.  If it is an ARP packet (EtherType
+ * 0x0806) extract the sender IP and sender MAC and store them in the cache.
+ * This runs on both ARP requests and replies so GW-A learns remote MACs as
+ * soon as any ARP traffic from the far side crosses the FSO link.
+ */
+static void arp_learn_from_packet(rx_pipeline_t       *pl,
+                                  const unsigned char *pkt,
+                                  int                  pkt_len)
+{
+    uint32_t sender_ip;
+
+    if (pl->arp_cache == NULL) {
+        return;
+    }
+
+    /* Minimum ARP frame: 14 (Ethernet hdr) + 28 (ARP body) = 42 bytes */
+    if (pkt_len < 42) {
+        return;
+    }
+
+    /* Check EtherType == 0x0806 */
+    if (pkt[12] != 0x08 || pkt[13] != 0x06) {
+        return;
+    }
+
+    /* sender MAC at offset 22, sender IP at offset 28 */
+    memcpy(&sender_ip, pkt + 28, 4);
+    arp_cache_learn(pl->arp_cache, sender_ip, pkt + 22);
 }
