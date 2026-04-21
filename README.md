@@ -18,7 +18,7 @@ The system operates strictly on a **Packet Erasure Channel** model, where packet
 
 ### Current Milestone
 
-**Phase 8 — Two-Machine End-to-End Hardware Validation (ping validated ✅)**
+**Phase 8 — Two-Machine End-to-End Hardware Validation (UDP throughput validated ✅)**
 
 ### System Status Summary
 
@@ -32,7 +32,9 @@ The system operates strictly on a **Packet Erasure Channel** model, where packet
 ✔ RX pipeline module implemented and code-reviewed  
 ✔ Full-duplex gateway module implemented and code-reviewed  
 ✔ Two-machine hardware validation: bidirectional ICMP ping confirmed working (Phase 8)  
-⏳ iperf3 throughput test pending
+✔ UDP throughput: 42.8 Mbits/sec at 50 Mbps offered load, 13% loss, jitter 1ms (Phase 8)  
+⏳ TCP throughput test — under investigation  
+⏳ Pipeline "cold start" warmup bug — under investigation
 
 ---
 

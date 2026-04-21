@@ -264,7 +264,6 @@ int packet_io_send(packet_io_ctx_t     *ctx,
         return -1;
     }
 
-    LOG_INFO("[packet_io] sent %zu bytes on %s", len, ctx->iface);
     return 0;
 }
 
