@@ -46,6 +46,9 @@
 /* Receive buffer size — must hold the largest possible Ethernet frame */
 #define TX_RX_BUF_SIZE       9200U
 
+/* Maximum packet length supported (jumbo frame) */
+#define TX_MAX_PACKET_LEN    9000U
+
 /* Wire header size in bytes */
 #define WIRE_HDR_SIZE        18U
 
@@ -63,6 +66,7 @@ struct tx_pipeline {
     uint32_t          packet_id_counter;
     unsigned char    *source_buf;
     symbol_t         *frag_syms;
+    int               max_frags_per_packet;
     symbol_t         *repair_syms;
     uint8_t           lan_mac[6];
 };
@@ -176,10 +180,16 @@ tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
         return NULL;
     }
 
-    pl->frag_syms = (symbol_t *)malloc(sizeof(symbol_t) * (size_t)cfg->k);
+    pl->max_frags_per_packet = (int)((TX_MAX_PACKET_LEN + (size_t)cfg->symbol_size - 1U)
+                                     / (size_t)cfg->symbol_size);
+    if (pl->max_frags_per_packet < cfg->k) {
+        pl->max_frags_per_packet = cfg->k;
+    }
+
+    pl->frag_syms = (symbol_t *)malloc(sizeof(symbol_t) * (size_t)pl->max_frags_per_packet);
     if (pl->frag_syms == NULL) {
-        LOG_ERROR("[tx_pipeline] create: malloc(frag_syms, k=%d) failed",
-                  cfg->k);
+        LOG_ERROR("[tx_pipeline] create: malloc(frag_syms, max_frags=%d) failed",
+                  pl->max_frags_per_packet);
         interleaver_destroy(pl->interleaver);
         fec_destroy(pl->fec);
         block_builder_destroy(&pl->builder);
@@ -287,7 +297,7 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
                                 pl->packet_id_counter,
                                 (uint16_t)pl->cfg.symbol_size,
                                 pl->frag_syms,
-                                (uint16_t)pl->cfg.k);
+                                (uint16_t)pl->max_frags_per_packet);
     if (num_frags < 0) {
         LOG_WARN("[tx_pipeline] run_once: fragment_packet failed "
                  "(pkt_len=%zu, packet_id=%u)",
