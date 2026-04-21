@@ -213,7 +213,7 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
 
     if (rc == 0) {
         /* No packet — tick the deinterleaver and try to drain */
-        deinterleaver_tick(pl->dil, 0.0);
+        deinterleaver_tick(pl->dil, -1.0);
         drain_ready_blocks(pl);
         return 0;
     }
