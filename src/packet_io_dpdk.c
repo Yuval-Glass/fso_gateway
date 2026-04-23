@@ -112,9 +112,11 @@ struct port_state {
     uint16_t            port_id;
     struct rte_mempool *mbuf_pool;
     struct dedup_table  dedup;
-    int                 configured;   /* configure+start done */
+    int                 configured;       /* configure+start done */
     int                 ref_count;
     pthread_mutex_t     lock;
+    uint64_t            rx_poll_count;    /* per-port empty-poll counter */
+    int                 rx_burst_logged;  /* 1 after first successful rx_burst */
 };
 
 struct packet_io_ctx {
@@ -696,10 +698,8 @@ int packet_io_receive(packet_io_ctx_t *ctx,
         n = rte_eth_rx_burst(ctx->port->port_id, 0,
                              ctx->rx_burst, DPDK_RX_BURST_SZ);
         if (n == 0) {
-            /* Periodically log DPDK HW stats so we can see if the NIC is
-             * counting RX packets even when rx_burst returns 0.            */
-            static uint64_t s_rx_poll_count = 0;
-            if ((++s_rx_poll_count & 0xFFFFF) == 0) {   /* ~every 1M polls */
+            /* Periodically log DPDK HW stats (per port, not shared counter). */
+            if ((++ctx->port->rx_poll_count & 0xFFFFF) == 0) {
                 struct rte_eth_stats st;
                 if (rte_eth_stats_get(ctx->port->port_id, &st) == 0) {
                     LOG_INFO("[packet_io_dpdk] port %u HW stats: "
@@ -711,6 +711,13 @@ int packet_io_receive(packet_io_ctx_t *ctx,
                 }
             }
             return 0;   /* no packets available */
+        }
+
+        /* Log first burst on each port to confirm rx_burst actually works. */
+        if (!ctx->port->rx_burst_logged) {
+            ctx->port->rx_burst_logged = 1;
+            LOG_WARN("[packet_io_dpdk] port %u: first rx_burst returned %u pkts "
+                     "(DPDK RX is working)", ctx->port->port_id, n);
         }
 
         ctx->rx_burst_count = n;
