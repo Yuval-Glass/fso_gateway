@@ -141,9 +141,11 @@ endif
 # =============================================================================
 
 ifeq ($(USE_DPDK),1)
-TARGET := $(BIN_DIR)/fso_gateway_dpdk
+TARGET         := $(BIN_DIR)/fso_gateway_dpdk
+GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner_dpdk
 else
-TARGET := $(BIN_DIR)/fso_gateway
+TARGET         := $(BIN_DIR)/fso_gateway
+GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner
 endif
 
 .PHONY: all
@@ -366,11 +368,6 @@ $(TOOLS_OBJS_DIR)/%.o: $(TOOLS_DIR)/%.c | $(TOOLS_OBJS_DIR)
 	$(Q)echo "  CC    $<"
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
 
-ifeq ($(USE_DPDK),1)
-GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner_dpdk
-else
-GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner
-endif
 GW_RUNNER_OBJ  := $(TOOLS_OBJS_DIR)/fso_gw_runner.o
 GW_RUNNER_DEPS := $(OBJS_NO_MAIN) $(WIREHAIR_OBJS)
 
