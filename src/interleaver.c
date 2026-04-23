@@ -410,7 +410,6 @@ int interleaver_push_symbol(interleaver_t *il, const symbol_t *sym)
 
     dst = cell(il, row, col);
     *dst = *sym;
-    dst->total_symbols = (uint16_t)il->n;   /* normalise: always k+m, not fragment count */
 
     bitset_set(slot->received_mask, col);
     slot->symbol_count++;
