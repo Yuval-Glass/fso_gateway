@@ -252,7 +252,10 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
     memcpy(&tmp16, wire_buf + 12, 2); sym.payload_len   = ntohs(tmp16);
     memcpy(&tmp32, wire_buf + 14, 4); sym.crc32         = ntohl(tmp32);
 
-    if (sym.payload_len == 0) {
+    if (sym.packet_id == 0 && sym.payload_len == 0) {
+        /* Interleaver empty-row padding: packet_id=0 marks unfilled rows.
+         * Block-builder zero-padding symbols (packet_id != 0, payload_len=0)
+         * are valid source symbols and must reach the FEC decoder.          */
         LOG_DEBUG("[rx_pipeline] padding symbol packet_id=%u fec_id=%u -> erasure",
                   (unsigned)sym.packet_id,
                   (unsigned)sym.fec_id);
