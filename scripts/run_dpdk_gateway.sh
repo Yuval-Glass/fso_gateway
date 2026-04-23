@@ -33,7 +33,6 @@ GW_K="${GW_K:-10}"
 GW_M="${GW_M:-4}"
 GW_DEPTH="${GW_DEPTH:-8}"
 GW_SYMBOL_SIZE="${GW_SYMBOL_SIZE:-1400}"
-GW_DURATION="${GW_DURATION:-0}"
 DPDK_CORES="${DPDK_CORES:-0-3}"
 HUGEPAGES_2M="${HUGEPAGES_2M:-1024}"
 SIDE=""
@@ -99,7 +98,6 @@ parse_args() {
             --m)             GW_M="$2"; shift 2 ;;
             --depth)         GW_DEPTH="$2"; shift 2 ;;
             --symbol-size)   GW_SYMBOL_SIZE="$2"; shift 2 ;;
-            --duration)      GW_DURATION="$2"; shift 2 ;;
             --cores)         DPDK_CORES="$2"; shift 2 ;;
             --hugepages)     HUGEPAGES_2M="$2"; shift 2 ;;
             --setup-hugepages)
@@ -133,7 +131,6 @@ Options:
   --m N               FEC repair symbols (default ${GW_M})
   --depth N           Interleaver depth (default ${GW_DEPTH})
   --symbol-size N     Symbol size bytes (default ${GW_SYMBOL_SIZE})
-  --duration N        Run for N seconds, 0=forever (default ${GW_DURATION})
   --cores LIST        EAL CPU list (default "${DPDK_CORES}")
   --hugepages N       2MB hugepage count (default ${HUGEPAGES_2M})
   --setup-hugepages   Only configure hugepages, then exit
@@ -214,8 +211,7 @@ print_config() {
     echo "  LAN iface:    ${LAN_IFACE}"
     echo "  FSO iface:    ${FSO_IFACE}"
     echo "  k=${GW_K} m=${GW_M} depth=${GW_DEPTH} symbol_size=${GW_SYMBOL_SIZE}"
-    echo "  Duration:     ${GW_DURATION}s (0=forever)"
-    echo "  DPDK cores:   ${DPDK_CORES}"
+      echo "  DPDK cores:   ${DPDK_CORES}"
     local hp_count
     hp_count=$(cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages)
     echo "  Hugepages:    ${hp_count} × 2 MB"
@@ -237,8 +233,7 @@ run_gateway() {
         --k "${GW_K}" \
         --m "${GW_M}" \
         --depth "${GW_DEPTH}" \
-        --symbol-size "${GW_SYMBOL_SIZE}" \
-        --duration "${GW_DURATION}"
+        --symbol-size "${GW_SYMBOL_SIZE}"
 }
 
 # ---------------------------------------------------------------------------
