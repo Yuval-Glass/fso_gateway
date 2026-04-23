@@ -97,7 +97,10 @@ static int fec_count_valid_symbols(const symbol_t *symbols, int scan_capacity)
     int count = 0;
 
     for (i = 0; i < scan_capacity; ++i) {
-        if (symbols[i].payload_len > 0U) {
+        /* packet_id==0 means the slot is an unfilled hole (erasure).
+         * Source symbols with payload_len=0 but packet_id!=0 are valid
+         * block-builder zero-padding and must be counted. */
+        if (symbols[i].packet_id != 0U) {
             count++;
         }
     }
@@ -116,8 +119,8 @@ static int fec_build_feed_order(const symbol_t *symbols,
     int repair_available = 0;
 
     for (i = 0; i < scan_capacity; ++i) {
-        if (symbols[i].payload_len == 0U) {
-            continue;
+        if (symbols[i].packet_id == 0U) {
+            continue;  /* unfilled hole — skip */
         }
 
         if ((int)symbols[i].fec_id < k) {
@@ -126,8 +129,8 @@ static int fec_build_feed_order(const symbol_t *symbols,
     }
 
     for (i = 0; i < scan_capacity; ++i) {
-        if (symbols[i].payload_len == 0U) {
-            continue;
+        if (symbols[i].packet_id == 0U) {
+            continue;  /* unfilled hole — skip */
         }
 
         if ((int)symbols[i].fec_id >= k) {
