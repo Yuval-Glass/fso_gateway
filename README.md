@@ -515,13 +515,13 @@ Run the following on **GW-A** and **GW-B** simultaneously (in separate terminals
 sudo ./build/bin/fso_gw_runner \
   --lan-iface enp1s0f0np0 \
   --fso-iface enp1s0f1np1 \
-  --k 2 --m 1 --depth 2 --symbol-size 750
+  --k 2 --m 1 --depth 2 --symbol-size 800
 
 # GW-B  (identical command — same interface names on both machines)
 sudo ./build/bin/fso_gw_runner \
   --lan-iface enp1s0f0np0 \
   --fso-iface enp1s0f1np1 \
-  --k 2 --m 1 --depth 2 --symbol-size 750
+  --k 2 --m 1 --depth 2 --symbol-size 800
 ```
 
 Stop with **Ctrl+C**.
