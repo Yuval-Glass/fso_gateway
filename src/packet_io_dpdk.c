@@ -63,6 +63,7 @@
 #include <rte_dev.h>
 #include <rte_bus_pci.h>
 #include <rte_version.h>
+#include <rte_flow.h>
 
 #include "logging.h"
 #include "packet_io.h"
@@ -486,6 +487,35 @@ static struct port_state *probe_and_configure_port(const char *iface,
 
     if (promiscuous) {
         rte_eth_promiscuous_enable(port_id);
+    }
+
+    /* Steer all ingress traffic to DPDK queue 0.
+     * In mlx5 bifurcated mode RSS distributes packets across kernel and DPDK
+     * queues by default.  This catch-all flow rule ensures DPDK receives
+     * every ingress frame on this port. */
+    {
+        struct rte_flow_attr          attr  = { .ingress = 1, .priority = 0 };
+        struct rte_flow_item          pattern[] = {
+            { .type = RTE_FLOW_ITEM_TYPE_ETH },
+            { .type = RTE_FLOW_ITEM_TYPE_END }
+        };
+        struct rte_flow_action_queue  q     = { .index = 0 };
+        struct rte_flow_action        actions[] = {
+            { .type = RTE_FLOW_ACTION_TYPE_QUEUE, .conf = &q },
+            { .type = RTE_FLOW_ACTION_TYPE_END }
+        };
+        struct rte_flow_error         ferr;
+        struct rte_flow              *flow;
+
+        flow = rte_flow_create(port_id, &attr, pattern, actions, &ferr);
+        if (flow == NULL) {
+            LOG_WARN("[packet_io_dpdk] port %u: rte_flow_create failed (%s) — "
+                     "RSS may split traffic between kernel and DPDK queues",
+                     port_id, ferr.message ? ferr.message : "unknown");
+        } else {
+            LOG_INFO("[packet_io_dpdk] port %u: catch-all flow rule installed "
+                     "(all ingress → DPDK queue 0)", port_id);
+        }
     }
 
     ps->configured = 1;
