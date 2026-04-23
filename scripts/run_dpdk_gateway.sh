@@ -111,7 +111,7 @@ parse_args() {
 
     # Side presets for two-machine setup
     if [ "${SIDE}" = "A" ]; then
-        LAN_IFACE="${LAN_IFACE:-veth-cli-br}"
+        LAN_IFACE="${LAN_IFACE:-enp1s0f0np0}"
         FSO_IFACE="${FSO_IFACE:-enp1s0f1np1}"
     elif [ "${SIDE}" = "B" ]; then
         LAN_IFACE="${LAN_IFACE:-enp1s0f0np0}"
