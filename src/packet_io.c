@@ -1,3 +1,7 @@
+/* This file is compiled only in pcap mode.  For DPDK mode, see
+ * packet_io_dpdk.c (selected by -DUSE_DPDK_BUILD).               */
+#ifndef USE_DPDK_BUILD
+
 /*
  * src/packet_io.c — Raw packet I/O layer using libpcap.
  *
@@ -334,3 +338,5 @@ int packet_io_set_direction_in(packet_io_ctx_t *ctx)
              ctx->iface);
     return 0;
 }
+
+#endif /* !USE_DPDK_BUILD */

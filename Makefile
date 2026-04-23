@@ -103,6 +103,33 @@ CXXFLAGS := $(CXXFLAGS_BASE) $(CXXFLAGS_EXTRA)
 # Link with g++ so C++ objects (Wirehair) resolve correctly.
 LDFLAGS := $(LDFLAGS_EXTRA) -lpthread -lm -lstdc++ -lpcap
 
+# =============================================================================
+# DPDK mode — make USE_DPDK=1
+# =============================================================================
+# When USE_DPDK=1:
+#   - Compiles packet_io_dpdk.c instead of packet_io.c (guarded by macro)
+#   - Adds DPDK include paths and link flags
+#   - Strips -lpcap from LDFLAGS (not needed in DPDK mode)
+#   - Output binary: build/bin/fso_gateway_dpdk
+#
+# Prerequisites:
+#   sudo apt-get install dpdk-dev
+#   echo 1024 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+#
+ifeq ($(USE_DPDK),1)
+    DPDK_CFLAGS  := -I/usr/include/dpdk \
+                    -I/usr/include/x86_64-linux-gnu/dpdk \
+                    -DUSE_DPDK_BUILD \
+                    -march=native
+    DPDK_LDFLAGS := $(shell pkg-config --libs libdpdk 2>/dev/null)
+
+    CFLAGS  := $(filter-out -Wpedantic, $(CFLAGS)) $(DPDK_CFLAGS)
+    LDFLAGS := $(filter-out -lpcap, $(LDFLAGS)) $(DPDK_LDFLAGS)
+    OBJ_DIR := $(BUILD_DIR)/obj_dpdk
+    OBJS    := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS))
+    OBJS_NO_MAIN := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS_NO_MAIN))
+endif
+
 ifeq ($(VERBOSE),1)
     Q :=
 else
@@ -113,7 +140,11 @@ endif
 # Main binary
 # =============================================================================
 
+ifeq ($(USE_DPDK),1)
+TARGET := $(BIN_DIR)/fso_gateway_dpdk
+else
 TARGET := $(BIN_DIR)/fso_gateway
+endif
 
 .PHONY: all
 all: $(TARGET)
