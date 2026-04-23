@@ -301,7 +301,6 @@ static int eal_init_once(void)
     argv[argc++] = "--proc-type";
     argv[argc++] = "primary";
     argv[argc++] = "--in-memory";
-    argv[argc++] = "--no-pci";       /* Don't auto-scan; probe devices manually */
     argv[argc++] = "--log-level";
     argv[argc++] = "4";              /* ERR level, keep DPDK logs quiet */
 
