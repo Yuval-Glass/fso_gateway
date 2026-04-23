@@ -48,6 +48,7 @@
 #define _GNU_SOURCE
 
 #include <stdint.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -478,6 +479,26 @@ static struct port_state *probe_and_configure_port(const char *iface,
         return NULL;
     }
 
+    /* ---- Isolate port before start (must precede rte_eth_dev_start) -----
+     * In bifurcated mode the NIC is shared between kernel and DPDK.  Without
+     * isolation, the kernel's default RSS table can claim some (or all) queues
+     * before our catch-all flow rule is installed, leaving rte_eth_rx_burst()
+     * starved even when physical packets arrive.  Isolated mode makes DPDK the
+     * sole consumer of ingress traffic; the kernel receives nothing until the
+     * port is stopped. */
+    {
+        struct rte_flow_error ferr_iso;
+        int iso_ret = rte_flow_isolate(port_id, 1, &ferr_iso);
+        if (iso_ret != 0) {
+            LOG_WARN("[packet_io_dpdk] port %u: rte_flow_isolate failed (%s) — "
+                     "kernel may still receive ingress frames",
+                     port_id, ferr_iso.message ? ferr_iso.message : "unknown");
+        } else {
+            LOG_INFO("[packet_io_dpdk] port %u: flow isolation enabled "
+                     "(DPDK is sole ingress consumer)", port_id);
+        }
+    }
+
     /* ---- Start device ------------------------------------------------- */
     ret = rte_eth_dev_start(port_id);
     if (ret != 0) {
@@ -675,6 +696,20 @@ int packet_io_receive(packet_io_ctx_t *ctx,
         n = rte_eth_rx_burst(ctx->port->port_id, 0,
                              ctx->rx_burst, DPDK_RX_BURST_SZ);
         if (n == 0) {
+            /* Periodically log DPDK HW stats so we can see if the NIC is
+             * counting RX packets even when rx_burst returns 0.            */
+            static uint64_t s_rx_poll_count = 0;
+            if ((++s_rx_poll_count & 0xFFFFF) == 0) {   /* ~every 1M polls */
+                struct rte_eth_stats st;
+                if (rte_eth_stats_get(ctx->port->port_id, &st) == 0) {
+                    LOG_INFO("[packet_io_dpdk] port %u HW stats: "
+                             "ipackets=%" PRIu64 " ibytes=%" PRIu64
+                             " imissed=%" PRIu64 " ierrors=%" PRIu64,
+                             ctx->port->port_id,
+                             st.ipackets, st.ibytes,
+                             st.imissed, st.ierrors);
+                }
+            }
             return 0;   /* no packets available */
         }
 
