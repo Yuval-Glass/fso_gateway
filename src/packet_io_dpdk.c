@@ -119,6 +119,7 @@ struct port_state {
 struct packet_io_ctx {
     struct port_state  *port;
     int                 promiscuous;
+    int                 dedup_rx;   /* 1 if this ctx suppresses self-sent frames on receive */
     char                last_error[512];
 
     /* RX burst buffer — mbufs returned by rte_eth_rx_burst, served one at
@@ -655,8 +656,9 @@ int packet_io_receive(packet_io_ctx_t *ctx,
             rte_memcpy(buf, rte_pktmbuf_mtod(m, const void *), copy_len);
             rte_pktmbuf_free(m);
 
-            /* Dedup check: drop self-sent frames */
-            if (dedup_check(&ctx->port->dedup, buf, copy_len)) {
+            /* Dedup check: only suppress self-sent frames on contexts that
+             * explicitly opted in via packet_io_ignore_outgoing().        */
+            if (ctx->dedup_rx && dedup_check(&ctx->port->dedup, buf, copy_len)) {
                 LOG_DEBUG("[packet_io_dpdk] receive: dedup drop "
                           "(self-sent frame suppressed)");
                 continue;
@@ -752,9 +754,13 @@ int packet_io_ignore_outgoing(packet_io_ctx_t *ctx)
         return -1;
     }
 
-    /* Enable the software dedup table on this port.  All subsequent
-     * packet_io_send() calls on ANY context sharing this port will record
-     * fingerprints, which packet_io_receive() will then suppress.       */
+    /* Mark THIS context as a dedup receiver: packet_io_receive() on this ctx
+     * will suppress frames that were sent on the same port.  Also enable the
+     * port-level dedup table so packet_io_send() records fingerprints.
+     * Using ctx->dedup_rx rather than port->dedup.enabled for the receive
+     * gate prevents a TX-only context (e.g. ctx_fso_tx) from accidentally
+     * suppressing incoming data on a different RX context for the same port. */
+    ctx->dedup_rx           = 1;
     ctx->port->dedup.enabled = 1;
 
     LOG_INFO("[packet_io_dpdk] ignore_outgoing: port %u dedup enabled "
