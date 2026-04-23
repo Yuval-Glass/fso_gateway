@@ -388,8 +388,9 @@ static int encode_and_drain(tx_pipeline_t *pl)
     for (i = 0; i < k; ++i) {
         pl->builder.symbols[i].packet_id    = block_id;
         pl->builder.symbols[i].fec_id       = (uint32_t)i;
-        pl->builder.symbols[i].symbol_index = (uint16_t)i;
-        pl->builder.symbols[i].total_symbols = (uint16_t)(k + m);
+        /* symbol_index and total_symbols come from fragment_packet() or
+         * block_builder_finalize_with_padding() and must not be overwritten:
+         * the reassembler uses total_symbols to count original packet fragments. */
     }
     for (i = 0; i < m; ++i) {
         pl->repair_syms[i].packet_id = pl->builder.symbols[0].packet_id;
