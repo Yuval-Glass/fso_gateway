@@ -147,7 +147,11 @@ TARGET := $(BIN_DIR)/fso_gateway
 endif
 
 .PHONY: all
+ifeq ($(USE_DPDK),1)
+all: $(TARGET) $(GW_RUNNER_BIN)
+else
 all: $(TARGET)
+endif
 
 $(TARGET): $(OBJS) $(WIREHAIR_OBJS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
@@ -362,7 +366,11 @@ $(TOOLS_OBJS_DIR)/%.o: $(TOOLS_DIR)/%.c | $(TOOLS_OBJS_DIR)
 	$(Q)echo "  CC    $<"
 	$(Q)$(CC) $(CFLAGS) -c -o $@ $<
 
+ifeq ($(USE_DPDK),1)
+GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner_dpdk
+else
 GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner
+endif
 GW_RUNNER_OBJ  := $(TOOLS_OBJS_DIR)/fso_gw_runner.o
 GW_RUNNER_DEPS := $(OBJS_NO_MAIN) $(WIREHAIR_OBJS)
 

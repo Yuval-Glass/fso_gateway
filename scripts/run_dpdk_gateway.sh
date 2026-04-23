@@ -38,7 +38,7 @@ HUGEPAGES_2M="${HUGEPAGES_2M:-1024}"
 SIDE=""
 SETUP_HUGEPAGES_ONLY=0
 
-BINARY="./build/bin/fso_gateway_dpdk"
+BINARY="./build/bin/fso_gw_runner_dpdk"
 
 # ---------------------------------------------------------------------------
 # Colour helpers
@@ -168,7 +168,7 @@ preflight() {
 
     if [ ! -f "${BINARY}" ]; then
         error "DPDK gateway binary not found: ${BINARY}"
-        error "Build it with:  make USE_DPDK=1"
+        error "Build it with:  make USE_DPDK=1 runner"
         exit 1
     fi
 
