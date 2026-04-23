@@ -625,8 +625,10 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
         return -1;
     }
 
-    /* 1. Erasure sentinel */
-    if (sym->payload_len == 0) {
+    /* 1. Erasure sentinel — only interleaver empty-row padding (packet_id=0)
+     *    is a true erasure; block-builder zero-padding (packet_id!=0, payload=0)
+     *    is a valid source symbol and must reach the FEC decoder. */
+    if (sym->packet_id == 0 && sym->payload_len == 0) {
         self->stats.dropped_symbols_erasure++;
         LOG_DEBUG("[DIL] push_symbol: erasure sentinel block_id=%u fec_id=%u",
                   (unsigned)sym->packet_id, (unsigned)sym->fec_id);
