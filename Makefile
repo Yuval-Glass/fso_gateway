@@ -380,3 +380,19 @@ $(GW_RUNNER_BIN): $(GW_RUNNER_OBJ) $(GW_RUNNER_DEPS) | $(BIN_DIR) $(TOOLS_OBJS_D
 
 .PHONY: runner
 runner: $(GW_RUNNER_BIN)
+
+# =============================================================================
+# control_server_demo — standalone demo that exposes synthetic stats over
+# the UNIX-domain control socket. Used for end-to-end testing the bridge +
+# dashboard without running the real gateway (which needs root + NICs).
+# =============================================================================
+
+CS_DEMO_BIN := $(BIN_DIR)/control_server_demo
+CS_DEMO_OBJ := $(TOOLS_OBJS_DIR)/control_server_demo.o
+
+$(CS_DEMO_BIN): $(CS_DEMO_OBJ) $(OBJS_NO_MAIN) $(WIREHAIR_OBJS) | $(BIN_DIR) $(TOOLS_OBJS_DIR)
+	$(Q)echo "  LINK  $@"
+	$(Q)$(CXX) $(LDFLAGS_EXTRA) -o $@ $^ $(LDFLAGS)
+
+.PHONY: cs_demo
+cs_demo: $(CS_DEMO_BIN)

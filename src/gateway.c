@@ -24,6 +24,7 @@
 
 #include "arp_cache.h"
 #include "config.h"
+#include "control_server.h"
 #include "gateway.h"
 #include "logging.h"
 #include "packet_io.h"
@@ -49,6 +50,7 @@ struct gateway {
     arp_cache_t      *arp_cache;
     tx_pipeline_t    *tx_pl;
     rx_pipeline_t    *rx_pl;
+    control_server_t *cs;           /* NULL if telemetry socket failed to open */
     volatile int      running;
     int               tx_error;     /* 1 if TX thread had a fatal error       */
     int               rx_error;     /* 1 if RX thread had a fatal error       */
@@ -219,6 +221,16 @@ gateway_t *gateway_create(const struct config *cfg)
              cfg->lan_iface, cfg->fso_iface,
              cfg->k, cfg->m, cfg->depth, cfg->symbol_size);
 
+    /* ---- Start telemetry control server (non-fatal if it fails) --------- */
+
+    struct control_server_options cs_opts;
+    memset(&cs_opts, 0, sizeof(cs_opts));
+    cs_opts.gateway_cfg = &gw->cfg;
+    gw->cs = control_server_start(&cs_opts);
+    if (gw->cs == NULL) {
+        LOG_ERROR("[gateway] control_server_start failed — telemetry socket disabled");
+    }
+
     return gw;
 }
 
@@ -277,6 +289,11 @@ void gateway_destroy(gateway_t *gw)
     if (gw == NULL) {
         return;
     }
+
+    /* Stop the telemetry thread first so it won't read from pipelines we're
+     * about to tear down. Safe with NULL. */
+    control_server_stop(gw->cs);
+    gw->cs = NULL;
 
     rx_pipeline_destroy(gw->rx_pl);
     tx_pipeline_destroy(gw->tx_pl);

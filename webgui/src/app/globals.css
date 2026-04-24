@@ -1,0 +1,328 @@
+@import "tailwindcss";
+
+/* ============================================================
+ * FSO Gateway Control Center — Design System
+ * Aesthetic: aerospace / command-center / telemetry
+ * Primary: cyan/blue. Accent: red (alerts only).
+ * ============================================================ */
+
+@theme inline {
+  /* Surface palette — deep carbon to lifted panels */
+  --color-bg-deep: #06090f;
+  --color-bg-base: #0a0e14;
+  --color-bg-panel: #0d1320;
+  --color-bg-raised: #111a2a;
+  --color-bg-overlay: #162034;
+
+  /* Borders — thin, glass, accent */
+  --color-border-hair: rgba(255, 255, 255, 0.04);
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.14);
+  --color-border-cyan: rgba(0, 212, 255, 0.3);
+  --color-border-danger: rgba(255, 45, 92, 0.35);
+
+  /* Text hierarchy */
+  --color-text-primary: #e8f1ff;
+  --color-text-secondary: #8da2c2;
+  --color-text-muted: #566377;
+  --color-text-dim: #3a4456;
+
+  /* Cyan — primary operational color */
+  --color-cyan-50: #e6fbff;
+  --color-cyan-100: #b3f1ff;
+  --color-cyan-300: #4de3ff;
+  --color-cyan-500: #00d4ff;
+  --color-cyan-600: #00a8cc;
+  --color-cyan-700: #0a7690;
+  --color-cyan-900: #0a3a4a;
+
+  /* Blue — secondary electric */
+  --color-blue-400: #5aa0ff;
+  --color-blue-500: #3d7eff;
+  --color-blue-700: #1e4baa;
+
+  /* State colors */
+  --color-success: #34d399;
+  --color-warning: #ffb020;
+  --color-danger: #ff2d5c;
+  --color-danger-dim: #a61a3c;
+
+  /* Glow alphas (for box-shadows and text-shadows) */
+  --glow-cyan: 0 0 20px rgba(0, 212, 255, 0.4);
+  --glow-cyan-soft: 0 0 30px rgba(0, 212, 255, 0.15);
+  --glow-danger: 0 0 20px rgba(255, 45, 92, 0.45);
+  --glow-success: 0 0 18px rgba(52, 211, 153, 0.4);
+
+  /* Typography */
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-display: var(--font-space-grotesk), var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Legacy Next.js template tokens — kept for framework compatibility */
+  --color-background: var(--color-bg-base);
+  --color-foreground: var(--color-text-primary);
+}
+
+/* ============================================================
+ * Base reset + body
+ * ============================================================ */
+
+html,
+body {
+  background: var(--color-bg-deep);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  height: 100%;
+}
+
+body {
+  /* Ambient backdrop — subtle radial highlight + grid */
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(0, 168, 204, 0.12), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 90% 100%, rgba(61, 126, 255, 0.08), transparent 60%),
+    linear-gradient(to bottom, var(--color-bg-deep), var(--color-bg-base));
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+
+/* Precision grid overlay — very subtle */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, black 40%, transparent 85%);
+}
+
+/* Tabular numerals for all metrics/counters — prevents digit-jitter */
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ============================================================
+ * Glass surface utilities
+ * ============================================================ */
+
+.glass {
+  background: linear-gradient(
+    135deg,
+    rgba(17, 26, 42, 0.75) 0%,
+    rgba(13, 19, 32, 0.7) 100%
+  );
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid var(--color-border-subtle);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 2px 20px rgba(0, 0, 0, 0.4);
+}
+
+.glass-raised {
+  background: linear-gradient(
+    135deg,
+    rgba(22, 32, 52, 0.85) 0%,
+    rgba(17, 26, 42, 0.82) 100%
+  );
+  backdrop-filter: blur(20px) saturate(150%);
+  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  border: 1px solid var(--color-border-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.06),
+    0 8px 32px rgba(0, 0, 0, 0.55);
+}
+
+.glass-cyan {
+  border-color: var(--color-border-cyan);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 212, 255, 0.12),
+    0 0 0 1px rgba(0, 212, 255, 0.08),
+    0 4px 30px rgba(0, 212, 255, 0.08);
+}
+
+/* ============================================================
+ * Scanline / holographic effect (for hero elements)
+ * ============================================================ */
+
+.scanlines {
+  position: relative;
+  overflow: hidden;
+}
+
+.scanlines::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 3px,
+    rgba(0, 212, 255, 0.025) 3px,
+    rgba(0, 212, 255, 0.025) 4px
+  );
+  mix-blend-mode: overlay;
+}
+
+/* ============================================================
+ * Animated pulse ring (for link-status hero)
+ * ============================================================ */
+
+@keyframes pulseRing {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+.pulse-ring {
+  animation: pulseRing 2.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite;
+}
+
+@keyframes breathe {
+  0%, 100% {
+    opacity: 0.9;
+    filter: drop-shadow(0 0 8px currentColor);
+  }
+  50% {
+    opacity: 1;
+    filter: drop-shadow(0 0 18px currentColor);
+  }
+}
+
+.breathe {
+  animation: breathe 3s ease-in-out infinite;
+}
+
+/* ============================================================
+ * Pipeline flow — particle animation
+ * ============================================================ */
+
+@keyframes flowParticle {
+  0% {
+    transform: translateX(0);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(var(--flow-distance, 100%));
+    opacity: 0;
+  }
+}
+
+.flow-particle {
+  animation: flowParticle 2s linear infinite;
+}
+
+/* ============================================================
+ * FSO beam particle flow (left↔right) — Topology page
+ *
+ * Uses container-query units (cqw) so the translation distance is the
+ * width of the nearest ancestor with `container-type: inline-size`,
+ * regardless of viewport size.
+ * ============================================================ */
+
+@keyframes fso-flow-ltr {
+  0%   { transform: translateX(0);         opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateX(100cqw);    opacity: 0; }
+}
+
+@keyframes fso-flow-rtl {
+  0%   { transform: translateX(100cqw);    opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateX(0);         opacity: 0; }
+}
+
+.fso-beam-container {
+  container-type: inline-size;
+}
+
+/* ============================================================
+ * Subtle shimmer for loading / idle states
+ * ============================================================ */
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(0, 212, 255, 0.08),
+    transparent
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2.5s infinite;
+}
+
+/* ============================================================
+ * Scrollbar — thin, themed
+ * ============================================================ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.15);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 212, 255, 0.3);
+}
+
+/* ============================================================
+ * Focus rings — cyan, precise
+ * ============================================================ */
+
+*:focus-visible {
+  outline: 2px solid var(--color-cyan-500);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* ============================================================
+ * Reduced motion — respect user preference
+ * ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

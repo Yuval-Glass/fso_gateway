@@ -181,6 +181,17 @@ void stats_inc_crc_drop_symbol(void);
 void stats_inc_crc_drop_packet_fail(void);
 
 /**
+ * @brief Atomically snapshot all counters into a plain stats_container.
+ *
+ * Each field is read with relaxed atomic loads. The resulting struct is a
+ * point-in-time picture suitable for serialization (e.g. by control_server)
+ * or external reporting. No locking is required.
+ *
+ * @param out Destination struct. Must be non-NULL.
+ */
+void stats_snapshot(struct stats_container *out);
+
+/**
  * @brief Print a structured statistics report through LOG_INFO.
  */
 void stats_report(void);

@@ -163,7 +163,7 @@ static void stats_close_current_burst(void)
     }
 }
 
-static void stats_snapshot(struct stats_container *out)
+void stats_snapshot(struct stats_container *out)
 {
     if (out == NULL) {
         return;
