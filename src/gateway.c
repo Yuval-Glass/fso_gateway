@@ -29,6 +29,7 @@
 #include "logging.h"
 #include "packet_io.h"
 #include "rx_pipeline.h"
+#include "stats.h"
 #include "tx_pipeline.h"
 
 /* -------------------------------------------------------------------------- */
@@ -126,6 +127,14 @@ gateway_t *gateway_create(const struct config *cfg)
     memset(gw, 0, sizeof(gateway_t));
     gw->cfg     = *cfg;
     gw->running = 0;
+
+    /* Fresh counters for this run, and tell stats what the FEC recovery span
+     * is so it can classify bursts exceeding it. */
+    stats_init();
+    {
+        uint64_t span = (uint64_t)cfg->m * (uint64_t)cfg->depth;
+        stats_set_burst_fec_span(span);
+    }
 
     /* ---- Open all four packet_io handles -------------------------------- */
 
