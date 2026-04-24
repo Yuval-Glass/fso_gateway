@@ -5,9 +5,10 @@ A *run* is a contiguous span of recorded snapshots, typically one per
 bridge process (auto-started at lifespan begin, ended at shutdown). The
 user can also start/end runs manually via the API.
 
-Schema is intentionally narrow — we only persist the fields the
-Analytics page actually plots. Adding columns is a one-line ALTER + a
-migration block in `_ensure_schema()`.
+Schema is intentionally narrow — only the fields that the C daemon
+actually produces (via control_server) and that the dashboard plots.
+There are no slots for RSSI/SNR/BER-from-optics, per-packet latency,
+or daemon-side CPU/memory: those do not exist in this software.
 
 All public functions are sync; FastAPI handlers should call them via
 `asyncio.to_thread` to keep the event loop responsive.
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 DB_PATH = Path(os.environ.get("FSO_RUNS_DB", str(Path(__file__).parent / "runs.db")))
+SCHEMA_VERSION = 2  # bump → triggers automatic drop+recreate of stale schemas
 
 
 # ---------------------------------------------------------------------------
@@ -42,38 +44,39 @@ def _connect() -> sqlite3.Connection:
 
 _SCHEMA = [
     """
+    CREATE TABLE IF NOT EXISTS schema_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS runs (
-        id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        name        TEXT NOT NULL,
-        started_at  INTEGER NOT NULL,
-        ended_at    INTEGER,
-        notes       TEXT,
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL,
+        started_at   INTEGER NOT NULL,
+        ended_at     INTEGER,
+        notes        TEXT,
         sample_count INTEGER NOT NULL DEFAULT 0
     )
     """,
     """
     CREATE TABLE IF NOT EXISTS samples (
-        run_id            INTEGER NOT NULL,
-        t                 INTEGER NOT NULL,
-        source            TEXT NOT NULL,
-        link_state        TEXT NOT NULL,
-        link_quality_pct  REAL,
-        link_rssi_dbm     REAL,
-        link_snr_db       REAL,
-        link_ber          REAL,
-        link_latency_avg  REAL,
-        link_latency_max  REAL,
-        tx_bps            REAL,
-        rx_bps            REAL,
-        tx_pps            REAL,
-        rx_pps            REAL,
-        blocks_attempted  INTEGER,
-        blocks_recovered  INTEGER,
-        blocks_failed     INTEGER,
-        recovered_packets INTEGER,
-        crc_drops         INTEGER,
-        cpu_pct           REAL,
-        memory_pct        REAL,
+        run_id             INTEGER NOT NULL,
+        t                  INTEGER NOT NULL,
+        source             TEXT NOT NULL,
+        link_state         TEXT NOT NULL,
+        link_quality_pct   REAL,
+        tx_bps             REAL,
+        rx_bps             REAL,
+        tx_pps             REAL,
+        rx_pps             REAL,
+        blocks_attempted   INTEGER,
+        blocks_recovered   INTEGER,
+        blocks_failed      INTEGER,
+        recovered_packets  INTEGER,
+        failed_packets     INTEGER,
+        crc_drops          INTEGER,
+        symbol_loss_ratio  REAL,
         PRIMARY KEY (run_id, t),
         FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
     )
@@ -83,8 +86,28 @@ _SCHEMA = [
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    # Check stored schema version. If absent or stale, wipe + recreate.
+    try:
+        cur = conn.execute(
+            "SELECT value FROM schema_meta WHERE key = 'version'"
+        )
+        row = cur.fetchone()
+        stored = int(row["value"]) if row else 0
+    except sqlite3.OperationalError:
+        stored = 0
+
+    if stored != SCHEMA_VERSION:
+        conn.execute("DROP TABLE IF EXISTS samples")
+        conn.execute("DROP TABLE IF EXISTS runs")
+        conn.execute("DROP TABLE IF EXISTS schema_meta")
+
     for stmt in _SCHEMA:
         conn.execute(stmt)
+
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('version', ?)",
+        (str(SCHEMA_VERSION),),
+    )
 
 
 @contextmanager
@@ -221,7 +244,6 @@ def append_sample(run_id: int, snap: dict[str, Any]) -> None:
     """Insert one snapshot row. Silently skips if (run_id, t) already exists."""
     link = snap.get("link", {})
     errors = snap.get("errors", {})
-    system = snap.get("system", {})
     throughput = snap.get("throughput") or []
     latest = throughput[-1] if throughput else {}
     t = int(snap.get("generatedAt") or (time.time() * 1000))
@@ -231,23 +253,17 @@ def append_sample(run_id: int, snap: dict[str, Any]) -> None:
                 """
                 INSERT INTO samples (
                     run_id, t, source,
-                    link_state, link_quality_pct, link_rssi_dbm, link_snr_db,
-                    link_ber, link_latency_avg, link_latency_max,
+                    link_state, link_quality_pct,
                     tx_bps, rx_bps, tx_pps, rx_pps,
                     blocks_attempted, blocks_recovered, blocks_failed,
-                    recovered_packets, crc_drops,
-                    cpu_pct, memory_pct
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    recovered_packets, failed_packets, crc_drops,
+                    symbol_loss_ratio
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id, t, snap.get("source", "unknown"),
                     link.get("state", "unknown"),
                     link.get("qualityPct"),
-                    link.get("rssiDbm"),
-                    link.get("snrDb"),
-                    link.get("berEstimate"),
-                    link.get("latencyMsAvg"),
-                    link.get("latencyMsMax"),
                     latest.get("txBps"),
                     latest.get("rxBps"),
                     latest.get("txPps"),
@@ -256,9 +272,9 @@ def append_sample(run_id: int, snap: dict[str, Any]) -> None:
                     errors.get("blocksRecovered"),
                     errors.get("blocksFailed"),
                     errors.get("recoveredPackets"),
+                    errors.get("failedPackets"),
                     errors.get("crcDrops"),
-                    system.get("cpuPct"),
-                    system.get("memoryPct"),
+                    errors.get("symbolLossRatio"),
                 ),
             )
             cur.execute(
@@ -282,14 +298,12 @@ def get_samples(run_id: int, max_points: int = 1000) -> list[dict[str, Any]]:
             return []
         stride = max(1, total // max_points)
         cur.execute(
-            f"""
+            """
             SELECT t, source, link_state, link_quality_pct,
-                   link_rssi_dbm, link_snr_db, link_ber,
-                   link_latency_avg, link_latency_max,
                    tx_bps, rx_bps, tx_pps, rx_pps,
                    blocks_attempted, blocks_recovered, blocks_failed,
-                   recovered_packets, crc_drops,
-                   cpu_pct, memory_pct,
+                   recovered_packets, failed_packets, crc_drops,
+                   symbol_loss_ratio,
                    ROW_NUMBER() OVER (ORDER BY t) AS rn
             FROM samples WHERE run_id = ?
             ORDER BY t ASC
@@ -297,7 +311,6 @@ def get_samples(run_id: int, max_points: int = 1000) -> list[dict[str, Any]]:
             (run_id,),
         )
         rows = cur.fetchall()
-        # Downsample by stride; always include first and last.
         if stride <= 1:
             picked = rows
         else:
@@ -306,43 +319,35 @@ def get_samples(run_id: int, max_points: int = 1000) -> list[dict[str, Any]]:
                 picked.append(rows[-1])
         return [
             {
-                "t":               r["t"],
-                "source":          r["source"],
-                "linkState":       r["link_state"],
-                "linkQualityPct":  r["link_quality_pct"],
-                "linkRssiDbm":     r["link_rssi_dbm"],
-                "linkSnrDb":       r["link_snr_db"],
-                "linkBer":         r["link_ber"],
-                "linkLatencyAvg":  r["link_latency_avg"],
-                "linkLatencyMax":  r["link_latency_max"],
-                "txBps":           r["tx_bps"],
-                "rxBps":           r["rx_bps"],
-                "txPps":           r["tx_pps"],
-                "rxPps":           r["rx_pps"],
-                "blocksAttempted": r["blocks_attempted"],
-                "blocksRecovered": r["blocks_recovered"],
-                "blocksFailed":    r["blocks_failed"],
-                "recoveredPackets":r["recovered_packets"],
-                "crcDrops":        r["crc_drops"],
-                "cpuPct":          r["cpu_pct"],
-                "memoryPct":       r["memory_pct"],
+                "t":                r["t"],
+                "source":           r["source"],
+                "linkState":        r["link_state"],
+                "linkQualityPct":   r["link_quality_pct"],
+                "txBps":            r["tx_bps"],
+                "rxBps":            r["rx_bps"],
+                "txPps":            r["tx_pps"],
+                "rxPps":            r["rx_pps"],
+                "blocksAttempted":  r["blocks_attempted"],
+                "blocksRecovered":  r["blocks_recovered"],
+                "blocksFailed":     r["blocks_failed"],
+                "recoveredPackets": r["recovered_packets"],
+                "failedPackets":    r["failed_packets"],
+                "crcDrops":         r["crc_drops"],
+                "symbolLossRatio":  r["symbol_loss_ratio"],
             }
             for r in picked
         ]
 
 
 def export_csv(run_id: int) -> str:
-    """Build a CSV string of all samples for the run (full resolution)."""
     with _cursor() as cur:
         cur.execute(
             """
             SELECT t, source, link_state, link_quality_pct,
-                   link_rssi_dbm, link_snr_db, link_ber,
-                   link_latency_avg, link_latency_max,
                    tx_bps, rx_bps, tx_pps, rx_pps,
                    blocks_attempted, blocks_recovered, blocks_failed,
-                   recovered_packets, crc_drops,
-                   cpu_pct, memory_pct
+                   recovered_packets, failed_packets, crc_drops,
+                   symbol_loss_ratio
             FROM samples WHERE run_id = ?
             ORDER BY t ASC
             """,
@@ -351,26 +356,22 @@ def export_csv(run_id: int) -> str:
         rows = cur.fetchall()
     header = ",".join([
         "t_ms", "source", "link_state", "link_quality_pct",
-        "rssi_dbm", "snr_db", "ber",
-        "latency_avg_ms", "latency_max_ms",
         "tx_bps", "rx_bps", "tx_pps", "rx_pps",
         "blocks_attempted", "blocks_recovered", "blocks_failed",
-        "recovered_packets", "crc_drops",
-        "cpu_pct", "memory_pct",
+        "recovered_packets", "failed_packets", "crc_drops",
+        "symbol_loss_ratio",
     ])
     lines = [header]
     for r in rows:
         cells = [
             str(r["t"]), r["source"], r["link_state"],
-            _csv_num(r["link_quality_pct"]), _csv_num(r["link_rssi_dbm"]),
-            _csv_num(r["link_snr_db"]),     _csv_num(r["link_ber"]),
-            _csv_num(r["link_latency_avg"]),_csv_num(r["link_latency_max"]),
-            _csv_num(r["tx_bps"]),          _csv_num(r["rx_bps"]),
-            _csv_num(r["tx_pps"]),          _csv_num(r["rx_pps"]),
-            _csv_num(r["blocks_attempted"]),_csv_num(r["blocks_recovered"]),
-            _csv_num(r["blocks_failed"]),   _csv_num(r["recovered_packets"]),
-            _csv_num(r["crc_drops"]),
-            _csv_num(r["cpu_pct"]),         _csv_num(r["memory_pct"]),
+            _csv_num(r["link_quality_pct"]),
+            _csv_num(r["tx_bps"]),    _csv_num(r["rx_bps"]),
+            _csv_num(r["tx_pps"]),    _csv_num(r["rx_pps"]),
+            _csv_num(r["blocks_attempted"]), _csv_num(r["blocks_recovered"]),
+            _csv_num(r["blocks_failed"]),    _csv_num(r["recovered_packets"]),
+            _csv_num(r["failed_packets"]),   _csv_num(r["crc_drops"]),
+            _csv_num(r["symbol_loss_ratio"]),
         ]
         lines.append(",".join(cells))
     return "\n".join(lines)
@@ -385,7 +386,6 @@ def _csv_num(v: Any) -> str:
 
 
 def stats(run_id: int) -> dict[str, Any] | None:
-    """Aggregate stats for a run summary card."""
     with _cursor() as cur:
         cur.execute(
             """
@@ -395,7 +395,8 @@ def stats(run_id: int) -> dict[str, Any] | None:
                 AVG(rx_bps) AS rx_avg, MAX(rx_bps) AS rx_peak,
                 AVG(link_quality_pct) AS quality_avg,
                 MIN(link_quality_pct) AS quality_min,
-                AVG(link_ber) AS ber_avg, MAX(link_ber) AS ber_peak,
+                AVG(symbol_loss_ratio) AS sym_loss_avg,
+                MAX(symbol_loss_ratio) AS sym_loss_peak,
                 MAX(blocks_attempted) AS blocks_attempted,
                 MAX(blocks_recovered) AS blocks_recovered,
                 MAX(blocks_failed)    AS blocks_failed,

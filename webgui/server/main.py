@@ -1,10 +1,21 @@
 """
 FSO Gateway — Bridge server.
 
-Phase 2A: serves mock telemetry over WebSocket matching the TypeScript
-`TelemetrySnapshot` shape. In Phase 2B this module will also connect
-to the C-side control_server UNIX socket and stream real data when
-available, falling back to mock otherwise.
+Serves the dashboard:
+  * live telemetry over WebSocket (/ws/live)
+  * log stream over WebSocket (/ws/logs)
+  * config read/write (/api/config)
+  * run history (/api/runs...)
+
+The telemetry schema exactly mirrors what the C daemon's control_server emits
+via its UNIX socket: atomic counter snapshots from struct stats_container plus
+the live config echo, with one layer of derivation (per-second rates from
+byte-count deltas, FEC recovery % from block counters, alerts from spikes).
+
+When the C daemon is running, GatewaySource streams real counters. When it is
+not, the Python mock below increments a set of synthetic counters that use the
+same schema — so the UI behaves identically either way and never shows fields
+that the real daemon cannot produce.
 
 Run:
     uv run uvicorn main:app --reload --port 8000
@@ -15,15 +26,12 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from dataclasses import dataclass, field
-from typing import Any
-
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-
 from fastapi.responses import PlainTextResponse
 
 from config_store import ConfigError, load as config_load, save as config_save, validate as config_validate
@@ -37,6 +45,7 @@ import run_store
 
 TICK_HZ = 1.0
 HISTORY_SAMPLES = 300
+ALERT_RING_MAX = 200
 GATEWAY_SOCKET_PATH = "/tmp/fso_gw.sock"
 ALLOWED_ORIGINS = [
     "http://localhost:3100",
@@ -45,282 +54,270 @@ ALLOWED_ORIGINS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Mock telemetry — mirror of webgui/src/lib/mockTelemetry.ts
+# Mock telemetry
+# ---------------------------------------------------------------------------
+# Mirrors what fso_gw_runner + control_server would emit when the daemon is
+# running. Fields that the real daemon cannot measure (optical RSSI/SNR, per-
+# packet latency, per-stage queue depths) are intentionally absent.
 # ---------------------------------------------------------------------------
 
 
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
-
-
 def _walk(current: float, step: float, lo: float, hi: float) -> float:
-    return _clamp(current + (random.random() - 0.5) * step * 2, lo, hi)
+    return max(lo, min(hi, current + (random.random() - 0.5) * step * 2))
 
 
 @dataclass
 class SimState:
-    last_t_ms: int
-    tx_bps: float = 572e6
-    rx_bps: float = 568e6
-    tx_pps: float = 51236
-    rx_pps: float = 51102
+    """Synthetic equivalent of struct stats_container in the C side."""
+    # Monotonic counters (mirror struct stats_container)
+    ingress_packets: int = 0
+    ingress_bytes: int = 0
+    transmitted_packets: int = 0   # count of wire symbols on FSO
+    transmitted_bytes: int = 0
+    recovered_packets: int = 0     # reassembled LAN frames
+    recovered_bytes: int = 0
+    failed_packets: int = 0
+    total_symbols: int = 0
+    lost_symbols: int = 0
+    symbols_dropped_crc: int = 0
+    blocks_attempted: int = 0
+    blocks_recovered: int = 0
+    blocks_failed: int = 0
+    max_burst_length: int = 0
+    burst_len_1: int = 0
+    burst_len_2_5: int = 0
+    burst_len_6_10: int = 0
+    burst_len_11_50: int = 0
+    burst_len_51_100: int = 0
+    burst_len_101_500: int = 0
+    burst_len_501_plus: int = 0
+    bursts_exceeding_fec_span: int = 0
+    recoverable_bursts: int = 0
+    critical_bursts: int = 0
+    blocks_with_loss: int = 0
+    worst_holes_in_block: int = 0
+    total_holes_in_blocks: int = 0
+
+    # Traffic shape drivers (not counters themselves)
+    tx_bps: float = 0.0
+    rx_bps: float = 0.0
+    tx_pps: float = 0.0
+    rx_pps: float = 0.0
+
+    # Derived bookkeeping
     history: list[dict[str, Any]] = field(default_factory=list)
-    quality_pct: float = 98.7
-    latency_ms: float = 1.62
-    blocks_attempted: int = 192_530
-    blocks_recovered: int = 192_434
-    blocks_failed: int = 12
-    recovered_packets: int = 3_847
-    lost_blocks: int = 8
-    crc_drops: int = 46
+    last_t_ms: int = 0
     uptime_start_ms: int = 0
     alerts: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def fresh(cls) -> "SimState":
         now_ms = int(time.time() * 1000)
-        hist = [
-            {
-                "t": now_ms - i * 1000,
-                "txBps": 560e6 + random.random() * 40e6,
-                "rxBps": 555e6 + random.random() * 40e6,
-                "txPps": 50000 + random.random() * 3000,
-                "rxPps": 49500 + random.random() * 3000,
-            }
-            for i in range(HISTORY_SAMPLES - 1, -1, -1)
-        ]
-        state = cls(
-            last_t_ms=now_ms,
-            history=hist,
-            uptime_start_ms=now_ms - (12 * 86_400 + 4 * 3600 + 32 * 60) * 1000,
-        )
-        state.alerts = _seed_alerts(now_ms)
-        return state
+        return cls(last_t_ms=now_ms, uptime_start_ms=now_ms)
 
 
-ALERT_RING_MAX = 200
+# Config matches defaults from README's recommended hardware test
+# (README.md "Recommended FEC parameters for hardware testing").
+MOCK_CONFIG = {
+    "k": 8,
+    "m": 4,
+    "depth": 2,
+    "symbol_size": 1500,
+    "internal_symbol_crc": True,
+    "lan_iface": "enp1s0f0np0",
+    "fso_iface": "enp1s0f1np1",
+}
+
+
+def _step(s: SimState) -> None:
+    """Advance the synthetic counters by one tick in a way that matches
+    the semantics of the real C daemon instrumentation."""
+    now_ms = int(time.time() * 1000)
+    dt_s = max(0.001, (now_ms - s.last_t_ms) / 1000.0)
+
+    # Ingress rate ~40 Mbps (matches Phase 8 UDP validation of ~42.8 Mbps).
+    s.tx_bps = _walk(s.tx_bps or 40e6, 1.5e6, 20e6, 55e6)
+    s.rx_bps = _walk(s.rx_bps or 38e6, 1.5e6, 18e6, 52e6)
+    avg_pkt = 1200.0  # realistic avg (iperf3 UDP default ~1470B)
+    s.tx_pps = s.tx_bps / 8.0 / avg_pkt
+    s.rx_pps = s.rx_bps / 8.0 / avg_pkt
+
+    d_tx_pkts = int(s.tx_pps * dt_s)
+    d_rx_pkts = int(s.rx_pps * dt_s)
+
+    # ingress = LAN frames entering TX pipeline = roughly same as tx pkts
+    # (before fragmentation).
+    s.ingress_packets += d_tx_pkts
+    s.ingress_bytes += int(d_tx_pkts * avg_pkt)
+
+    # transmitted = wire symbols on FSO = ingress_pkts × (K+M)/K × syms_per_pkt.
+    # For avg_pkt ≤ symbol_size, syms_per_pkt = 1.
+    k = MOCK_CONFIG["k"]; m = MOCK_CONFIG["m"]
+    syms_per_pkt = max(1, int(avg_pkt / MOCK_CONFIG["symbol_size"]) + 1)
+    wire_syms = d_tx_pkts * syms_per_pkt * (k + m) // k
+    wire_bytes_each = MOCK_CONFIG["symbol_size"] + 18  # + wire header
+    s.transmitted_packets += wire_syms
+    s.transmitted_bytes += wire_syms * wire_bytes_each
+
+    # RX side: most blocks decode OK; a small fraction fail.
+    blocks_this_tick = max(1, d_rx_pkts // syms_per_pkt)
+    s.blocks_attempted += blocks_this_tick
+    failures = sum(1 for _ in range(blocks_this_tick) if random.random() < 0.001)
+    successes = blocks_this_tick - failures
+    s.blocks_recovered += successes
+    s.blocks_failed += failures
+    s.recovered_packets += d_rx_pkts
+    s.recovered_bytes += int(d_rx_pkts * avg_pkt)
+    if failures > 0:
+        s.failed_packets += failures * syms_per_pkt
+
+    # Symbols: every block contributes K+M to total. Holes are rare.
+    sym_total = blocks_this_tick * (k + m)
+    holes = failures * (m + 1)  # failed blocks have >m holes by definition
+    sparse_holes = sum(1 for _ in range(successes) if random.random() < 0.01)
+    holes += sparse_holes
+    s.total_symbols += sym_total
+    s.lost_symbols += holes
+    if random.random() < 0.05:
+        s.symbols_dropped_crc += 1
+
+    if holes > 0:
+        s.blocks_with_loss += max(1, failures + (sparse_holes // 2))
+        s.total_holes_in_blocks += holes
+        s.worst_holes_in_block = max(s.worst_holes_in_block,
+                                     min(holes, m + 2))
+
+    # Bucket bursts (1 symbol bursts dominate).
+    for _ in range(sparse_holes):
+        s.burst_len_1 += 1
+        s.recoverable_bursts += 1
+    for _ in range(failures):
+        b = m + 1 + random.randint(0, 3)
+        if b <= 5: s.burst_len_2_5 += 1
+        elif b <= 10: s.burst_len_6_10 += 1
+        else: s.burst_len_11_50 += 1
+        if b > m * MOCK_CONFIG["depth"]:
+            s.bursts_exceeding_fec_span += 1
+            s.critical_bursts += 1
+        else:
+            s.recoverable_bursts += 1
+        s.max_burst_length = max(s.max_burst_length, b)
+
+    # History ring for throughput chart
+    s.history.append({
+        "t": now_ms,
+        "txBps": s.tx_bps,
+        "rxBps": s.rx_bps,
+        "txPps": s.tx_pps,
+        "rxPps": s.rx_pps,
+    })
+    if len(s.history) > HISTORY_SAMPLES:
+        del s.history[: len(s.history) - HISTORY_SAMPLES]
+
+    s.last_t_ms = now_ms
+
+    _maybe_emit_alert(s)
+
 
 _ALERT_TEMPLATES: list[tuple[str, str, list[str]]] = [
-    ("info",     "LINK",    ["Link quality recovered",
-                             "FSO beam alignment stable",
-                             "Endpoint B re-registered",
-                             "SNR back above threshold"]),
-    ("info",     "FEC",     ["FEC recovery rate improved",
-                             "Block throughput stabilized"]),
-    ("info",     "CONFIG",  ["Configuration applied",
-                             "Runtime profile rotated"]),
-    ("info",     "ARP",     ["ARP cache grew to new size",
-                             "New MAC observed"]),
-    ("warning",  "LATENCY", ["High latency detected",
-                             "Latency P99 exceeded 3 ms"]),
-    ("warning",  "RX",      ["Symbol queue depth nearing threshold",
-                             "Deinterleaver eviction rate elevated"]),
-    ("warning",  "CRC",     ["CRC drop rate elevated",
-                             "Multiple CRC errors clustered"]),
-    ("warning",  "BURST",   ["Burst length creeping up",
-                             "Burst histogram mid-bucket growing"]),
-    ("critical", "BURST",   ["Burst loss detected - 8 symbols",
-                             "Burst exceeding FEC span observed",
-                             "Critical burst > 20 symbols"]),
-    ("critical", "FEC",     ["FEC block failed to decode",
-                             "Multiple FEC failures this tick"]),
-    ("critical", "LINK",    ["Link drop detected",
-                             "Peer became unreachable"]),
+    ("info",     "LINK",   ["FSO link forwarding stable", "Quality recovered above threshold"]),
+    ("info",     "FEC",    ["Block recovery rate improved", "All blocks decoded cleanly"]),
+    ("info",     "CONFIG", ["Gateway configuration applied"]),
+    ("info",     "ARP",    ["ARP cache learned new peer MAC"]),
+    ("warning",  "CRC",    ["CRC drop rate elevated"]),
+    ("warning",  "BURST",  ["Burst length creeping up"]),
+    ("critical", "FEC",    ["FEC block failed to decode", "Multiple FEC failures this tick"]),
+    ("critical", "BURST",  ["Burst exceeded FEC recovery span"]),
 ]
 
 
-def _seed_alerts(now_ms: int) -> list[dict[str, Any]]:
-    """Start with a reasonable backlog so the alerts page has content on first load."""
-    result: list[dict[str, Any]] = []
-    age = 5
-    for _ in range(40):
-        age += random.randint(4, 25)
-        sev, mod, msgs = random.choice(_ALERT_TEMPLATES)
-        t = now_ms - age * 1000
-        result.append({
-            "id": f"{t}-{mod}-{random.randint(1000, 9999)}",
-            "t": t,
-            "severity": sev,
-            "module": mod,
-            "message": random.choice(msgs),
-        })
-    # Newest first
-    result.sort(key=lambda a: a["t"], reverse=True)
-    return result
-
-
-def _maybe_emit_alert(s: "SimState") -> None:
-    """Roll the dice each tick to keep the mock alert feed alive."""
-    if random.random() > 0.18:
+def _maybe_emit_alert(s: SimState) -> None:
+    if random.random() > 0.15:
         return
-    sev, mod, msgs = random.choices(
-        _ALERT_TEMPLATES,
-        weights=[5, 5, 3, 3, 3, 3, 3, 3, 2, 2, 1],
-        k=1,
-    )[0]
+    sev, mod, msgs = random.choice(_ALERT_TEMPLATES)
     now = int(time.time() * 1000)
-    event = {
+    s.alerts.insert(0, {
         "id": f"{now}-{mod}-{random.randint(1000, 9999)}",
         "t": now,
         "severity": sev,
         "module": mod,
         "message": random.choice(msgs),
-    }
-    s.alerts.insert(0, event)
+    })
     del s.alerts[ALERT_RING_MAX:]
 
 
-def _step(s: SimState) -> None:
-    now_ms = int(time.time() * 1000)
-    dt_ms = now_ms - s.last_t_ms
-
-    s.tx_bps = _walk(s.tx_bps, 8e6, 420e6, 680e6)
-    s.rx_bps = _walk(s.rx_bps, 8e6, 420e6, 680e6)
-    s.tx_pps = _walk(s.tx_pps, 800, 42000, 58000)
-    s.rx_pps = _walk(s.rx_pps, 800, 42000, 58000)
-
-    s.history.append(
-        {"t": now_ms, "txBps": s.tx_bps, "rxBps": s.rx_bps, "txPps": s.tx_pps, "rxPps": s.rx_pps}
-    )
-    if len(s.history) > HISTORY_SAMPLES:
-        del s.history[0 : len(s.history) - HISTORY_SAMPLES]
-
-    s.quality_pct = _walk(s.quality_pct, 0.15, 95.0, 99.9)
-    s.latency_ms = _walk(s.latency_ms, 0.08, 0.9, 2.6)
-
-    blocks_this_tick = int(dt_ms * 0.08 + random.random() * 4)
-    s.blocks_attempted += blocks_this_tick
-    s.blocks_recovered += max(0, blocks_this_tick - (1 if random.random() < 0.03 else 0))
-    if random.random() < 0.02:
-        s.blocks_failed += 1
-    if random.random() < 0.15:
-        s.recovered_packets += int(random.random() * 3)
-    if random.random() < 0.01:
-        s.lost_blocks += 1
-    if random.random() < 0.06:
-        s.crc_drops += 1
-
-    s.last_t_ms = now_ms
-
-
 def _link(s: SimState) -> dict[str, Any]:
-    state = "online" if s.quality_pct > 96 else "degraded" if s.quality_pct > 88 else "offline"
+    quality = (100.0 * s.blocks_recovered / s.blocks_attempted
+               if s.blocks_attempted > 0 else 100.0)
+    state = "online" if quality > 99.5 else "degraded" if quality > 95 else "offline"
     return {
         "state": state,
-        "qualityPct": s.quality_pct,
-        "rssiDbm": -21.3 + (random.random() - 0.5) * 1.8,
-        "snrDb": 28.6 + (random.random() - 0.5) * 1.2,
-        "berEstimate": 1.2e-9 * (1 + (random.random() - 0.5) * 0.6),
-        "latencyMsAvg": s.latency_ms,
-        "latencyMsMax": s.latency_ms + 1.8 + random.random() * 1.2,
-        "uptimeSec": (int(time.time() * 1000) - s.uptime_start_ms) / 1000,
+        "qualityPct": quality,
+        "uptimeSec": (int(time.time() * 1000) - s.uptime_start_ms) / 1000.0,
     }
 
 
 def _errors(s: SimState) -> dict[str, Any]:
-    total_symbols = s.blocks_attempted * 14
-    lost_symbols = s.blocks_failed * 14 + s.crc_drops
-    ber = lost_symbols / (total_symbols * 8 * 800) if total_symbols > 0 else None
     return {
-        "ber": ber,
-        "flrPct": (s.blocks_failed / s.blocks_attempted) if s.blocks_attempted > 0 else 0.0,
-        "crcDrops": s.crc_drops,
+        "symbolLossRatio": (s.lost_symbols / s.total_symbols) if s.total_symbols > 0 else None,
+        "blockFailRatio": (s.blocks_failed / s.blocks_attempted) if s.blocks_attempted > 0 else 0.0,
+        "crcDrops": s.symbols_dropped_crc,
         "recoveredPackets": s.recovered_packets,
-        "lostBlocks": s.lost_blocks,
+        "failedPackets": s.failed_packets,
         "blocksAttempted": s.blocks_attempted,
         "blocksRecovered": s.blocks_recovered,
         "blocksFailed": s.blocks_failed,
     }
 
 
-def _pipeline(s: SimState) -> list[dict[str, Any]]:
-    base = s.tx_pps
-    stages = [
-        ("LAN RX", 12, 0.4, base),
-        ("Fragment", 8, 0.8, base * 1.8),
-        ("FEC Encode", 24, 3.2, base * 1.8),
-        ("Interleave", 18, 1.1, base * 1.8),
-        ("FSO TX", 10, 0.6, base * 1.8),
-        ("FSO RX", 10, 0.5, base * 1.8),
-        ("Deinterleave", 22, 1.3, base * 1.8),
-        ("FEC Decode", 28, 4.1, base * 1.8),
-        ("Reassemble", 6, 0.7, base),
-        ("LAN TX", 12, 0.4, base),
-    ]
+def _burst_histogram(s: SimState) -> list[dict[str, Any]]:
     return [
-        {
-            "name": name,
-            "queueDepth": int(random.random() * q_max),
-            "processingUs": us,
-            "throughputPps": tput,
-            "healthy": True,
-        }
-        for (name, q_max, us, tput) in stages
+        {"label": "1",       "count": s.burst_len_1},
+        {"label": "2-5",     "count": s.burst_len_2_5},
+        {"label": "6-10",    "count": s.burst_len_6_10},
+        {"label": "11-50",   "count": s.burst_len_11_50},
+        {"label": "51-100",  "count": s.burst_len_51_100},
+        {"label": "101-500", "count": s.burst_len_101_500},
+        {"label": "501+",    "count": s.burst_len_501_plus},
     ]
-
-
-def _burst_histogram() -> list[dict[str, Any]]:
-    return [
-        {"label": "1", "count": 1240 + int(random.random() * 50)},
-        {"label": "2-5", "count": 380 + int(random.random() * 20)},
-        {"label": "6-10", "count": 92 + int(random.random() * 8)},
-        {"label": "11-20", "count": 34},
-        {"label": "21-50", "count": 12},
-        {"label": "51-100", "count": 4},
-        {"label": "101-500", "count": 1},
-        {"label": "501+", "count": 0},
-    ]
-
-
-def _system() -> dict[str, Any]:
-    return {
-        "version": "v3.1.0-phase8",
-        "build": "a202b70",
-        "configProfile": "LAB-TEST",
-        "gatewayId": "FSO-GW-001",
-        "firmware": "3.1.7",
-        "cpuPct": 18 + (random.random() - 0.5) * 6,
-        "memoryPct": 42 + (random.random() - 0.5) * 4,
-        "temperatureC": 48 + (random.random() - 0.5) * 2,
-        "fpgaAccel": True,
-    }
 
 
 def _decoder_stress(s: SimState) -> dict[str, Any]:
-    # Plausible mock values that drift slightly so the panel isn't frozen.
-    drift = lambda base, amp: max(0, int(base + (random.random() - 0.5) * amp))
     return {
-        "blocksWithLoss":         drift(420, 8),
-        "worstHolesInBlock":      2 + (1 if random.random() < 0.1 else 0),
-        "totalHolesInBlocks":     drift(1180, 20),
-        "recoverableBursts":      drift(1700, 40),
-        "criticalBursts":         drift(48, 4),
-        "burstsExceedingFecSpan": drift(3, 1),
+        "blocksWithLoss":         s.blocks_with_loss,
+        "worstHolesInBlock":      s.worst_holes_in_block,
+        "totalHolesInBlocks":     s.total_holes_in_blocks,
+        "recoverableBursts":      s.recoverable_bursts,
+        "criticalBursts":         s.critical_bursts,
+        "burstsExceedingFecSpan": s.bursts_exceeding_fec_span,
+        "configuredFecBurstSpan": MOCK_CONFIG["m"] * MOCK_CONFIG["depth"],
     }
 
 
 def _config_echo() -> dict[str, Any]:
     return {
-        "k": 8, "m": 4, "depth": 16, "symbolSize": 800,
-        "lanIface": "eth0", "fsoIface": "eth1", "internalSymbolCrc": True,
+        "k": MOCK_CONFIG["k"],
+        "m": MOCK_CONFIG["m"],
+        "depth": MOCK_CONFIG["depth"],
+        "symbolSize": MOCK_CONFIG["symbol_size"],
+        "lanIface": MOCK_CONFIG["lan_iface"],
+        "fsoIface": MOCK_CONFIG["fso_iface"],
+        "internalSymbolCrc": MOCK_CONFIG["internal_symbol_crc"],
     }
 
 
 def snapshot(s: SimState, source: str = "mock") -> dict[str, Any]:
     _step(s)
-    _maybe_emit_alert(s)
     return {
         "source": source,
         "generatedAt": int(time.time() * 1000),
         "link": _link(s),
         "throughput": list(s.history),
         "errors": _errors(s),
-        "pipeline": _pipeline(s),
-        "burstHistogram": _burst_histogram(),
-        "system": _system(),
-        "alerts": s.alerts,
+        "burstHistogram": _burst_histogram(s),
         "decoderStress": _decoder_stress(s),
         "configEcho": _config_echo(),
+        "alerts": s.alerts,
     }
 
 
@@ -338,7 +335,6 @@ _active_run_id: int | None = None
 
 
 async def _recorder_loop() -> None:
-    """Periodically persists current_snapshot() into the active run."""
     global _active_run_id
     while True:
         try:
@@ -350,7 +346,6 @@ async def _recorder_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception:
-            # Don't let a transient persistence error kill the recorder.
             await asyncio.sleep(1.0)
 
 
@@ -359,7 +354,6 @@ async def lifespan(app: FastAPI):
     global _recorder_task, _active_run_id
     GATEWAY.start()
     await LOGS.start()
-    # End any leftover active run from a prior process and start fresh.
     await asyncio.to_thread(run_store.end_active_runs)
     _active_run_id = await asyncio.to_thread(run_store.create_run, None, None)
     _recorder_task = asyncio.create_task(_recorder_loop(), name="recorder")
@@ -378,7 +372,7 @@ async def lifespan(app: FastAPI):
         await LOGS.stop()
 
 
-app = FastAPI(title="FSO Gateway Bridge", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="FSO Gateway Bridge", version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -389,8 +383,6 @@ app.add_middleware(
 
 
 def current_snapshot() -> dict[str, Any]:
-    """Prefer live gateway data; fall back to mock if the UNIX socket is down
-    or has not yet produced its first usable snapshot."""
     if GATEWAY.is_connected():
         snap = GATEWAY.snapshot()
         if snap is not None:
@@ -399,7 +391,12 @@ def current_snapshot() -> dict[str, Any]:
 
 
 def current_source() -> str:
-    return "gateway" if GATEWAY.is_connected() and GATEWAY.snapshot() is not None else "mock"
+    return "gateway" if (GATEWAY.is_connected() and GATEWAY.snapshot() is not None) else "mock"
+
+
+# ---------------------------------------------------------------------------
+# Config API
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/config")
@@ -423,6 +420,11 @@ async def put_config(request: Request) -> dict[str, Any]:
     return {"config": asdict(cfg), "status": "saved", "requires_restart": True}
 
 
+# ---------------------------------------------------------------------------
+# Health + live telemetry
+# ---------------------------------------------------------------------------
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
@@ -434,6 +436,47 @@ async def health() -> dict[str, Any]:
         "uptime_sec": (int(time.time() * 1000) - SIM.uptime_start_ms) / 1000,
         "tick_hz": TICK_HZ,
     }
+
+
+@app.websocket("/ws/live")
+async def ws_live(ws: WebSocket) -> None:
+    await ws.accept()
+    try:
+        await ws.send_json(current_snapshot())
+        while True:
+            await asyncio.sleep(1.0 / TICK_HZ)
+            await ws.send_json(current_snapshot())
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+
+@app.websocket("/ws/logs")
+async def ws_logs(ws: WebSocket) -> None:
+    await ws.accept()
+    q = LOGS.subscribe()
+    try:
+        await ws.send_json({"type": "meta", "mode": LOGS.mode})
+    except Exception:
+        LOGS.unsubscribe(q)
+        return
+    try:
+        while True:
+            ev = await q.get()
+            await ws.send_json({"type": "event", **ev.as_dict()})
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        try:
+            await ws.close()
+        except Exception:
+            pass
+    finally:
+        LOGS.unsubscribe(q)
 
 
 # ---------------------------------------------------------------------------
@@ -512,45 +555,3 @@ async def runs_delete(run_id: int) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=404, detail="run not found")
     return {"deleted": run_id}
-
-
-@app.websocket("/ws/logs")
-async def ws_logs(ws: WebSocket) -> None:
-    await ws.accept()
-    q = LOGS.subscribe()
-    # Announce current mode so the UI can label the source correctly.
-    try:
-        await ws.send_json({"type": "meta", "mode": LOGS.mode})
-    except Exception:
-        LOGS.unsubscribe(q)
-        return
-    try:
-        while True:
-            ev = await q.get()
-            await ws.send_json({"type": "event", **ev.as_dict()})
-    except WebSocketDisconnect:
-        return
-    except Exception:
-        try:
-            await ws.close()
-        except Exception:
-            pass
-    finally:
-        LOGS.unsubscribe(q)
-
-
-@app.websocket("/ws/live")
-async def ws_live(ws: WebSocket) -> None:
-    await ws.accept()
-    try:
-        await ws.send_json(current_snapshot())
-        while True:
-            await asyncio.sleep(1.0 / TICK_HZ)
-            await ws.send_json(current_snapshot())
-    except WebSocketDisconnect:
-        return
-    except Exception:
-        try:
-            await ws.close()
-        except Exception:
-            pass

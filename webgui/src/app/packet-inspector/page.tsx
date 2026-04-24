@@ -226,14 +226,17 @@ interface HeaderField {
   color: string;
 }
 
+/**
+ * 18-byte wire header per src/tx_pipeline.c:10-18 + src/symbol.c.
+ * All multi-byte fields are big-endian.
+ */
 const HEADER_FIELDS: HeaderField[] = [
-  { name: "packet_id",     size: 4, description: "Monotonic per-packet identifier (fragment-level)", color: "#00d4ff" },
-  { name: "fec_id",        size: 2, description: "FEC block identifier",                              color: "#5aa0ff" },
-  { name: "symbol_index",  size: 2, description: "Symbol position within the block (0..K+M-1)",       color: "#a78bfa" },
-  { name: "total_symbols", size: 2, description: "Symbols in this block (K+M)",                       color: "#34d399" },
-  { name: "payload_len",   size: 2, description: "Valid payload bytes in this symbol",                color: "#ffb020" },
-  { name: "reserved",      size: 2, description: "Reserved / alignment",                              color: "#566377" },
-  { name: "crc32c",        size: 4, description: "CRC-32C over this symbol (when enabled)",           color: "#ff2d5c" },
+  { name: "packet_id",     size: 4, description: "Monotonic per-packet identifier; same value across all symbols of one Ethernet frame.", color: "#00d4ff" },
+  { name: "fec_id",        size: 4, description: "Symbol position in the FEC block (0..K-1 source, K..K+M-1 repair).", color: "#5aa0ff" },
+  { name: "symbol_index",  size: 2, description: "Fragment index within the original packet (0-based).", color: "#a78bfa" },
+  { name: "total_symbols", size: 2, description: "Number of fragments in the original packet.", color: "#34d399" },
+  { name: "payload_len",   size: 2, description: "Valid payload bytes in this symbol's data[].", color: "#ffb020" },
+  { name: "crc32",         size: 4, description: "CRC-32C (Castagnoli) over the 14-byte BE header + payload bytes.", color: "#ff2d5c" },
 ];
 
 function WireFormatDiagram({ symbolSize }: { symbolSize: number }) {

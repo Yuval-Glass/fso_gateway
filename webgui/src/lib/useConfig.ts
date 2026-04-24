@@ -43,8 +43,7 @@ function eq(a: GatewayConfig | null, b: GatewayConfig | null): boolean {
     a.m === b.m &&
     a.depth === b.depth &&
     a.symbol_size === b.symbol_size &&
-    a.internal_symbol_crc === b.internal_symbol_crc &&
-    a.profile_name === b.profile_name
+    a.internal_symbol_crc === b.internal_symbol_crc
   );
 }
 

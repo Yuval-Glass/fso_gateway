@@ -1,47 +1,47 @@
 /**
- * Telemetry contract — mirrors (will mirror) the struct stats_container in src/stats.c.
- * During Phase 1 these values come from mockTelemetry. In Phase 2 they will come from
- * the FastAPI bridge over WebSocket.
+ * Telemetry contract — mirrors the atomic counters in include/stats.h plus
+ * the live config echo emitted by src/control_server.c.
+ *
+ * Every field below is backed by a real counter or a real configuration value
+ * in the C daemon. There are NO placeholder fabrications — if a metric does
+ * not map to something the daemon actually tracks (e.g. optical RSSI/SNR,
+ * per-packet latency), it is not part of this type.
  */
 
 export type LinkState = "online" | "degraded" | "offline";
 
 export interface LinkStatus {
+  /** Derived client-side from the FEC block failure rate. */
   state: LinkState;
-  qualityPct: number; // 0-100
-  rssiDbm: number | null; // null = sensor not available
-  snrDb: number | null;
-  berEstimate: number | null;
-  latencyMsAvg: number;
-  latencyMsMax: number;
+  /** 100 * blocks_recovered / blocks_attempted. 100 when no blocks yet. */
+  qualityPct: number;
+  /** Seconds since the bridge started observing this gateway session. */
   uptimeSec: number;
 }
 
 export interface ThroughputSample {
-  t: number; // epoch ms
-  txBps: number;
-  rxBps: number;
-  txPps: number;
-  rxPps: number;
+  t: number;       // epoch ms
+  txBps: number;   // derived from transmitted_bytes deltas (wire symbols, incl. FEC overhead)
+  rxBps: number;   // derived from recovered_bytes deltas (reassembled LAN packets)
+  txPps: number;   // transmitted_packets deltas (per-symbol on FSO)
+  rxPps: number;   // recovered_packets deltas (per reassembled Ethernet frame)
 }
 
 export interface ErrorMetrics {
-  ber: number | null; // estimated from lost_symbols / total_symbols
-  flrPct: number; // failed-packet loss rate (0-1)
+  /** lost_symbols / total_symbols — packet-erasure ratio on FSO. */
+  symbolLossRatio: number | null;
+  /** blocks_failed / blocks_attempted. */
+  blockFailRatio: number;
+  /** symbols_dropped_crc — symbols rejected by per-symbol CRC-32C. */
   crcDrops: number;
+  /** recovered_packets — Ethernet frames re-emitted on LAN by RX pipeline. */
   recoveredPackets: number;
-  lostBlocks: number;
+  /** failed_packets — reassembly failures (FEC-decoded but malformed). */
+  failedPackets: number;
+  /** blocks_attempted — FEC decode attempts. */
   blocksAttempted: number;
   blocksRecovered: number;
   blocksFailed: number;
-}
-
-export interface PipelineStageStats {
-  name: string;
-  queueDepth: number;
-  processingUs: number;
-  throughputPps: number;
-  healthy: boolean;
 }
 
 export interface BurstHistogramBucket {
@@ -49,29 +49,7 @@ export interface BurstHistogramBucket {
   count: number;
 }
 
-export interface SystemInfo {
-  version: string;
-  build: string;
-  configProfile: string;
-  gatewayId: string;
-  firmware: string;
-  cpuPct: number;
-  memoryPct: number;
-  temperatureC: number;
-  fpgaAccel: boolean;
-}
-
-/** Raw FEC/interleaver diagnostics from the C stats_container. */
-export interface DecoderStress {
-  blocksWithLoss: number;
-  worstHolesInBlock: number;
-  totalHolesInBlocks: number;
-  recoverableBursts: number;
-  criticalBursts: number;
-  burstsExceedingFecSpan: number;
-}
-
-/** Echo of the live gateway config (from control_server or mock). */
+/** Matches struct config in the C daemon, echoed by control_server. */
 export interface ConfigEcho {
   k: number;
   m: number;
@@ -80,6 +58,17 @@ export interface ConfigEcho {
   lanIface: string;
   fsoIface: string;
   internalSymbolCrc: boolean;
+}
+
+export interface DecoderStress {
+  blocksWithLoss: number;
+  worstHolesInBlock: number;
+  totalHolesInBlocks: number;
+  recoverableBursts: number;
+  criticalBursts: number;
+  burstsExceedingFecSpan: number;
+  /** configured_fec_burst_span = m × depth, in symbols. */
+  configuredFecBurstSpan: number;
 }
 
 export interface AlertEvent {
@@ -91,22 +80,16 @@ export interface AlertEvent {
 }
 
 export interface TelemetrySnapshot {
-  /** Origin marker set by whoever produced this snapshot. */
-  source?: "mock" | "gateway" | "mock-local";
-  /** Server-side timestamp (epoch ms) when snapshot was generated. */
+  /** Origin marker. */
+  source?: "gateway" | "mock" | "mock-local";
   generatedAt?: number;
   link: LinkStatus;
   throughput: ThroughputSample[]; // ring buffer
   errors: ErrorMetrics;
-  pipeline: PipelineStageStats[];
   burstHistogram: BurstHistogramBucket[];
-  system: SystemInfo;
+  decoderStress: DecoderStress;
+  configEcho: ConfigEcho;
   alerts: AlertEvent[];
-  /** Optional deep FEC diagnostics. Present when the gateway control_server
-   *  is connected or the mock source is seeded with stress values. */
-  decoderStress?: DecoderStress;
-  /** Optional echo of the currently-running config (from control_server). */
-  configEcho?: ConfigEcho;
 }
 
 export type ConnectionStatus = "connecting" | "live" | "demo";
@@ -114,15 +97,4 @@ export type ConnectionStatus = "connecting" | "live" | "demo";
 export interface TelemetryFeed {
   snapshot: TelemetrySnapshot | null;
   connection: ConnectionStatus;
-}
-
-export interface FecConfig {
-  k: number;
-  m: number;
-  depth: number;
-  symbolSize: number;
-  flushTimeoutMs: number;
-  internalSymbolCrc: boolean;
-  lanIface: string;
-  fsoIface: string;
 }

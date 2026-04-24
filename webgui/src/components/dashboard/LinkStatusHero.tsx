@@ -2,58 +2,62 @@
 
 import { PulseRing } from "@/components/primitives/PulseRing";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
-import type { LinkStatus } from "@/types/telemetry";
+import type { ConfigEcho, LinkStatus } from "@/types/telemetry";
 import { formatNumber, formatPercent } from "@/lib/utils";
 
-export function LinkStatusHero({ link }: { link: LinkStatus }) {
-  const rssi = link.rssiDbm != null ? `${link.rssiDbm.toFixed(1)} dBm` : "N/A";
-  const snr = link.snrDb != null ? `${link.snrDb.toFixed(1)} dB` : "N/A";
-  const ber = link.berEstimate != null ? link.berEstimate.toExponential(1) : "N/A";
+/**
+ * Hardware layout is the Phase 8 two-machine FSO demo:
+ *   Win1 ──── GW-A ══════ GW-B ──── Win2
+ *
+ * The labels below reflect the README-documented deployment. GW-A/GW-B
+ * interface names come from the live config echo; the Windows endpoints
+ * are the bench PCs behind each gateway (their IPs/MACs are fixed in the
+ * Phase 8 setup but only mentioned as context — the daemon has no way
+ * to observe the remote endpoint directly).
+ */
+interface LinkStatusHeroProps {
+  link: LinkStatus;
+  cfg: ConfigEcho;
+}
 
+export function LinkStatusHero({ link, cfg }: LinkStatusHeroProps) {
   return (
     <GlassPanel variant="raised" padded={false} className="overflow-hidden">
       <div className="relative">
-        {/* Scanline overlay */}
         <div className="scanlines absolute inset-0 pointer-events-none" />
 
         <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-8 px-8 py-7">
-          {/* Left: Endpoint A */}
-          <EndpointCard
+          <GatewaySide
             side="A"
-            title="Machine A — T1-Forwarder"
-            mac="90:2e:16:d6:96:ba"
-            lan="enp1s0f0np0"
-            fso="enp1s0f1np1"
-            online
+            peerLabel="Win-1 · 192.168.50.1"
+            lan={cfg.lanIface || "enp1s0f0np0"}
+            fso={cfg.fsoIface || "enp1s0f1np1"}
+            online={link.state !== "offline"}
           />
 
-          {/* Center: Pulse ring + link signals */}
           <div className="flex flex-col items-center gap-4">
             <div className="text-[10px] tracking-[0.32em] uppercase text-[color:var(--color-text-secondary)]">
               FSO Link Integrity
             </div>
-            <PulseRing state={link.state} qualityPct={link.qualityPct} size={260} />
-            <div className="grid grid-cols-3 gap-5 w-full max-w-[360px]">
-              <LinkStat label="RSSI" value={rssi} />
-              <LinkStat label="SNR" value={snr} />
-              <LinkStat label="BER" value={ber} />
+            <PulseRing state={link.state} qualityPct={link.qualityPct} size={240} />
+            <div className="grid grid-cols-3 gap-4 w-full max-w-[440px]">
+              <Stat label="State" value={link.state.toUpperCase()} />
+              <Stat label="Quality" value={formatPercent(link.qualityPct / 100, 2)} />
+              <Stat label="K/M/D" value={`${cfg.k}/${cfg.m}/${cfg.depth}`} />
             </div>
           </div>
 
-          {/* Right: Endpoint B */}
-          <EndpointCard
+          <GatewaySide
             side="B"
-            title="Machine B — C4Net-10G5TH"
-            mac="08:c0:eb:62:34:50"
-            lan="enp1s0f0np0"
-            fso="enp1s0f1np1"
-            online
+            peerLabel="Win-2 · 192.168.50.2"
+            lan={cfg.lanIface || "enp1s0f0np0"}
+            fso={cfg.fsoIface || "enp1s0f1np1"}
+            online={link.state !== "offline"}
           />
         </div>
 
-        {/* Beam visual */}
         <div
-          className="absolute top-1/2 left-[20%] right-[20%] h-px pointer-events-none"
+          className="absolute top-1/2 left-[22%] right-[22%] h-px pointer-events-none"
           style={{
             background:
               "linear-gradient(90deg, transparent, rgba(0,212,255,0.7), transparent)",
@@ -65,17 +69,15 @@ export function LinkStatusHero({ link }: { link: LinkStatus }) {
   );
 }
 
-function EndpointCard({
+function GatewaySide({
   side,
-  title,
-  mac,
+  peerLabel,
   lan,
   fso,
   online,
 }: {
   side: "A" | "B";
-  title: string;
-  mac: string;
+  peerLabel: string;
   lan: string;
   fso: string;
   online: boolean;
@@ -83,12 +85,14 @@ function EndpointCard({
   return (
     <div className={side === "B" ? "text-right" : ""}>
       <div className="text-xs tracking-[0.28em] uppercase font-semibold text-[color:var(--color-cyan-300)] mb-1">
-        Endpoint {side}
+        Gateway {side}
       </div>
       <div className="font-display text-lg font-semibold text-[color:var(--color-text-primary)]">
-        {title}
+        GW-{side}
       </div>
-      <div className="font-mono text-[11px] text-[color:var(--color-text-muted)] mt-1">{mac}</div>
+      <div className="text-[11px] text-[color:var(--color-text-muted)] mt-1">
+        {peerLabel}
+      </div>
       <div className={`mt-3 inline-flex items-center gap-2 px-2.5 py-1 rounded-md border ${online ? "border-[color:var(--color-success)]/40 bg-[color:var(--color-success)]/10" : "border-[color:var(--color-danger)]/40 bg-[color:var(--color-danger)]/10"}`}>
         <span
           className="w-1.5 h-1.5 rounded-full breathe"
@@ -98,19 +102,19 @@ function EndpointCard({
             boxShadow: online ? "0 0 8px var(--color-success)" : "0 0 8px var(--color-danger)",
           }}
         />
-        <span className="text-[10px] font-semibold tracking-[0.18em] uppercase text-[color:var(--color-success)]">
+        <span className={`text-[10px] font-semibold tracking-[0.18em] uppercase ${online ? "text-[color:var(--color-success)]" : "text-[color:var(--color-danger)]"}`}>
           {online ? "Online" : "Offline"}
         </span>
       </div>
       <div className={`mt-4 grid grid-cols-2 gap-3 ${side === "B" ? "justify-items-end" : ""}`}>
-        <InterfaceInfo label="LAN IFACE" value={lan} align={side === "B" ? "right" : "left"} />
-        <InterfaceInfo label="FSO IFACE" value={fso} align={side === "B" ? "right" : "left"} />
+        <IfaceInfo label="LAN IFACE" value={lan} align={side === "B" ? "right" : "left"} />
+        <IfaceInfo label="FSO IFACE" value={fso} align={side === "B" ? "right" : "left"} />
       </div>
     </div>
   );
 }
 
-function InterfaceInfo({
+function IfaceInfo({
   label,
   value,
   align,
@@ -129,7 +133,7 @@ function InterfaceInfo({
   );
 }
 
-function LinkStat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="text-center glass rounded-md px-3 py-2 border-[color:var(--color-border-cyan)]/40">
       <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">

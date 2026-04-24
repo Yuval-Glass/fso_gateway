@@ -63,12 +63,6 @@ export function TopBar() {
             </span>
           </Stat>
           <Divider />
-          <Stat label="CPU">
-            <span className="font-mono tabular text-[color:var(--color-text-primary)]">
-              {telemetry ? telemetry.system.cpuPct.toFixed(0) : "—"}%
-            </span>
-          </Stat>
-          <Divider />
           <Stat label="Time (UTC)">
             <span className="font-mono tabular text-[color:var(--color-text-primary)]">
               {now ? now.toISOString().slice(11, 19) : "—"}

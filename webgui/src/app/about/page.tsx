@@ -20,7 +20,7 @@ import { useTelemetry } from "@/lib/useTelemetry";
 import { cn, formatUptime } from "@/lib/utils";
 
 const APP_NAME = "FSO Gateway Control Center";
-const APP_VERSION = "v1.0.0-phase5";
+const APP_VERSION = "v1.1.0";
 
 export default function AboutPage() {
   const health = useHealth();
@@ -69,8 +69,12 @@ export default function AboutPage() {
               </div>
               <div className="mt-3 inline-flex items-center gap-2 font-mono text-[11px] text-[color:var(--color-text-muted)]">
                 <span>{APP_VERSION}</span>
-                <span className="opacity-50">·</span>
-                <span>build {snap?.system.build ?? "—"}</span>
+                {snap?.configEcho && (
+                  <>
+                    <span className="opacity-50">·</span>
+                    <span>K={snap.configEcho.k} M={snap.configEcho.m} depth={snap.configEcho.depth}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -301,19 +305,12 @@ function TechStackPanel() {
 function PhaseRoadmapPanel() {
   const phases: Array<{ name: string; what: string; status: "done" | "office" | "polish" }> = [
     { name: "Phase 1",  what: "Shell · design system · dashboard skeleton",          status: "done" },
-    { name: "Phase 2A", what: "FastAPI bridge + WebSocket + mock fallback",          status: "done" },
-    { name: "Phase 2B", what: "C control_server pthread → bridge enrichment",        status: "done" },
+    { name: "Phase 2",  what: "FastAPI bridge + C control_server UNIX socket",      status: "done" },
     { name: "Phase 3A", what: "Control Center config form + YAML persistence",       status: "done" },
     { name: "Phase 3B", what: "Daemon supervision (start/stop/restart)",             status: "office" },
-    { name: "Phase 4A", what: "Live log streaming with file-tail + mock",            status: "done" },
-    { name: "Phase 4B", what: "Topology page (animated beam + endpoints)",           status: "done" },
-    { name: "Phase 4C", what: "FEC Analytics page",                                  status: "done" },
-    { name: "Phase 4D", what: "Alerts page (history + ack)",                         status: "done" },
-    { name: "Phase 4E", what: "Link Status page (RSSI/SNR/BER + fade events)",       status: "done" },
-    { name: "Phase 4F", what: "Traffic Monitor page",                                status: "done" },
-    { name: "Phase 4G", what: "Interleaver page (matrix + burst coverage)",          status: "done" },
-    { name: "Phase 4H", what: "Packet Inspector page (wire format)",                 status: "done" },
-    { name: "Phase 5",  what: "Analytics & history (SQLite + run compare prep)",    status: "done" },
+    { name: "Phase 4",  what: "All feature pages (Logs, Topology, FEC, Alerts, Link, Traffic, Interleaver, Packets)", status: "done" },
+    { name: "Phase 5",  what: "Analytics history (SQLite + CSV export)",             status: "done" },
+    { name: "Audit",    what: "Removed fabricated metrics; counters wired from C pipeline", status: "done" },
     { name: "Polish",   what: "Cosmetic pass — deferred bugs, layout tuning",        status: "polish" },
   ];
   return (
@@ -358,19 +355,19 @@ const STATUS_CFG = {
 
 function ModuleMapPanel() {
   const modules = [
-    { module: "tx_pipeline",    role: "LAN RX → fragment → FEC encode → interleave → FSO TX" },
-    { module: "rx_pipeline",    role: "FSO RX → deinterleave → FEC decode → reassemble → LAN TX" },
+    { module: "tx_pipeline",    role: "LAN RX → fragment → FEC encode → interleave → FSO TX (instrumented w/ stats_inc_*)" },
+    { module: "rx_pipeline",    role: "FSO RX → deinterleave → FEC decode → reassemble → LAN TX (instrumented)" },
     { module: "fec_wrapper",    role: "Wirehair fountain code encode/decode" },
-    { module: "interleaver",    role: "Matrix interleaver (depth × K+M)" },
-    { module: "deinterleaver",  role: "Inverse, sparse-safe" },
-    { module: "block_builder",  role: "Accumulate symbols into FEC blocks; flush on timeout" },
-    { module: "packet_io",      role: "libpcap-based raw frame I/O (also packet_io_dpdk)" },
-    { module: "stats",          role: "Lock-free atomic counters + percentile sampling" },
-    { module: "control_server", role: "AF_UNIX server emitting JSON snapshots @ 10 Hz" },
-    { module: "logging",        role: "Thread-safe levelled output" },
-    { module: "config",         role: "CLI argument parser (getopt_long)" },
-    { module: "arp_cache",      role: "MAC↔IP map for proxy ARP" },
-    { module: "fso_protocol",   role: "18-byte symbol header serialization" },
+    { module: "interleaver",    role: "Matrix interleaver (depth × K+M, column-major dequeue)" },
+    { module: "deinterleaver",  role: "Sparse-safe; FSM EMPTY→FILLING→READY_TO_DECODE→EMPTY" },
+    { module: "block_builder",  role: "Accumulate K source symbols into a block; flush on timeout" },
+    { module: "packet_io",      role: "libpcap raw frame I/O (snaplen 9200; pcap_setdirection PCAP_D_IN)" },
+    { module: "stats",          role: "C11 atomic counters; stats_snapshot() exported via control_server" },
+    { module: "control_server", role: "AF_UNIX server, JSON snapshots @ 10 Hz, started in gateway_create" },
+    { module: "logging",        role: "Thread-safe levelled stderr output" },
+    { module: "config",         role: "CLI parser: --lan-iface --fso-iface --k --m --depth --symbol-size --internal-symbol-crc" },
+    { module: "arp_cache",      role: "Thread-safe IP↔MAC map for proxy-ARP in tx_pipeline" },
+    { module: "symbol",         role: "Per-symbol CRC-32C (Castagnoli, polynomial 0x82F63B78)" },
   ];
   return (
     <GlassPanel

@@ -1,16 +1,18 @@
 """
 Gateway telemetry source — connects to the C-side control_server UNIX socket
-and enriches its raw counter snapshots into the full TelemetrySnapshot shape
-expected by the dashboard.
+and translates the raw atomic counter snapshot into the shape the dashboard
+consumes.
 
-The C side emits a minimal snapshot (atomic counters + config echo) at ~10 Hz.
-This module:
-  - Maintains a reconnect loop so the bridge keeps trying while the gateway
-    daemon is down.
-  - Derives throughput rates from byte-count deltas into a rolling history.
-  - Synthesizes alerts from counter deltas.
-  - Backfills fields the C side does not track (RSSI/SNR/BER from optics →
-    null; per-stage queue depths → 0/healthy placeholders for now).
+The translation is intentionally thin. Every field in the output maps to a
+real C counter from struct stats_container (include/stats.h) or to the live
+config echo that control_server stamps on every frame. No synthesized
+RSSI/SNR/latency — those do not exist in this software.
+
+Derivations done here (and only here):
+  * throughput time-series: per-second rates computed from byte-count deltas
+  * qualityPct: 100 × blocks_recovered / blocks_attempted
+  * symbolLossRatio: lost_symbols / total_symbols
+  * alerts: emitted when a per-tick counter delta crosses a threshold
 """
 
 from __future__ import annotations
@@ -116,6 +118,9 @@ class GatewaySource:
         if dt_s <= 0.01:
             return
 
+        # Throughput:
+        #   TX side = wire bytes on FSO (transmitted_bytes)
+        #   RX side = reassembled Ethernet bytes on LAN (recovered_bytes)
         d_tx_bytes = max(0, stats["transmitted_bytes"] - prev_stats["transmitted_bytes"])
         d_rx_bytes = max(0, stats["recovered_bytes"]   - prev_stats["recovered_bytes"])
         d_tx_pkts  = max(0, stats["transmitted_packets"] - prev_stats["transmitted_packets"])
@@ -151,6 +156,11 @@ class GatewaySource:
             self._push_alert(ts, "warning", "BURST",
                              f"Max burst length climbed to {stats['max_burst_length']}")
 
+        d_exceed = stats["bursts_exceeding_fec_span"] - prev_stats["bursts_exceeding_fec_span"]
+        if d_exceed > 0:
+            self._push_alert(ts, "critical", "BURST",
+                             f"{d_exceed} burst(s) exceeded FEC span this tick")
+
     def _push_alert(self, ts: int, severity: str, module: str, message: str) -> None:
         self._alerts.insert(0, {
             "id": f"{ts}-{module}-{len(self._alerts)}",
@@ -172,39 +182,33 @@ class GatewaySource:
         cfg = raw.get("config", {})
 
         blocks_att = stats["blocks_attempted"]
+        blocks_rec = stats["blocks_recovered"]
         blocks_fail = stats["blocks_failed"]
-        flr = (blocks_fail / blocks_att) if blocks_att > 0 else 0.0
-        quality_pct = max(0.0, min(100.0, 100.0 - flr * 100.0))
+        quality_pct = (100.0 * blocks_rec / blocks_att) if blocks_att > 0 else 100.0
         link_state = (
-            "online" if quality_pct > 96
-            else "degraded" if quality_pct > 88
+            "online" if quality_pct > 99.5
+            else "degraded" if quality_pct > 95
             else "offline"
         )
 
         total_sym = stats["total_symbols"]
         lost_sym = stats["lost_symbols"]
-        symbol_bits = max(1, cfg.get("symbol_size", 1) * 8)
-        ber = (lost_sym / (total_sym * symbol_bits)) if total_sym > 0 else None
+        symbol_loss = (lost_sym / total_sym) if total_sym > 0 else None
 
         link = {
             "state": link_state,
             "qualityPct": quality_pct,
-            "rssiDbm": None,
-            "snrDb": None,
-            "berEstimate": ber,
-            "latencyMsAvg": 0.0,
-            "latencyMsMax": 0.0,
             "uptimeSec": raw["uptime_sec"],
         }
 
         errors = {
-            "ber": ber,
-            "flrPct": flr,
+            "symbolLossRatio": symbol_loss,
+            "blockFailRatio": (blocks_fail / blocks_att) if blocks_att > 0 else 0.0,
             "crcDrops": stats["symbols_dropped_crc"],
             "recoveredPackets": stats["recovered_packets"],
-            "lostBlocks": blocks_fail,
+            "failedPackets": stats["failed_packets"],
             "blocksAttempted": blocks_att,
-            "blocksRecovered": stats["blocks_recovered"],
+            "blocksRecovered": blocks_rec,
             "blocksFailed": blocks_fail,
         }
 
@@ -212,19 +216,6 @@ class GatewaySource:
             "t": raw["ts_ms"],
             "txBps": 0.0, "rxBps": 0.0, "txPps": 0.0, "rxPps": 0.0,
         }]
-
-        # Placeholder pipeline — real per-stage queue depths would require
-        # further instrumentation in block_builder/deinterleaver/etc.
-        pipeline_names = [
-            "LAN RX", "Fragment", "FEC Encode", "Interleave", "FSO TX",
-            "FSO RX", "Deinterleave", "FEC Decode", "Reassemble", "LAN TX",
-        ]
-        latest_tps = history[-1]["txPps"] if history else 0.0
-        pipeline = [
-            {"name": n, "queueDepth": 0, "processingUs": 0.0,
-             "throughputPps": latest_tps, "healthy": True}
-            for n in pipeline_names
-        ]
 
         burst_histogram = [
             {"label": "1",       "count": stats["burst_len_1"]},
@@ -237,13 +228,15 @@ class GatewaySource:
         ]
 
         decoder_stress = {
-            "blocksWithLoss":           stats.get("blocks_with_loss", 0),
-            "worstHolesInBlock":        stats.get("worst_holes_in_block", 0),
-            "totalHolesInBlocks":       stats.get("total_holes_in_blocks", 0),
-            "recoverableBursts":        stats.get("recoverable_bursts", 0),
-            "criticalBursts":           stats.get("critical_bursts", 0),
-            "burstsExceedingFecSpan":   stats.get("bursts_exceeding_fec_span", 0),
+            "blocksWithLoss":        stats.get("blocks_with_loss", 0),
+            "worstHolesInBlock":     stats.get("worst_holes_in_block", 0),
+            "totalHolesInBlocks":    stats.get("total_holes_in_blocks", 0),
+            "recoverableBursts":     stats.get("recoverable_bursts", 0),
+            "criticalBursts":        stats.get("critical_bursts", 0),
+            "burstsExceedingFecSpan": stats.get("bursts_exceeding_fec_span", 0),
+            "configuredFecBurstSpan": stats.get("configured_fec_burst_span", 0),
         }
+
         config_echo = {
             "k":                 int(cfg.get("k", 0)),
             "m":                 int(cfg.get("m", 0)),
@@ -260,59 +253,8 @@ class GatewaySource:
             "link": link,
             "throughput": list(history),
             "errors": errors,
-            "pipeline": pipeline,
             "burstHistogram": burst_histogram,
-            "system": _system_info(cfg),
-            "alerts": list(self._alerts),
             "decoderStress": decoder_stress,
             "configEcho": config_echo,
+            "alerts": list(self._alerts),
         }
-
-
-def _system_info(cfg: dict[str, Any]) -> dict[str, Any]:
-    cpu_pct = _read_cpu_pct()
-    mem_pct = _read_mem_pct()
-    profile = (
-        f"K={cfg.get('k', '?')}/M={cfg.get('m', '?')}/depth={cfg.get('depth', '?')}"
-        if cfg else "UNKNOWN"
-    )
-    return {
-        "version": "v3.1-phase8-gateway",
-        "build": "live",
-        "configProfile": profile,
-        "gatewayId": "FSO-GW-001",
-        "firmware": "3.1.7",
-        "cpuPct": cpu_pct,
-        "memoryPct": mem_pct,
-        "temperatureC": 48.0,
-        "fpgaAccel": False,
-    }
-
-
-def _read_cpu_pct() -> float:
-    try:
-        with open("/proc/loadavg") as f:
-            load1 = float(f.read().split()[0])
-        import os
-        cores = os.cpu_count() or 1
-        return min(100.0, (load1 / cores) * 100.0)
-    except Exception:
-        return 0.0
-
-
-def _read_mem_pct() -> float:
-    try:
-        info: dict[str, int] = {}
-        with open("/proc/meminfo") as f:
-            for line in f:
-                key, _, rest = line.partition(":")
-                parts = rest.strip().split()
-                if parts:
-                    info[key.strip()] = int(parts[0])
-        total = info.get("MemTotal")
-        avail = info.get("MemAvailable")
-        if total and avail is not None:
-            return 100.0 * (total - avail) / total
-    except Exception:
-        pass
-    return 0.0

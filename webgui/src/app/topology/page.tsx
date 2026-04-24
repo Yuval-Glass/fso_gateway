@@ -5,35 +5,25 @@ import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { ClientBranch } from "@/components/topology/ClientBranch";
 import { EndpointBadge } from "@/components/topology/EndpointBadge";
 import { FsoBeam } from "@/components/topology/FsoBeam";
-import { LinkQualityOverlay } from "@/components/topology/LinkQualityOverlay";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { formatNumber } from "@/lib/utils";
 
-const ENDPOINT_A = {
-  title: "Machine A",
-  subtitle: "T1-Forwarder",
-  mac: "90:2e:16:d6:96:ba",
-  lan: "enp1s0f0np0",
-  fso: "enp1s0f1np1",
-};
+/**
+ * Phase 8 two-machine FSO setup (per README):
+ *
+ *   Win1 ──── GW-A ══════ GW-B ──── Win2
+ *   192.168.50.1   FSO cable   192.168.50.2
+ *
+ * The FSO link is currently a direct Ethernet cable simulating optics —
+ * there is no optical transceiver, no RSSI/SNR. The two gateways are the
+ * machines you actually run `fso_gw_runner` on; the two Windows boxes are
+ * the bench endpoints that send traffic.
+ */
 
-const ENDPOINT_B = {
-  title: "Machine B",
-  subtitle: "C4Net-10G5TH",
-  mac: "08:c0:eb:62:34:50",
-  lan: "enp1s0f0np0",
-  fso: "enp1s0f1np1",
-};
-
-const CLIENTS_A = [
-  { name: "Win-1", ip: "192.168.50.11" },
-  { name: "Win-2", ip: "192.168.50.12" },
-];
-
-const CLIENTS_B = [
-  { name: "Win-3", ip: "192.168.50.21" },
-  { name: "Win-4", ip: "192.168.50.22" },
-];
+const WIN1 = { name: "Win-1", ip: "192.168.50.1", mac: "90:2e:16:d6:96:ba" };
+const WIN2 = { name: "Win-2", ip: "192.168.50.2", mac: "c4:ef:bb:5f:cd:5c" };
+const GW_A_MAC = "08:c0:eb:62:34:98";
+const GW_B_MAC = "08:c0:eb:62:34:50";
 
 export default function TopologyPage() {
   const { snapshot: snap, connection } = useTelemetry();
@@ -49,16 +39,18 @@ export default function TopologyPage() {
   }
 
   const link = snap.link;
+  const cfg = snap.configEcho;
   const latest = snap.throughput[snap.throughput.length - 1];
-  // Normalize pps (0..58000 in demo) into 0..1 "intensity" for particle speed.
-  const txIntensity = Math.min(1, (latest?.txPps ?? 0) / 60_000);
-  const rxIntensity = Math.min(1, (latest?.rxPps ?? 0) / 60_000);
-  const degraded = link.state === "degraded";
+  const txIntensity = Math.min(1, (latest?.txPps ?? 0) / 5000);
+  const rxIntensity = Math.min(1, (latest?.rxPps ?? 0) / 5000);
   const offline = link.state === "offline";
+  const degraded = link.state === "degraded";
+
+  const lan = cfg.lanIface || "enp1s0f0np0";
+  const fso = cfg.fsoIface || "enp1s0f1np1";
 
   return (
     <div className="flex flex-col gap-5">
-      {/* Page header */}
       <div className="flex items-baseline justify-between">
         <div>
           <div className="text-[10px] tracking-[0.3em] uppercase text-[color:var(--color-cyan-300)]">
@@ -68,40 +60,28 @@ export default function TopologyPage() {
             Topology Map
           </h2>
           <div className="text-xs text-[color:var(--color-text-secondary)] mt-1">
-            Live view of the FSO link and the LAN clients behind each endpoint.
-            Particle density and speed scale with observed packet rate.
+            Phase 8 deployment: two gateway boxes (GW-A / GW-B) bridging two
+            Windows endpoints over a simulated FSO cable. Particle density
+            scales with packet rate.
           </div>
-        </div>
-        <div className="text-[10px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-          Phase 4B · Animated Topology
         </div>
       </div>
 
-      {/* Main topology panel */}
       <GlassPanel variant="raised" padded={false} className="overflow-hidden">
         <div className="px-6 py-8">
-          {/* Row 1: endpoints + beam */}
           <div className="grid grid-cols-[auto_1fr_auto] items-center gap-6">
             <EndpointBadge
               side="A"
-              title={ENDPOINT_A.title}
-              subtitle={ENDPOINT_A.subtitle}
-              mac={ENDPOINT_A.mac}
-              lan={ENDPOINT_A.lan}
-              fso={ENDPOINT_A.fso}
+              title="GW-A"
+              subtitle="fso_gw_runner"
+              mac={GW_A_MAC}
+              lan={lan}
+              fso={fso}
               online={!offline}
               degraded={degraded}
             />
 
             <div className="flex flex-col gap-3 min-w-0">
-              <LinkQualityOverlay
-                state={link.state}
-                qualityPct={link.qualityPct}
-                rssiDbm={link.rssiDbm}
-                snrDb={link.snrDb}
-                berEstimate={link.berEstimate}
-                latencyMsAvg={link.latencyMsAvg}
-              />
               <FsoBeam
                 state={link.state}
                 qualityPct={link.qualityPct}
@@ -114,7 +94,7 @@ export default function TopologyPage() {
                 </span>
                 <span className="flex items-center gap-1.5">
                   <Radio size={10} className="text-[color:var(--color-cyan-300)]" />
-                  <span>FSO Optical Link</span>
+                  <span>FSO Cable · simulating Free-Space Optics</span>
                 </span>
                 <span className="font-mono tabular">
                   {formatNumber(Math.round(latest?.rxPps ?? 0))} pps RX
@@ -124,26 +104,33 @@ export default function TopologyPage() {
 
             <EndpointBadge
               side="B"
-              title={ENDPOINT_B.title}
-              subtitle={ENDPOINT_B.subtitle}
-              mac={ENDPOINT_B.mac}
-              lan={ENDPOINT_B.lan}
-              fso={ENDPOINT_B.fso}
+              title="GW-B"
+              subtitle="fso_gw_runner"
+              mac={GW_B_MAC}
+              lan={lan}
+              fso={fso}
               online={!offline}
               degraded={degraded}
             />
           </div>
 
-          {/* Row 2: client branches */}
           <div className="mt-4 grid grid-cols-[auto_1fr_auto] gap-6">
-            <ClientBranch side="A" clients={CLIENTS_A} dim={offline} />
-            <div /> {/* spacer under the beam */}
-            <ClientBranch side="B" clients={CLIENTS_B} dim={offline} />
+            <ClientBranch side="A" clients={[{ name: WIN1.name, ip: WIN1.ip }]} dim={offline} />
+            <div />
+            <ClientBranch side="B" clients={[{ name: WIN2.name, ip: WIN2.ip }]} dim={offline} />
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
+            <div className="text-center">
+              <span className="font-mono normal-case tracking-normal">{WIN1.mac}</span>
+            </div>
+            <div className="text-center">
+              <span className="font-mono normal-case tracking-normal">{WIN2.mac}</span>
+            </div>
           </div>
         </div>
       </GlassPanel>
 
-      {/* Event summary strip — critical alerts from the feed */}
       <GlassPanel label="Recent Link Events" trailing={
         <span className="text-[10px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
           From live stream
@@ -157,30 +144,17 @@ export default function TopologyPage() {
           <ul className="space-y-1.5">
             {snap.alerts.slice(0, 6).map((a) => {
               const color =
-                a.severity === "critical"
-                  ? "var(--color-danger)"
-                  : a.severity === "warning"
-                  ? "var(--color-warning)"
-                  : "var(--color-cyan-500)";
+                a.severity === "critical" ? "var(--color-danger)"
+                : a.severity === "warning" ? "var(--color-warning)"
+                : "var(--color-cyan-500)";
               const t = new Date(a.t).toLocaleTimeString([], {
-                hour: "2-digit",
-                minute: "2-digit",
-                second: "2-digit",
+                hour: "2-digit", minute: "2-digit", second: "2-digit",
               });
               return (
                 <li key={a.id} className="flex items-start gap-3 text-xs">
-                  <AlertTriangle
-                    size={12}
-                    style={{ color, flexShrink: 0 }}
-                    className="mt-0.5"
-                  />
-                  <span className="font-mono tabular text-[color:var(--color-text-muted)] shrink-0">
-                    {t}
-                  </span>
-                  <span
-                    className="font-semibold tracking-[0.1em] uppercase text-[10px] shrink-0"
-                    style={{ color }}
-                  >
+                  <AlertTriangle size={12} style={{ color, flexShrink: 0 }} className="mt-0.5" />
+                  <span className="font-mono tabular text-[color:var(--color-text-muted)] shrink-0">{t}</span>
+                  <span className="font-semibold tracking-[0.1em] uppercase text-[10px] shrink-0" style={{ color }}>
                     {a.module}
                   </span>
                   <span className="text-[color:var(--color-text-secondary)]">{a.message}</span>

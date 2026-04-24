@@ -1,234 +1,157 @@
 /**
- * Phase 1 mock telemetry generator.
- * Produces a realistic-feeling stream of data using bounded random walks.
- * Will be replaced by WebSocket feed from FastAPI bridge in Phase 2.
+ * Last-resort local mock — used only when the bridge WebSocket is
+ * unreachable. Matches the same TelemetrySnapshot schema the bridge
+ * emits (which in turn mirrors the real C counters).
+ *
+ * Kept deliberately tiny: seven counters walking up at a steady rate,
+ * no synthesized optical telemetry, no per-stage queue depths. If the
+ * bridge comes back up the UI switches away from this within 3 seconds.
  */
 
-import type {
-  AlertEvent,
-  BurstHistogramBucket,
-  ErrorMetrics,
-  LinkStatus,
-  PipelineStageStats,
-  SystemInfo,
-  TelemetrySnapshot,
-  ThroughputSample,
-} from "@/types/telemetry";
+import type { TelemetrySnapshot } from "@/types/telemetry";
 
-const HISTORY_SAMPLES = 300; // 5 min @ 1Hz
+const HISTORY_SAMPLES = 300;
 
-// ---- Random walk primitives --------------------------------------------------
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.max(lo, Math.min(hi, v));
-}
-
-function walk(current: number, step: number, lo: number, hi: number): number {
-  return clamp(current + (Math.random() - 0.5) * step * 2, lo, hi);
-}
-
-// ---- Internal simulation state (module-level, persists across calls) ---------
-
-interface SimState {
+interface Sim {
   lastT: number;
   txBps: number;
   rxBps: number;
-  txPps: number;
-  rxPps: number;
-  history: ThroughputSample[];
-  qualityPct: number;
-  latencyMs: number;
+  ingressPkts: number;
+  txPkts: number;
+  rxPkts: number;
   blocksAttempted: number;
   blocksRecovered: number;
   blocksFailed: number;
-  recoveredPackets: number;
-  lostBlocks: number;
+  lostSymbols: number;
+  totalSymbols: number;
   crcDrops: number;
-  uptimeStart: number;
-  alerts: AlertEvent[];
+  history: TelemetrySnapshot["throughput"];
+  uptimeStartMs: number;
 }
 
-let state: SimState | null = null;
+let state: Sim | null = null;
 
-function initState(): SimState {
+function fresh(): Sim {
   const now = Date.now();
-  const history: ThroughputSample[] = [];
-  for (let i = HISTORY_SAMPLES - 1; i >= 0; i--) {
-    history.push({
-      t: now - i * 1000,
-      txBps: 560e6 + Math.random() * 40e6,
-      rxBps: 555e6 + Math.random() * 40e6,
-      txPps: 50000 + Math.random() * 3000,
-      rxPps: 49500 + Math.random() * 3000,
-    });
-  }
   return {
     lastT: now,
-    txBps: 572e6,
-    rxBps: 568e6,
-    txPps: 51236,
-    rxPps: 51102,
-    history,
-    qualityPct: 98.7,
-    latencyMs: 1.62,
-    blocksAttempted: 192_530,
-    blocksRecovered: 192_434,
-    blocksFailed: 12,
-    recoveredPackets: 3_847,
-    lostBlocks: 8,
-    crcDrops: 46,
-    uptimeStart: now - 12 * 86400e3 - 4 * 3600e3 - 32 * 60e3,
-    alerts: seedAlerts(now),
+    txBps: 40e6,
+    rxBps: 38e6,
+    ingressPkts: 0,
+    txPkts: 0,
+    rxPkts: 0,
+    blocksAttempted: 0,
+    blocksRecovered: 0,
+    blocksFailed: 0,
+    lostSymbols: 0,
+    totalSymbols: 0,
+    crcDrops: 0,
+    history: [],
+    uptimeStartMs: now,
   };
 }
 
-function seedAlerts(now: number): AlertEvent[] {
-  const mk = (
-    offsetSec: number,
-    severity: AlertEvent["severity"],
-    module: string,
-    message: string,
-  ): AlertEvent => ({
-    id: `${now - offsetSec * 1000}-${module}`,
-    t: now - offsetSec * 1000,
-    severity,
-    module,
-    message,
-  });
-  return [
-    mk(127, "info", "LINK", "Link quality recovered"),
-    mk(144, "warning", "LATENCY", "High latency detected (4.2 ms)"),
-    mk(223, "info", "FEC", "FEC recovery rate improved"),
-    mk(264, "critical", "BURST", "Burst loss detected — 8 symbols"),
-    mk(368, "info", "CONFIG", "Configuration applied"),
-    mk(512, "warning", "RX", "Symbol queue depth nearing threshold"),
-  ];
+function clamp(v: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, v));
+}
+function walk(v: number, step: number, lo: number, hi: number) {
+  return clamp(v + (Math.random() - 0.5) * step * 2, lo, hi);
 }
 
-function step(s: SimState): SimState {
-  const now = Date.now();
-  const dtMs = now - s.lastT;
+const K = 8, M = 4, DEPTH = 2, SYMBOL_SIZE = 1500;
 
-  // Throughput random-walks around ~570 Mbps
-  s.txBps = walk(s.txBps, 8e6, 420e6, 680e6);
-  s.rxBps = walk(s.rxBps, 8e6, 420e6, 680e6);
-  s.txPps = walk(s.txPps, 800, 42000, 58000);
-  s.rxPps = walk(s.rxPps, 800, 42000, 58000);
+function step(s: Sim) {
+  const now = Date.now();
+  const dtS = Math.max(0.001, (now - s.lastT) / 1000);
+
+  s.txBps = walk(s.txBps, 1.5e6, 20e6, 55e6);
+  s.rxBps = walk(s.rxBps, 1.5e6, 18e6, 52e6);
+
+  const avgPkt = 1200;
+  const txPps = s.txBps / 8 / avgPkt;
+  const rxPps = s.rxBps / 8 / avgPkt;
+  const dTxPkts = Math.floor(txPps * dtS);
+  const dRxPkts = Math.floor(rxPps * dtS);
+  s.ingressPkts += dTxPkts;
+  // ~K+M wire symbols per ingress packet (for avg_pkt < symbol_size)
+  s.txPkts += Math.floor(dTxPkts * (K + M) / K);
+  s.rxPkts += dRxPkts;
+
+  const blocksThisTick = Math.max(1, Math.floor(dRxPkts));
+  s.blocksAttempted += blocksThisTick;
+  const fails = Math.floor(blocksThisTick * 0.001 + Math.random());
+  s.blocksFailed += fails;
+  s.blocksRecovered += blocksThisTick - fails;
+  s.totalSymbols += blocksThisTick * (K + M);
+  s.lostSymbols += fails * (M + 1) + (Math.random() < 0.1 ? 1 : 0);
+  if (Math.random() < 0.05) s.crcDrops++;
 
   s.history.push({
     t: now,
     txBps: s.txBps,
     rxBps: s.rxBps,
-    txPps: s.txPps,
-    rxPps: s.rxPps,
+    txPps,
+    rxPps,
   });
-  while (s.history.length > HISTORY_SAMPLES) s.history.shift();
-
-  // Link metrics
-  s.qualityPct = walk(s.qualityPct, 0.15, 95, 99.9);
-  s.latencyMs = walk(s.latencyMs, 0.08, 0.9, 2.6);
-
-  // FEC block counters grow monotonically
-  const blocksThisTick = Math.floor(dtMs * 0.08 + Math.random() * 4);
-  s.blocksAttempted += blocksThisTick;
-  s.blocksRecovered += Math.max(0, blocksThisTick - (Math.random() < 0.03 ? 1 : 0));
-  if (Math.random() < 0.02) s.blocksFailed += 1;
-  if (Math.random() < 0.15) s.recoveredPackets += Math.floor(Math.random() * 3);
-  if (Math.random() < 0.01) s.lostBlocks += 1;
-  if (Math.random() < 0.06) s.crcDrops += 1;
+  if (s.history.length > HISTORY_SAMPLES) s.history.shift();
 
   s.lastT = now;
-  return s;
 }
-
-// ---- Public getters ----------------------------------------------------------
-
-function link(s: SimState): LinkStatus {
-  return {
-    state: s.qualityPct > 96 ? "online" : s.qualityPct > 88 ? "degraded" : "offline",
-    qualityPct: s.qualityPct,
-    rssiDbm: -21.3 + (Math.random() - 0.5) * 1.8,
-    snrDb: 28.6 + (Math.random() - 0.5) * 1.2,
-    berEstimate: 1.2e-9 * (1 + (Math.random() - 0.5) * 0.6),
-    latencyMsAvg: s.latencyMs,
-    latencyMsMax: s.latencyMs + 1.8 + Math.random() * 1.2,
-    uptimeSec: (Date.now() - s.uptimeStart) / 1000,
-  };
-}
-
-function errors(s: SimState): ErrorMetrics {
-  const totalSymbols = s.blocksAttempted * 14;
-  const lostSymbols = s.blocksFailed * 14 + s.crcDrops;
-  return {
-    ber: totalSymbols > 0 ? lostSymbols / (totalSymbols * 8 * 800) : null,
-    flrPct: s.blocksAttempted > 0 ? s.blocksFailed / s.blocksAttempted : 0,
-    crcDrops: s.crcDrops,
-    recoveredPackets: s.recoveredPackets,
-    lostBlocks: s.lostBlocks,
-    blocksAttempted: s.blocksAttempted,
-    blocksRecovered: s.blocksRecovered,
-    blocksFailed: s.blocksFailed,
-  };
-}
-
-function pipeline(s: SimState): PipelineStageStats[] {
-  const base = s.txPps;
-  return [
-    { name: "LAN RX", queueDepth: Math.floor(Math.random() * 12), processingUs: 0.4, throughputPps: base, healthy: true },
-    { name: "Fragment", queueDepth: Math.floor(Math.random() * 8), processingUs: 0.8, throughputPps: base * 1.8, healthy: true },
-    { name: "FEC Encode", queueDepth: Math.floor(Math.random() * 24), processingUs: 3.2, throughputPps: base * 1.8, healthy: true },
-    { name: "Interleave", queueDepth: Math.floor(Math.random() * 18), processingUs: 1.1, throughputPps: base * 1.8, healthy: true },
-    { name: "FSO TX", queueDepth: Math.floor(Math.random() * 10), processingUs: 0.6, throughputPps: base * 1.8, healthy: true },
-    { name: "FSO RX", queueDepth: Math.floor(Math.random() * 10), processingUs: 0.5, throughputPps: base * 1.8, healthy: true },
-    { name: "Deinterleave", queueDepth: Math.floor(Math.random() * 22), processingUs: 1.3, throughputPps: base * 1.8, healthy: true },
-    { name: "FEC Decode", queueDepth: Math.floor(Math.random() * 28), processingUs: 4.1, throughputPps: base * 1.8, healthy: true },
-    { name: "Reassemble", queueDepth: Math.floor(Math.random() * 6), processingUs: 0.7, throughputPps: base, healthy: true },
-    { name: "LAN TX", queueDepth: Math.floor(Math.random() * 12), processingUs: 0.4, throughputPps: base, healthy: true },
-  ];
-}
-
-function burstHistogram(): BurstHistogramBucket[] {
-  return [
-    { label: "1", count: 1240 + Math.floor(Math.random() * 50) },
-    { label: "2-5", count: 380 + Math.floor(Math.random() * 20) },
-    { label: "6-10", count: 92 + Math.floor(Math.random() * 8) },
-    { label: "11-20", count: 34 },
-    { label: "21-50", count: 12 },
-    { label: "51-100", count: 4 },
-    { label: "101-500", count: 1 },
-    { label: "501+", count: 0 },
-  ];
-}
-
-function system(s: SimState): SystemInfo {
-  return {
-    version: "v3.1.0-phase8",
-    build: "a202b70",
-    configProfile: "LAB-TEST",
-    gatewayId: "FSO-GW-001",
-    firmware: "3.1.7",
-    cpuPct: 18 + (Math.random() - 0.5) * 6,
-    memoryPct: 42 + (Math.random() - 0.5) * 4,
-    temperatureC: 48 + (Math.random() - 0.5) * 2,
-    fpgaAccel: true,
-  };
-}
-
-// ---- Public API --------------------------------------------------------------
 
 export function snapshot(): TelemetrySnapshot {
-  if (!state) state = initState();
-  state = step(state);
+  if (!state) state = fresh();
+  step(state);
+  const s = state;
+
+  const qualityPct = s.blocksAttempted > 0
+    ? (s.blocksRecovered / s.blocksAttempted) * 100
+    : 100;
+  const linkState: TelemetrySnapshot["link"]["state"] =
+    qualityPct > 99.5 ? "online" : qualityPct > 95 ? "degraded" : "offline";
+
   return {
     source: "mock-local",
     generatedAt: Date.now(),
-    link: link(state),
-    throughput: [...state.history],
-    errors: errors(state),
-    pipeline: pipeline(state),
-    burstHistogram: burstHistogram(),
-    system: system(state),
-    alerts: state.alerts,
+    link: {
+      state: linkState,
+      qualityPct,
+      uptimeSec: (Date.now() - s.uptimeStartMs) / 1000,
+    },
+    throughput: [...s.history],
+    errors: {
+      symbolLossRatio: s.totalSymbols > 0 ? s.lostSymbols / s.totalSymbols : null,
+      blockFailRatio: s.blocksAttempted > 0 ? s.blocksFailed / s.blocksAttempted : 0,
+      crcDrops: s.crcDrops,
+      recoveredPackets: s.rxPkts,
+      failedPackets: s.blocksFailed,
+      blocksAttempted: s.blocksAttempted,
+      blocksRecovered: s.blocksRecovered,
+      blocksFailed: s.blocksFailed,
+    },
+    burstHistogram: [
+      { label: "1",       count: Math.floor(s.blocksAttempted * 0.002) },
+      { label: "2-5",     count: s.blocksFailed },
+      { label: "6-10",    count: 0 },
+      { label: "11-50",   count: 0 },
+      { label: "51-100",  count: 0 },
+      { label: "101-500", count: 0 },
+      { label: "501+",    count: 0 },
+    ],
+    decoderStress: {
+      blocksWithLoss: s.blocksFailed + Math.floor(s.blocksRecovered * 0.001),
+      worstHolesInBlock: s.blocksFailed > 0 ? M + 1 : 0,
+      totalHolesInBlocks: s.lostSymbols,
+      recoverableBursts: Math.floor(s.blocksRecovered * 0.001),
+      criticalBursts: 0,
+      burstsExceedingFecSpan: 0,
+      configuredFecBurstSpan: M * DEPTH,
+    },
+    configEcho: {
+      k: K, m: M, depth: DEPTH, symbolSize: SYMBOL_SIZE,
+      lanIface: "enp1s0f0np0", fsoIface: "enp1s0f1np1",
+      internalSymbolCrc: true,
+    },
+    alerts: [],
   };
 }
 

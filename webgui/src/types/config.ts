@@ -1,3 +1,7 @@
+/**
+ * Mirrors `struct config` in include/config.h. There are no extra UI-only
+ * fields here — every parameter maps to a CLI flag the daemon accepts.
+ */
 export interface GatewayConfig {
   lan_iface: string;
   fso_iface: string;
@@ -6,7 +10,6 @@ export interface GatewayConfig {
   depth: number;
   symbol_size: number;
   internal_symbol_crc: boolean;
-  profile_name: string;
 }
 
 export interface ConfigPreset {
@@ -16,36 +19,45 @@ export interface ConfigPreset {
   config: Partial<GatewayConfig>;
 }
 
+/**
+ * Presets reflect parameter sets actually used in the project:
+ *
+ *  - "phase8"        — fso_gw_runner Phase 8 default (k=2 m=1 depth=2 sym=750)
+ *  - "hw-recommended"— README "Recommended FEC parameters for hardware testing"
+ *  - "two-machine-test" — script default (GW_K=2 GW_M=1 GW_DEPTH=2 GW_SYMBOL_SIZE=750)
+ *  - "high-redundancy"— heavy FEC for lossy channels (m≥k/2, deep interleave)
+ *  - "minimal"        — smallest viable block (k=2 m=1)
+ */
 export const CONFIG_PRESETS: ConfigPreset[] = [
   {
-    id: "low-latency",
-    name: "Low Latency",
-    description: "Minimal block size for fastest end-to-end delivery",
-    config: { k: 2, m: 1, depth: 2, symbol_size: 1500, profile_name: "LOW-LATENCY" },
+    id: "phase8",
+    name: "Phase 8 Default",
+    description: "fso_gw_runner default (UDP-validated in Phase 8 hardware run)",
+    config: { k: 2, m: 1, depth: 2, symbol_size: 750 },
   },
   {
-    id: "lab-test",
-    name: "Lab Test",
-    description: "Balanced defaults for bench experimentation",
-    config: { k: 8, m: 4, depth: 16, symbol_size: 800, profile_name: "LAB-TEST" },
+    id: "hw-recommended",
+    name: "HW Recommended",
+    description: "README recommended set for hardware testing (50% overhead, MTU)",
+    config: { k: 8, m: 4, depth: 2, symbol_size: 1500 },
   },
   {
-    id: "high-throughput",
-    name: "High Throughput",
-    description: "Large blocks, minimal interleaving overhead",
-    config: { k: 16, m: 4, depth: 8, symbol_size: 1500, profile_name: "HIGH-THROUGHPUT" },
+    id: "two-machine-test",
+    name: "Two-Machine Test",
+    description: "scripts/two_machine_run_test.sh defaults",
+    config: { k: 2, m: 1, depth: 2, symbol_size: 750 },
   },
   {
-    id: "max-resilience",
-    name: "Max Resilience",
-    description: "Heavy redundancy and deep interleaving for harsh channels",
-    config: { k: 8, m: 8, depth: 32, symbol_size: 800, profile_name: "MAX-RESILIENCE" },
+    id: "high-redundancy",
+    name: "High Redundancy",
+    description: "Heavy FEC + deep interleaving for lossy channels",
+    config: { k: 8, m: 8, depth: 8, symbol_size: 1500 },
   },
   {
-    id: "storm",
-    name: "Storm Conditions",
-    description: "Maximum robustness for severe weather / heavy fade",
-    config: { k: 4, m: 8, depth: 32, symbol_size: 600, profile_name: "STORM" },
+    id: "minimal",
+    name: "Minimal",
+    description: "Smallest viable block — useful for low-rate / control traffic",
+    config: { k: 2, m: 1, depth: 2, symbol_size: 1500 },
   },
 ];
 

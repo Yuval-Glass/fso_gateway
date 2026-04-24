@@ -7,17 +7,16 @@ export interface LinkSample {
   t: number;
   state: LinkState;
   qualityPct: number;
-  rssiDbm: number | null;
-  snrDb: number | null;
-  berEstimate: number | null;
-  latencyAvgMs: number;
-  latencyMaxMs: number;
+  blockFailRatio: number;
+  symbolLossRatio: number | null;
+  crcDrops: number;
+  blocksAttempted: number;
 }
 
 export interface FadeEvent {
   id: string;
   tStart: number;
-  tEnd: number | null; // null → ongoing
+  tEnd: number | null;
   fromState: LinkState;
   toState: LinkState;
   lowestQualityPct: number;
@@ -27,15 +26,12 @@ export interface FadeEvent {
 export interface LinkHistoryView {
   samples: LinkSample[];
   fades: FadeEvent[];
-  /** Fraction of samples where state === online (0..1). */
   uptimeRatio: number;
-  /** ms since last state change. */
   streakMs: number;
-  /** ms since mount (for "observed for" display). */
   observedMs: number;
 }
 
-const MAX_SAMPLES = 180; // 3 min at 1Hz
+const MAX_SAMPLES = 180;
 
 export function useLinkHistory(snap: TelemetrySnapshot | null): LinkHistoryView {
   const [samples, setSamples] = useState<LinkSample[]>([]);
@@ -52,11 +48,10 @@ export function useLinkHistory(snap: TelemetrySnapshot | null): LinkHistoryView 
       t: now,
       state: l.state,
       qualityPct: l.qualityPct,
-      rssiDbm: l.rssiDbm,
-      snrDb: l.snrDb,
-      berEstimate: l.berEstimate,
-      latencyAvgMs: l.latencyMsAvg,
-      latencyMaxMs: l.latencyMsMax,
+      blockFailRatio: snap.errors.blockFailRatio,
+      symbolLossRatio: snap.errors.symbolLossRatio,
+      crcDrops: snap.errors.crcDrops,
+      blocksAttempted: snap.errors.blocksAttempted,
     };
 
     setSamples((prev) => {
@@ -67,8 +62,6 @@ export function useLinkHistory(snap: TelemetrySnapshot | null): LinkHistoryView 
       return next;
     });
 
-    // Fade-event tracking: record every online → (degraded|offline) transition
-    // and close it when we return to online.
     const prevState = lastState.current;
     if (prevState === null) {
       streakStart.current = now;
@@ -94,15 +87,10 @@ export function useLinkHistory(snap: TelemetrySnapshot | null): LinkHistoryView 
           if (last.tEnd !== null) return prev;
           return [
             ...prev.slice(0, -1),
-            {
-              ...last,
-              tEnd: now,
-              durationMs: now - last.tStart,
-            },
+            { ...last, tEnd: now, durationMs: now - last.tStart },
           ];
         });
       } else {
-        // degraded → offline or offline → degraded: extend active fade
         setFades((prev) => {
           if (prev.length === 0) return prev;
           const last = prev[prev.length - 1];
@@ -113,17 +101,14 @@ export function useLinkHistory(snap: TelemetrySnapshot | null): LinkHistoryView 
           ];
         });
       }
-    } else {
-      // Same state: update lowest quality on the currently-open fade
-      if (l.state !== "online") {
-        setFades((prev) => {
-          if (prev.length === 0) return prev;
-          const last = prev[prev.length - 1];
-          if (last.tEnd !== null) return prev;
-          if (l.qualityPct >= last.lowestQualityPct) return prev;
-          return [...prev.slice(0, -1), { ...last, lowestQualityPct: l.qualityPct }];
-        });
-      }
+    } else if (l.state !== "online") {
+      setFades((prev) => {
+        if (prev.length === 0) return prev;
+        const last = prev[prev.length - 1];
+        if (last.tEnd !== null) return prev;
+        if (l.qualityPct >= last.lowestQualityPct) return prev;
+        return [...prev.slice(0, -1), { ...last, lowestQualityPct: l.qualityPct }];
+      });
     }
 
     lastState.current = l.state;
@@ -132,7 +117,6 @@ export function useLinkHistory(snap: TelemetrySnapshot | null): LinkHistoryView 
   const uptimeRatio = samples.length === 0
     ? 1
     : samples.filter((s) => s.state === "online").length / samples.length;
-
   const streakMs = streakStart.current ? Date.now() - streakStart.current : 0;
   const observedMs = Date.now() - mountedAt.current;
 

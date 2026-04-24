@@ -2,7 +2,6 @@
 
 import { AlertTriangle, Check, Play, RotateCcw, Save, Square, Undo2 } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
-import { NumberField } from "@/components/primitives/NumberField";
 import { Slider } from "@/components/primitives/Slider";
 import { TactileButton } from "@/components/primitives/TactileButton";
 import { TextField } from "@/components/primitives/TextField";
@@ -139,20 +138,13 @@ export default function ConfigurationPage() {
             </div>
           </GlassPanel>
 
-          <GlassPanel label="Integrity & Profile">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-1">
+          <GlassPanel label="Symbol Integrity">
+            <div className="pt-1">
               <Toggle
                 label="Internal Symbol CRC-32C"
                 checked={d.internal_symbol_crc}
                 onChange={(v) => cfg.update("internal_symbol_crc", v)}
-                description="Per-symbol CRC; invalid symbols are treated as erasures on RX."
-              />
-              <TextField
-                label="Profile Name"
-                value={d.profile_name}
-                onChange={(v) => cfg.update("profile_name", v)}
-                maxLength={32}
-                mono
+                description="Per-symbol CRC-32C (Castagnoli) — invalid symbols are dropped on RX and treated as erasures by the FEC layer."
               />
             </div>
           </GlassPanel>

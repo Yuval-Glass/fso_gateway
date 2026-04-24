@@ -152,11 +152,21 @@ export default function FecAnalyticsPage() {
           }
         />
         <MetricCard
-          label="BER (est.)"
-          value={e.ber != null ? e.ber.toExponential(1) : "—"}
-          tone={e.ber != null && e.ber > 1e-6 ? "warning" : "success"}
+          label="Symbol Loss"
+          value={
+            e.symbolLossRatio == null ? "—"
+            : e.symbolLossRatio === 0 ? "0"
+            : e.symbolLossRatio < 1e-4 ? e.symbolLossRatio.toExponential(1)
+            : formatPercent(e.symbolLossRatio, 3)
+          }
+          tone={
+            e.symbolLossRatio == null ? "neutral"
+            : e.symbolLossRatio > 1e-3 ? "danger"
+            : e.symbolLossRatio > 1e-4 ? "warning"
+            : "success"
+          }
           icon={<ShieldX size={14} />}
-          sub={<span className="text-[color:var(--color-text-secondary)]">From lost symbols</span>}
+          sub={<span className="text-[color:var(--color-text-secondary)]">lost_symbols / total</span>}
         />
         <MetricCard
           label="Critical Bursts"
@@ -214,19 +224,24 @@ export default function FecAnalyticsPage() {
         <ul className="text-[11px] space-y-1.5 py-1 text-[color:var(--color-text-secondary)]">
           <li>
             <span className="font-mono text-[color:var(--color-text-primary)]">recovery_rate</span> =
-            blocks_recovered / blocks_attempted
+            blocks_recovered / blocks_attempted (both from stats_container).
           </li>
           <li>
-            <span className="font-mono text-[color:var(--color-text-primary)]">ber_est</span> =
-            lost_symbols / (total_symbols × symbol_size × 8)
+            <span className="font-mono text-[color:var(--color-text-primary)]">symbol_loss</span> =
+            lost_symbols / total_symbols (aggregated from per-block holes).
           </li>
           <li>
             <span className="font-mono text-[color:var(--color-text-primary)]">critical_burst</span> =
-            bursts whose length exceeds the configured FEC span (m × depth symbols).
+            bursts whose length exceeds the configured FEC span
+            (<span className="font-mono">m × depth</span> symbols).
           </li>
           <li>
             <span className="font-mono text-[color:var(--color-text-primary)]">blocks/sec</span> is derived
             client-side from the cumulative counter deltas.
+          </li>
+          <li>
+            The burst histogram only tracks per-block hole counts; wire-level
+            burst patterns across blocks are not instrumented.
           </li>
         </ul>
       </GlassPanel>
@@ -249,7 +264,7 @@ function FecConfigPanel({ snap }: { snap: TelemetrySnapshot }) {
   return (
     <GlassPanel label="FEC Configuration" trailing={
       <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-cyan-300)]">
-        {snap.system.configProfile}
+        {echo ? `K=${echo.k} M=${echo.m} depth=${echo.depth}` : "—"}
       </span>
     }>
       <div className="grid grid-cols-2 gap-3">
@@ -267,14 +282,14 @@ function FecConfigPanel({ snap }: { snap: TelemetrySnapshot }) {
       </div>
       <div className="mt-4 pt-3 border-t border-[color:var(--color-border-hair)]">
         <div className="text-[10px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] mb-2">
-          System
+          Interfaces
         </div>
         <ul className="text-[11px] space-y-1.5">
-          <KV label="Gateway" value={snap.system.gatewayId} mono />
-          <KV label="Firmware" value={snap.system.firmware} mono />
-          <KV label="Build" value={snap.system.build} mono />
-          <KV label="FPGA Accel" value={snap.system.fpgaAccel ? "Enabled" : "Disabled"}
-              tone={snap.system.fpgaAccel ? "success" : "neutral"} />
+          <KV label="LAN" value={echo?.lanIface ?? "—"} mono />
+          <KV label="FSO" value={echo?.fsoIface ?? "—"} mono />
+          <KV label="Symbol size" value={echo ? `${echo.symbolSize} B` : "—"} mono />
+          <KV label="Symbol CRC" value={echo?.internalSymbolCrc ? "CRC-32C" : "Disabled"}
+              tone={echo?.internalSymbolCrc ? "success" : "neutral"} />
         </ul>
       </div>
     </GlassPanel>
