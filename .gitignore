@@ -24,3 +24,7 @@ webgui/server/*.tmp
 # Logs
 *.log
 /tmp/*.log
+
+# Windows/WSL NTFS metadata
+*.Identifier
+*:Zone.Identifier
