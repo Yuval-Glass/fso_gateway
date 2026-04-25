@@ -79,6 +79,48 @@ export interface AlertEvent {
   message: string;
 }
 
+/** Live counters from include/deinterleaver.h dil_stats_t plus the live
+ *  active/ready slot counts. Source: deinterleaver_get_stats(). */
+export interface DilStats {
+  droppedDuplicate: number;
+  droppedFrozen: number;
+  droppedErasure: number;
+  droppedCrcFail: number;
+  evictedFilling: number;
+  evictedDone: number;
+  blocksReady: number;
+  blocksFailedTimeout: number;
+  blocksFailedHoles: number;
+  activeBlocks: number;
+  readyCount: number;
+}
+
+/** Snapshot row from arp_cache_dump(). */
+export interface ArpEntry {
+  ip: string;
+  mac: string;
+  lastSeenMs: number;
+}
+
+/** A block lifecycle event emitted by the deinterleaver's
+ *  block_final or eviction callback, drained on each control_server tick. */
+export type BlockEventReason =
+  | "SUCCESS"
+  | "DECODE_FAILED"
+  | "TIMEOUT"
+  | "TOO_MANY_HOLES"
+  | "EVICTED_FILLING"
+  | "EVICTED_READY"
+  | "NONE"
+  | "UNKNOWN";
+
+export interface BlockEvent {
+  blockId: number;
+  t: number;
+  reason: BlockEventReason;
+  evicted: boolean;
+}
+
 export interface TelemetrySnapshot {
   /** Origin marker. */
   source?: "gateway" | "mock" | "mock-local";
@@ -90,6 +132,12 @@ export interface TelemetrySnapshot {
   decoderStress: DecoderStress;
   configEcho: ConfigEcho;
   alerts: AlertEvent[];
+  /** Live deinterleaver state — present when fso-gw-stats/2+ schema. */
+  dilStats?: DilStats | null;
+  /** Learned proxy-ARP peers (IP↔MAC). */
+  arpEntries?: ArpEntry[];
+  /** Per-block lifecycle events drained from the deinterleaver callbacks. */
+  blockEvents?: BlockEvent[];
 }
 
 export type ConnectionStatus = "connecting" | "live" | "demo";

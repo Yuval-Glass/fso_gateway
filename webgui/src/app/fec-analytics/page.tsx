@@ -219,6 +219,12 @@ export default function FecAnalyticsPage() {
         <StressPanel snap={snap} />
       </div>
 
+      {/* Deinterleaver live state + Block lifecycle event feed */}
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_2fr] gap-4">
+        <DeinterleaverPanel snap={snap} />
+        <BlockEventFeed snap={snap} />
+      </div>
+
       {/* Derivation notes */}
       <GlassPanel label="Derivations">
         <ul className="text-[11px] space-y-1.5 py-1 text-[color:var(--color-text-secondary)]">
@@ -292,6 +298,131 @@ function FecConfigPanel({ snap }: { snap: TelemetrySnapshot }) {
               tone={echo?.internalSymbolCrc ? "success" : "neutral"} />
         </ul>
       </div>
+    </GlassPanel>
+  );
+}
+
+function DeinterleaverPanel({ snap }: { snap: TelemetrySnapshot }) {
+  const dil = snap.dilStats;
+  if (!dil) {
+    return (
+      <GlassPanel label="Deinterleaver State">
+        <div className="py-4 text-[11px] text-[color:var(--color-text-muted)] leading-snug">
+          Live deinterleaver state requires a fso-gw-stats/2 frame from the
+          control_server. Not available from this source.
+        </div>
+      </GlassPanel>
+    );
+  }
+  return (
+    <GlassPanel label="Deinterleaver State"
+      trailing={
+        <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
+          live · slot FSM
+        </span>
+      }
+    >
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <SlotTile label="Active" value={dil.activeBlocks} tone="cyan" />
+        <SlotTile label="Ready" value={dil.readyCount} tone={dil.readyCount > 0 ? "warning" : "success"} />
+      </div>
+      <ul className="text-[11px] space-y-1.5 py-1">
+        <KV label="Blocks ready (cum)"  value={formatNumber(dil.blocksReady)} tone="success" />
+        <KV label="Failed · timeout"    value={formatNumber(dil.blocksFailedTimeout)}
+            tone={dil.blocksFailedTimeout > 0 ? "warning" : "neutral"} />
+        <KV label="Failed · holes"      value={formatNumber(dil.blocksFailedHoles)}
+            tone={dil.blocksFailedHoles > 0 ? "danger" : "neutral"} />
+        <li className="border-t border-[color:var(--color-border-hair)] my-2" />
+        <KV label="Dropped · duplicate" value={formatNumber(dil.droppedDuplicate)} />
+        <KV label="Dropped · frozen"    value={formatNumber(dil.droppedFrozen)} />
+        <KV label="Dropped · erasure"   value={formatNumber(dil.droppedErasure)} />
+        <KV label="Dropped · CRC fail"  value={formatNumber(dil.droppedCrcFail)}
+            tone={dil.droppedCrcFail > 0 ? "warning" : "neutral"} />
+        <li className="border-t border-[color:var(--color-border-hair)] my-2" />
+        <KV label="Evicted · filling"   value={formatNumber(dil.evictedFilling)}
+            tone={dil.evictedFilling > 0 ? "warning" : "neutral"} />
+        <KV label="Evicted · done"      value={formatNumber(dil.evictedDone)}
+            tone={dil.evictedDone > 0 ? "warning" : "neutral"} />
+      </ul>
+      <div className="mt-3 text-[10px] text-[color:var(--color-text-muted)] leading-snug">
+        FSM: <span className="font-mono">EMPTY → FILLING → READY_TO_DECODE → EMPTY</span>.
+        <span className="font-mono"> active</span> = slots in FILLING + READY;
+        <span className="font-mono"> ready</span> = slots awaiting drain.
+        Eviction means a slot was reclaimed before its block was decoded — typically
+        because the depth × 4 slot pool was exhausted.
+      </div>
+    </GlassPanel>
+  );
+}
+
+function SlotTile({ label, value, tone }: { label: string; value: number; tone: "cyan" | "success" | "warning" }) {
+  const color = tone === "warning" ? "var(--color-warning)"
+              : tone === "success" ? "var(--color-success)"
+              : "var(--color-cyan-300)";
+  return (
+    <div className="glass rounded-md px-3 py-2 border-[color:var(--color-border-hair)]">
+      <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
+        {label}
+      </div>
+      <div className="font-display text-2xl font-bold tabular mt-0.5" style={{ color }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function BlockEventFeed({ snap }: { snap: TelemetrySnapshot }) {
+  const events = snap.blockEvents ?? [];
+  const last = events.slice(0, 80);
+
+  const reasonStyle: Record<string, { color: string; label: string }> = {
+    SUCCESS:         { color: "var(--color-success)",   label: "OK" },
+    DECODE_FAILED:   { color: "var(--color-danger)",    label: "DECODE" },
+    TIMEOUT:         { color: "var(--color-warning)",   label: "TIMEOUT" },
+    TOO_MANY_HOLES:  { color: "var(--color-danger)",    label: "HOLES" },
+    EVICTED_FILLING: { color: "var(--color-warning)",   label: "EVICT-F" },
+    EVICTED_READY:   { color: "var(--color-warning)",   label: "EVICT-R" },
+    NONE:            { color: "var(--color-text-muted)", label: "NONE" },
+    UNKNOWN:         { color: "var(--color-text-muted)", label: "?" },
+  };
+
+  return (
+    <GlassPanel label="Block Lifecycle Events"
+      trailing={
+        <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
+          drained from deinterleaver callback ring
+        </span>
+      }
+    >
+      {last.length === 0 ? (
+        <div className="py-8 text-center text-[11px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
+          No block events yet
+        </div>
+      ) : (
+        <ul className="font-mono text-[11px] max-h-[320px] overflow-y-auto space-y-0.5">
+          {last.map((e, i) => {
+            const t = new Date(e.t).toISOString().slice(11, 23);
+            const meta = reasonStyle[e.reason] ?? reasonStyle.UNKNOWN;
+            return (
+              <li
+                key={`${e.blockId}-${e.t}-${i}`}
+                className="grid grid-cols-[auto_auto_auto_1fr] gap-x-3 px-1 -mx-1 rounded hover:bg-white/[0.03]"
+              >
+                <span className="tabular text-[color:var(--color-text-muted)]">{t}</span>
+                <span className="font-semibold tracking-[0.1em]" style={{ color: meta.color }}>
+                  {meta.label.padEnd(7, " ")}
+                </span>
+                <span className="text-[color:var(--color-text-secondary)] tabular">
+                  block_id={e.blockId}
+                </span>
+                <span className="text-[color:var(--color-text-muted)]">
+                  {e.evicted ? "(evicted)" : ""}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </GlassPanel>
   );
 }

@@ -25,6 +25,7 @@ from typing import Any
 RECONNECT_SECONDS = 3.0
 HISTORY_SAMPLES = 300
 ALERT_RING_MAX = 200
+BLOCK_EVENT_RING = 200
 
 
 class GatewaySource:
@@ -37,6 +38,7 @@ class GatewaySource:
         self._prev_raw: dict[str, Any] | None = None
         self._history: list[dict[str, Any]] = []
         self._alerts: list[dict[str, Any]] = []
+        self._block_events: list[dict[str, Any]] = []
 
     def is_connected(self) -> bool:
         return self._connected
@@ -99,7 +101,8 @@ class GatewaySource:
                 raw = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if raw.get("schema") != "fso-gw-stats/1":
+            schema = raw.get("schema", "")
+            if not schema.startswith("fso-gw-stats/"):
                 continue
             self._ingest(raw)
 
@@ -137,6 +140,16 @@ class GatewaySource:
             del self._history[: len(self._history) - HISTORY_SAMPLES]
 
         self._detect_alerts(raw, prev)
+
+        # Drain any block lifecycle events the C side handed us.
+        for ev in raw.get("block_events", []):
+            self._block_events.insert(0, {
+                "blockId":   ev.get("block_id"),
+                "t":         ev.get("ts_ms"),
+                "reason":    ev.get("reason", "UNKNOWN"),
+                "evicted":   bool(ev.get("evicted", 0)),
+            })
+        del self._block_events[BLOCK_EVENT_RING:]
 
     def _detect_alerts(self, raw: dict[str, Any], prev: dict[str, Any]) -> None:
         stats = raw["stats"]
@@ -247,6 +260,33 @@ class GatewaySource:
             "internalSymbolCrc": bool(cfg.get("internal_symbol_crc", True)),
         }
 
+        # dil_stats — present in fso-gw-stats/2+ frames
+        dil = raw.get("dil_stats")
+        dil_view = None
+        if isinstance(dil, dict):
+            dil_view = {
+                "droppedDuplicate":     int(dil.get("dropped_duplicate", 0)),
+                "droppedFrozen":        int(dil.get("dropped_frozen", 0)),
+                "droppedErasure":       int(dil.get("dropped_erasure", 0)),
+                "droppedCrcFail":       int(dil.get("dropped_crc_fail", 0)),
+                "evictedFilling":       int(dil.get("evicted_filling", 0)),
+                "evictedDone":          int(dil.get("evicted_done", 0)),
+                "blocksReady":          int(dil.get("blocks_ready", 0)),
+                "blocksFailedTimeout":  int(dil.get("blocks_failed_timeout", 0)),
+                "blocksFailedHoles":    int(dil.get("blocks_failed_holes", 0)),
+                "activeBlocks":         int(dil.get("active_blocks", 0)),
+                "readyCount":           int(dil.get("ready_count", 0)),
+            }
+
+        # arp_cache snapshot — list of {ip, mac, last_seen_ms}
+        arp_entries: list[dict[str, Any]] = []
+        for a in raw.get("arp", []):
+            arp_entries.append({
+                "ip":         str(a.get("ip", "")),
+                "mac":        str(a.get("mac", "")),
+                "lastSeenMs": int(a.get("last_seen_ms", 0)),
+            })
+
         return {
             "source": "gateway",
             "generatedAt": int(time.time() * 1000),
@@ -257,4 +297,7 @@ class GatewaySource:
             "decoderStress": decoder_stress,
             "configEcho": config_echo,
             "alerts": list(self._alerts),
+            "dilStats": dil_view,
+            "arpEntries": arp_entries,
+            "blockEvents": list(self._block_events),
         }

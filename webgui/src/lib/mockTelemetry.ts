@@ -152,6 +152,21 @@ export function snapshot(): TelemetrySnapshot {
       internalSymbolCrc: true,
     },
     alerts: [],
+    dilStats: {
+      droppedDuplicate: 0,
+      droppedFrozen: s.blocksAttempted * 3,
+      droppedErasure: s.lostSymbols,
+      droppedCrcFail: s.crcDrops,
+      evictedFilling: 0,
+      evictedDone: 0,
+      blocksReady: s.blocksRecovered,
+      blocksFailedTimeout: 0,
+      blocksFailedHoles: s.blocksFailed,
+      activeBlocks: 0,
+      readyCount: 0,
+    },
+    arpEntries: [],
+    blockEvents: [],
   };
 }
 

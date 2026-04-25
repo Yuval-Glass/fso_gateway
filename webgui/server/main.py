@@ -34,6 +34,8 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 
+import channel as channel_ctrl
+import experiments as experiments_store
 from config_store import ConfigError, load as config_load, save as config_save, validate as config_validate
 from gateway_source import GatewaySource
 from log_source import LogManager
@@ -109,6 +111,7 @@ class SimState:
     last_t_ms: int = 0
     uptime_start_ms: int = 0
     alerts: list[dict[str, Any]] = field(default_factory=list)
+    block_events: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def fresh(cls) -> "SimState":
@@ -217,6 +220,7 @@ def _step(s: SimState) -> None:
     s.last_t_ms = now_ms
 
     _maybe_emit_alert(s)
+    _maybe_emit_block_events(s)
 
 
 _ALERT_TEMPLATES: list[tuple[str, str, list[str]]] = [
@@ -294,6 +298,59 @@ def _decoder_stress(s: SimState) -> dict[str, Any]:
     }
 
 
+def _dil_stats(s: SimState) -> dict[str, Any]:
+    """Synthesize dil_stats so the UI shows non-zero values in mock mode."""
+    return {
+        "droppedDuplicate":     0,
+        "droppedFrozen":        max(0, s.blocks_attempted * 3),
+        "droppedErasure":       s.lost_symbols,
+        "droppedCrcFail":       s.symbols_dropped_crc,
+        "evictedFilling":       0,
+        "evictedDone":          0,
+        "blocksReady":          s.blocks_attempted,
+        "blocksFailedTimeout":  0,
+        "blocksFailedHoles":    s.blocks_failed,
+        "activeBlocks":         random.randint(0, MOCK_CONFIG["depth"]),
+        "readyCount":           random.randint(0, 2),
+    }
+
+
+def _arp_entries() -> list[dict[str, Any]]:
+    now = int(time.time() * 1000)
+    return [
+        {"ip": "192.168.50.1", "mac": "90:2e:16:d6:96:ba", "lastSeenMs": now - 4000},
+        {"ip": "192.168.50.2", "mac": "c4:ef:bb:5f:cd:5c", "lastSeenMs": now - 2000},
+    ]
+
+
+def _maybe_emit_block_events(s: SimState) -> None:
+    """Generate ~5 SUCCESS events per tick, an occasional failure or eviction."""
+    now = int(time.time() * 1000)
+    base_block = s.blocks_attempted
+    for i in range(5):
+        s.block_events.insert(0, {
+            "blockId":  base_block - i,
+            "t":        now - i,
+            "reason":   "SUCCESS",
+            "evicted":  False,
+        })
+    if random.random() < 0.05:
+        s.block_events.insert(0, {
+            "blockId": base_block + 100,
+            "t":       now,
+            "reason":  random.choice(["TOO_MANY_HOLES", "TIMEOUT", "DECODE_FAILED"]),
+            "evicted": False,
+        })
+    if random.random() < 0.02:
+        s.block_events.insert(0, {
+            "blockId": base_block + 200,
+            "t":       now,
+            "reason":  "EVICTED_FILLING",
+            "evicted": True,
+        })
+    del s.block_events[200:]
+
+
 def _config_echo() -> dict[str, Any]:
     return {
         "k": MOCK_CONFIG["k"],
@@ -318,6 +375,9 @@ def snapshot(s: SimState, source: str = "mock") -> dict[str, Any]:
         "decoderStress": _decoder_stress(s),
         "configEcho": _config_echo(),
         "alerts": s.alerts,
+        "dilStats": _dil_stats(s),
+        "arpEntries": _arp_entries(),
+        "blockEvents": list(s.block_events),
     }
 
 
@@ -555,3 +615,58 @@ async def runs_delete(run_id: int) -> dict[str, Any]:
     if not ok:
         raise HTTPException(status_code=404, detail="run not found")
     return {"deleted": run_id}
+
+
+# ---------------------------------------------------------------------------
+# Channel impairment (tc netem) API
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/channel/netem")
+async def netem_show(iface: str | None = None) -> dict[str, Any]:
+    target = iface or channel_ctrl.DEFAULT_IFACE
+    return await asyncio.to_thread(channel_ctrl.show, target)
+
+
+@app.post("/api/channel/netem")
+async def netem_apply(request: Request) -> dict[str, Any]:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="request body must be JSON")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="expected an object")
+    iface = body.get("iface") or channel_ctrl.DEFAULT_IFACE
+    try:
+        if body.get("clear"):
+            return await asyncio.to_thread(channel_ctrl.clear, iface)
+        enter = float(body.get("enterPct", 0.0))
+        ex    = float(body.get("exitPct", 0.0))
+        loss  = float(body.get("lossPct", 0.0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="enterPct/exitPct/lossPct must be numeric")
+    try:
+        return await asyncio.to_thread(channel_ctrl.apply_gemodel, iface, enter, ex, loss)
+    except channel_ctrl.TcNotAvailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Experiment artefact API (build/stats/experiment_*.txt)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/experiments")
+async def experiments_list() -> dict[str, Any]:
+    items = await asyncio.to_thread(experiments_store.list_experiments)
+    return {"experiments": items}
+
+
+@app.get("/api/experiments/{name}")
+async def experiments_get(name: str) -> dict[str, Any]:
+    try:
+        return await asyncio.to_thread(experiments_store.read_experiment, name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"experiment '{name}' not found")

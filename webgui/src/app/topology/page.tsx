@@ -1,12 +1,13 @@
 "use client";
 
-import { AlertTriangle, Radio } from "lucide-react";
+import { AlertTriangle, Network, Radio } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { ClientBranch } from "@/components/topology/ClientBranch";
 import { EndpointBadge } from "@/components/topology/EndpointBadge";
 import { FsoBeam } from "@/components/topology/FsoBeam";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { formatNumber } from "@/lib/utils";
+import type { ArpEntry } from "@/types/telemetry";
 
 /**
  * Phase 8 two-machine FSO setup (per README):
@@ -131,6 +132,8 @@ export default function TopologyPage() {
         </div>
       </GlassPanel>
 
+      <ArpCachePanel arp={snap.arpEntries ?? []} />
+
       <GlassPanel label="Recent Link Events" trailing={
         <span className="text-[10px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
           From live stream
@@ -165,5 +168,60 @@ export default function TopologyPage() {
         )}
       </GlassPanel>
     </div>
+  );
+}
+
+function ArpCachePanel({ arp }: { arp: ArpEntry[] }) {
+  return (
+    <GlassPanel
+      label="ARP Cache (proxy-ARP)"
+      trailing={
+        <span className="text-[10px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
+          {arp.length} {arp.length === 1 ? "entry" : "entries"} · learned by RX pipeline
+        </span>
+      }
+    >
+      {arp.length === 0 ? (
+        <div className="flex items-center gap-3 py-4 text-[11px] text-[color:var(--color-text-muted)]">
+          <Network size={14} />
+          No peer MACs learned yet — the RX pipeline populates this table when it
+          decodes ARP traffic from the far side.
+        </div>
+      ) : (
+        <ul className="grid grid-cols-1 md:grid-cols-2 gap-2 py-1">
+          {arp.map((e) => {
+            const ageMs = Math.max(0, Date.now() - e.lastSeenMs);
+            const ageStr =
+              ageMs < 60_000 ? `${Math.floor(ageMs / 1000)}s ago`
+              : ageMs < 3_600_000 ? `${Math.floor(ageMs / 60_000)}m ago`
+              : `${Math.floor(ageMs / 3_600_000)}h ago`;
+            return (
+              <li
+                key={e.ip + e.mac}
+                className="glass rounded-md px-3 py-2 flex items-center justify-between gap-3"
+              >
+                <div className="min-w-0">
+                  <div className="font-mono text-[12px] tabular text-[color:var(--color-text-primary)]">
+                    {e.ip}
+                  </div>
+                  <div className="font-mono text-[10px] text-[color:var(--color-text-muted)]">
+                    {e.mac}
+                  </div>
+                </div>
+                <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
+                  {ageStr}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <div className="mt-2 text-[10px] text-[color:var(--color-text-muted)] leading-snug">
+        The TX pipeline answers ARP requests locally for any IP found in this
+        table — see <span className="font-mono">try_proxy_arp()</span> in
+        <span className="font-mono"> src/tx_pipeline.c</span>. Entries expire
+        after 5 minutes of inactivity.
+      </div>
+    </GlassPanel>
   );
 }

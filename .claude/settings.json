@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl *)",
+      "Bash(make)",
+      "Bash(make runner)",
+      "Bash(make cs_demo)",
+      "Bash(make clean)"
+    ]
+  }
+}

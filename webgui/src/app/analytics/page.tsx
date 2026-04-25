@@ -10,6 +10,8 @@ import {
   Database,
   Download,
   FileDown,
+  FileText,
+  Inbox,
   Play,
   Square,
   Trash2,
@@ -19,6 +21,7 @@ import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
 import { TactileButton } from "@/components/primitives/TactileButton";
 import { useRunDetail, useRuns } from "@/lib/useRuns";
+import { useExperimentDetail, useExperiments, type ExperimentSummary } from "@/lib/useExperiments";
 import {
   cn,
   formatBitrate,
@@ -57,7 +60,10 @@ const baseOpts: Partial<EChartsOption> = {
   },
 };
 
+type AnalyticsTab = "runs" | "experiments";
+
 export default function AnalyticsPage() {
+  const [tab, setTab] = useState<AnalyticsTab>("runs");
   const runs = useRuns();
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
@@ -86,26 +92,18 @@ export default function AnalyticsPage() {
 
   const run = detail.detail?.run;
 
+  if (tab === "experiments") {
+    return (
+      <div className="flex flex-col gap-5">
+        <AnalyticsHeader tab={tab} onTab={setTab} />
+        <ExperimentsView />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-5">
-      {/* Header */}
-      <div className="flex items-baseline justify-between">
-        <div>
-          <div className="text-[10px] tracking-[0.3em] uppercase text-[color:var(--color-cyan-300)]">
-            Mission Control
-          </div>
-          <h2 className="font-display text-2xl font-bold tracking-tight text-[color:var(--color-text-primary)] mt-0.5">
-            Analytics
-          </h2>
-          <div className="text-xs text-[color:var(--color-text-secondary)] mt-1">
-            Persisted session recordings — throughput, link quality, and FEC
-            outcomes across all runs ever observed by the bridge.
-          </div>
-        </div>
-        <div className="text-[10px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-          Phase 5 · History
-        </div>
-      </div>
+      <AnalyticsHeader tab={tab} onTab={setTab} />
 
       <div className="grid grid-cols-1 xl:grid-cols-[320px_1fr] gap-4">
         {/* LEFT: run list */}
@@ -188,6 +186,286 @@ export default function AnalyticsPage() {
 /* -------------------------------------------------------------------------- */
 /* Sub-components                                                              */
 /* -------------------------------------------------------------------------- */
+
+function AnalyticsHeader({
+  tab,
+  onTab,
+}: {
+  tab: AnalyticsTab;
+  onTab: (t: AnalyticsTab) => void;
+}) {
+  return (
+    <div className="flex items-end justify-between gap-4 flex-wrap">
+      <div>
+        <div className="text-[10px] tracking-[0.3em] uppercase text-[color:var(--color-cyan-300)]">
+          Mission Control
+        </div>
+        <h2 className="font-display text-2xl font-bold tracking-tight text-[color:var(--color-text-primary)] mt-0.5">
+          Analytics
+        </h2>
+        <div className="text-xs text-[color:var(--color-text-secondary)] mt-1">
+          {tab === "runs"
+            ? "Persisted bridge sessions — throughput, link quality, and FEC outcomes from the running daemon."
+            : "Experiment artefacts dropped by scripts/two_machine_run_test.sh into build/stats/."}
+        </div>
+      </div>
+      <div className="flex items-center rounded-md border border-[color:var(--color-border-subtle)] overflow-hidden">
+        {(["runs", "experiments"] as AnalyticsTab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => onTab(t)}
+            className={cn(
+              "px-3 py-1.5 text-[10px] font-semibold tracking-[0.2em] uppercase transition-colors",
+              tab === t
+                ? "bg-[color:var(--color-cyan-900)]/60 text-[color:var(--color-cyan-300)]"
+                : "text-[color:var(--color-text-secondary)] hover:bg-white/[0.03]",
+            )}
+          >
+            {t === "runs" ? "Bridge Runs" : "Experiments"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ExperimentsView() {
+  const list = useExperiments();
+  const [selected, setSelected] = useState<string | null>(null);
+  const detail = useExperimentDetail(selected);
+
+  // Auto-select most recent on first load.
+  if (selected === null && list.list.length > 0) {
+    setTimeout(() => setSelected(list.list[0].name), 0);
+  }
+
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-[320px_1fr] gap-4">
+      <GlassPanel
+        label="Experiment Files"
+        trailing={
+          <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
+            {list.list.length} {list.list.length === 1 ? "file" : "files"}
+          </span>
+        }
+      >
+        {list.error && (
+          <div className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-danger)] py-1 mb-2">
+            {list.error}
+          </div>
+        )}
+        {list.list.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-8 text-center">
+            <Inbox size={20} className="text-[color:var(--color-text-muted)]" />
+            <div className="text-[11px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
+              No experiment files yet
+            </div>
+            <div className="text-[10px] text-[color:var(--color-text-muted)] max-w-xs">
+              Generated by{" "}
+              <span className="font-mono">scripts/two_machine_run_test.sh</span>{" "}
+              into <span className="font-mono">build/stats/</span>. Override the
+              path with the <span className="font-mono">FSO_EXPERIMENTS_DIR</span>{" "}
+              env var on the bridge.
+            </div>
+          </div>
+        ) : (
+          <ul className="space-y-1.5 max-h-[520px] overflow-y-auto">
+            {list.list.map((it) => (
+              <ExperimentListItem
+                key={it.name}
+                item={it}
+                selected={it.name === selected}
+                onSelect={() => setSelected(it.name)}
+              />
+            ))}
+          </ul>
+        )}
+      </GlassPanel>
+
+      <div className="flex flex-col gap-4 min-w-0">
+        {!detail.detail && !detail.loading ? (
+          <GlassPanel>
+            <div className="py-10 text-center text-[11px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
+              {list.list.length === 0 ? "Nothing to display" : "Pick an experiment to inspect"}
+            </div>
+          </GlassPanel>
+        ) : detail.loading ? (
+          <GlassPanel>
+            <div className="py-10 text-center text-[11px] tracking-[0.22em] uppercase text-[color:var(--color-cyan-300)] breathe">
+              Loading…
+            </div>
+          </GlassPanel>
+        ) : detail.detail ? (
+          <ExperimentDetailView detail={detail.detail} />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function ExperimentListItem({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: ExperimentSummary;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const ts = item.ts;
+  const friendly =
+    ts.length === 15
+      ? `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)} ${ts.slice(9, 11)}:${ts.slice(11, 13)}:${ts.slice(13, 15)}`
+      : ts;
+  return (
+    <li>
+      <button
+        onClick={onSelect}
+        className={cn(
+          "w-full text-left px-2.5 py-2 rounded border transition-all",
+          selected
+            ? "border-[color:var(--color-border-cyan)] bg-[color:var(--color-cyan-900)]/40"
+            : "border-[color:var(--color-border-subtle)] bg-white/[0.02] hover:bg-white/[0.04]",
+        )}
+      >
+        <div className="text-[11px] font-semibold text-[color:var(--color-text-primary)] truncate">
+          {item.name}
+        </div>
+        <div className="flex items-center gap-3 mt-1 text-[10px] font-mono tabular text-[color:var(--color-text-muted)]">
+          <span className="flex items-center gap-1">
+            <Calendar size={9} /> {friendly}
+          </span>
+          <span>{(item.size / 1024).toFixed(1)} KB</span>
+        </div>
+      </button>
+    </li>
+  );
+}
+
+function ExperimentDetailView({
+  detail,
+}: {
+  detail: NonNullable<ReturnType<typeof useExperimentDetail>["detail"]>;
+}) {
+  const s = detail.summary;
+  const params = s.params || {};
+  return (
+    <>
+      <GlassPanel variant="raised" padded={false}>
+        <div className="flex items-start justify-between px-5 py-4 border-b border-[color:var(--color-border-hair)]">
+          <div>
+            <div className="flex items-center gap-2">
+              <FileText size={14} className="text-[color:var(--color-cyan-300)]" />
+              <span className="font-mono text-sm font-semibold text-[color:var(--color-text-primary)]">
+                {detail.name}
+              </span>
+              {s.mode && (
+                <span
+                  className="text-[9px] font-bold tracking-[0.22em] uppercase px-2 py-0.5 rounded-sm"
+                  style={{
+                    color: s.mode.startsWith("BASELINE") ? "var(--color-warning)" : "var(--color-cyan-300)",
+                    background: s.mode.startsWith("BASELINE")
+                      ? "rgba(255, 176, 32, 0.12)"
+                      : "rgba(0, 212, 255, 0.12)",
+                    border: s.mode.startsWith("BASELINE")
+                      ? "1px solid rgba(255, 176, 32, 0.4)"
+                      : "1px solid rgba(0, 212, 255, 0.4)",
+                  }}
+                >
+                  {s.mode}
+                </span>
+              )}
+            </div>
+            <div className="text-[11px] font-mono tabular text-[color:var(--color-text-muted)] mt-1">
+              {(detail.size / 1024).toFixed(1)} KB · {new Date(detail.mtime).toLocaleString()}
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 p-4">
+          <ResultTile
+            label="Throughput"
+            value={s.throughput ? `${s.throughput.value.toFixed(2)} ${s.throughput.unit}` : "—"}
+            tone="cyan"
+            icon={<Zap size={14} />}
+          />
+          <ResultTile
+            label="Total Data"
+            value={s.totalData ? `${s.totalData.value.toFixed(2)} ${s.totalData.unit}` : "—"}
+            icon={<Download size={14} />}
+          />
+          <ResultTile
+            label="Loss %"
+            value={s.lossPct != null ? `${s.lossPct.toFixed(2)}%` : "—"}
+            tone={s.lossPct != null && s.lossPct > 1 ? "warning" : "success"}
+            icon={<Inbox size={14} />}
+          />
+          <ResultTile
+            label="Protocol"
+            value={s.protocol || "—"}
+            icon={<FileText size={14} />}
+          />
+        </div>
+      </GlassPanel>
+
+      <GlassPanel label="Parameters">
+        <ul className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1.5 py-1">
+          {Object.entries(params).map(([k, v]) => (
+            <li key={k} className="flex items-baseline justify-between gap-2 text-[11px]">
+              <span className="font-mono text-[color:var(--color-text-muted)] tracking-[0.05em]">{k}</span>
+              <span className="font-mono tabular text-[color:var(--color-text-primary)]">{v}</span>
+            </li>
+          ))}
+          {Object.keys(params).length === 0 && (
+            <li className="text-[10px] text-[color:var(--color-text-muted)]">
+              No parameters parsed.
+            </li>
+          )}
+        </ul>
+      </GlassPanel>
+
+      <GlassPanel label="Raw Report" trailing={
+        <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
+          full text from build/stats/
+        </span>
+      }>
+        <pre className="font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap max-h-[480px] overflow-auto bg-black/25 p-3 rounded text-[color:var(--color-text-primary)]">
+{detail.text}
+        </pre>
+      </GlassPanel>
+    </>
+  );
+}
+
+function ResultTile({
+  label,
+  value,
+  tone = "neutral",
+  icon,
+}: {
+  label: string;
+  value: string;
+  tone?: "neutral" | "cyan" | "success" | "warning";
+  icon?: React.ReactNode;
+}) {
+  const color =
+    tone === "cyan" ? "var(--color-cyan-300)"
+    : tone === "success" ? "var(--color-success)"
+    : tone === "warning" ? "var(--color-warning)"
+    : "var(--color-text-primary)";
+  return (
+    <div className="glass rounded-md px-3 py-2.5 border-[color:var(--color-border-hair)]">
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
+          {label}
+        </span>
+        {icon && <span style={{ color, opacity: 0.7 }}>{icon}</span>}
+      </div>
+      <div className="font-display text-base font-semibold tabular truncate" style={{ color }}>
+        {value}
+      </div>
+    </div>
+  );
+}
 
 function RunList({
   runs,
