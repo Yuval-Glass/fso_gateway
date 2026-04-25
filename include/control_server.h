@@ -26,7 +26,9 @@
  * }
  */
 
+#include "arp_cache.h"
 #include "config.h"
+#include "deinterleaver.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -41,6 +43,13 @@ struct control_server_options {
     unsigned int tick_hz;
     /** Optional pointer to live config (echoed in every snapshot). May be NULL. */
     const struct config *gateway_cfg;
+    /** Optional deinterleaver handle. When non-NULL, the server reads dil_stats,
+     *  active/ready counts, and registers per-block lifecycle callbacks so
+     *  block_final/eviction events stream out in the JSON snapshot. */
+    deinterleaver_t *dil;
+    /** Optional ARP cache handle. When non-NULL, the cache contents are dumped
+     *  in every snapshot. */
+    arp_cache_t *arp_cache;
 };
 
 /**

@@ -235,6 +235,8 @@ gateway_t *gateway_create(const struct config *cfg)
     struct control_server_options cs_opts;
     memset(&cs_opts, 0, sizeof(cs_opts));
     cs_opts.gateway_cfg = &gw->cfg;
+    cs_opts.dil         = rx_pipeline_get_deinterleaver(gw->rx_pl);
+    cs_opts.arp_cache   = gw->arp_cache;
     gw->cs = control_server_start(&cs_opts);
     if (gw->cs == NULL) {
         LOG_ERROR("[gateway] control_server_start failed — telemetry socket disabled");

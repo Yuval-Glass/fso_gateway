@@ -193,6 +193,11 @@ void rx_pipeline_destroy(rx_pipeline_t *pl)
     free(pl);
 }
 
+deinterleaver_t *rx_pipeline_get_deinterleaver(rx_pipeline_t *pl)
+{
+    return (pl != NULL) ? pl->dil : NULL;
+}
+
 /* -------------------------------------------------------------------------- */
 /* rx_pipeline_run_once                                                        */
 /* -------------------------------------------------------------------------- */

@@ -8,10 +8,19 @@
  *   - Single concurrent client (the FastAPI bridge). Additional connect
  *     attempts queue in the listen backlog.
  *   - JSON is built with snprintf into a stack buffer — no heap, no deps.
+ *
+ * Additional data exposed (v1.1 schema additions):
+ *   - dil_stats: live deinterleaver counters (evictions, drops by reason,
+ *     blocks failed by timeout vs too-many-holes, active/ready slot counts).
+ *   - block_events: per-block lifecycle events pushed from the deinterleaver
+ *     callbacks into a ring buffer, drained on each snapshot.
+ *   - arp_cache: IP↔MAC table dump (learned peers for proxy-ARP).
  */
 
 #include "control_server.h"
 
+#include "arp_cache.h"
+#include "deinterleaver.h"
 #include "logging.h"
 #include "stats.h"
 
@@ -20,6 +29,7 @@
 #include <inttypes.h>
 #include <poll.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,17 +43,34 @@
 #define DEFAULT_SOCKET_PATH "/tmp/fso_gw.sock"
 #define DEFAULT_TICK_HZ     10u
 #define LISTEN_POLL_MS      200
-#define SNAPSHOT_BUF_SZ     8192
+#define SNAPSHOT_BUF_SZ     32768      /* room for arp + events + stats */
+#define ARP_DUMP_MAX        32
+#define EVENT_RING_CAP      256
+
+struct block_event {
+    uint32_t    block_id;
+    int64_t     ts_ms;
+    uint8_t     reason;      /* deinterleaver_block_final_reason_t cast */
+    uint8_t     is_eviction; /* 1 for eviction-class callbacks */
+};
 
 struct control_server {
     int                       listen_fd;
     char                      socket_path[108]; /* sun_path size */
     unsigned int              tick_hz;
     const struct config      *gateway_cfg;
+    deinterleaver_t          *dil;          /* optional, may be NULL */
+    arp_cache_t              *arp_cache;    /* optional, may be NULL */
     pthread_t                 worker;
     atomic_int                running;
     int                       worker_started;
     struct timespec           start_time;
+
+    /* Block lifecycle event ring — callbacks may fire from any RX thread. */
+    struct block_event        events[EVENT_RING_CAP];
+    int                       events_head;   /* next write slot */
+    int                       events_count;  /* valid entries (<= CAP) */
+    pthread_mutex_t           events_lock;
 };
 
 /* -------------------------------------------------------------------------- */
@@ -68,18 +95,99 @@ static double elapsed_seconds(const struct timespec *start)
 
 static void escape_iface(char *out, size_t out_sz, const char *in)
 {
-    /* Interface names are alphanumeric + ':' + '.' + '-' in practice; just copy
-     * with a defensive truncation. We are not parsing arbitrary user strings.
-     */
     if (in == NULL) {
         if (out_sz > 0) out[0] = '\0';
         return;
     }
     snprintf(out, out_sz, "%s", in);
-    /* Replace any double-quotes defensively to keep JSON well-formed. */
     for (char *p = out; *p; ++p) {
         if (*p == '"' || *p == '\\') *p = '_';
     }
+}
+
+static const char *reason_str(uint8_t r)
+{
+    switch ((deinterleaver_block_final_reason_t)r) {
+        case DIL_BLOCK_FINAL_NONE:                                 return "NONE";
+        case DIL_BLOCK_FINAL_DECODE_SUCCESS:                       return "SUCCESS";
+        case DIL_BLOCK_FINAL_DECODE_FAILED:                        return "DECODE_FAILED";
+        case DIL_BLOCK_FINAL_DISCARDED_TIMEOUT_BEFORE_DECODE:      return "TIMEOUT";
+        case DIL_BLOCK_FINAL_DISCARDED_TOO_MANY_HOLES_BEFORE_DECODE: return "TOO_MANY_HOLES";
+        case DIL_BLOCK_FINAL_DISCARDED_EVICTED_BEFORE_DECODE:      return "EVICTED_FILLING";
+        case DIL_BLOCK_FINAL_DISCARDED_READY_EVICTED_BEFORE_MARK:  return "EVICTED_READY";
+        default:                                                    return "UNKNOWN";
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Block lifecycle event ring                                                 */
+/* -------------------------------------------------------------------------- */
+
+static void events_push(struct control_server *cs, uint32_t block_id,
+                        uint8_t reason, uint8_t is_eviction)
+{
+    pthread_mutex_lock(&cs->events_lock);
+    cs->events[cs->events_head].block_id    = block_id;
+    cs->events[cs->events_head].ts_ms       = now_ms();
+    cs->events[cs->events_head].reason      = reason;
+    cs->events[cs->events_head].is_eviction = is_eviction;
+    cs->events_head = (cs->events_head + 1) % EVENT_RING_CAP;
+    if (cs->events_count < EVENT_RING_CAP) {
+        cs->events_count++;
+    }
+    pthread_mutex_unlock(&cs->events_lock);
+}
+
+/* Drain up to max events into out[] in chronological (oldest-first) order.
+ * Returns the count written. The ring is emptied. */
+static int events_drain(struct control_server *cs, struct block_event *out, int max)
+{
+    int written = 0;
+    pthread_mutex_lock(&cs->events_lock);
+    int count = cs->events_count;
+    if (count > max) count = max;
+    int start = (cs->events_head - cs->events_count + EVENT_RING_CAP) % EVENT_RING_CAP;
+    for (int i = 0; i < count; ++i) {
+        out[written++] = cs->events[(start + i) % EVENT_RING_CAP];
+    }
+    cs->events_count = 0;
+    pthread_mutex_unlock(&cs->events_lock);
+    return written;
+}
+
+static void on_block_final_cb(uint32_t block_id,
+                              deinterleaver_block_final_reason_t reason,
+                              void *user)
+{
+    struct control_server *cs = (struct control_server *)user;
+    events_push(cs, block_id, (uint8_t)reason, 0);
+}
+
+static void on_eviction_cb(uint32_t evicted_block_id,
+                           deinterleaver_block_final_reason_t reason,
+                           const dil_eviction_info_t *info,
+                           void *user)
+{
+    (void)info;  /* snapshot details available for future deeper diagnostics */
+    struct control_server *cs = (struct control_server *)user;
+    events_push(cs, evicted_block_id, (uint8_t)reason, 1);
+}
+
+/* -------------------------------------------------------------------------- */
+/* JSON fragment helpers                                                      */
+/* -------------------------------------------------------------------------- */
+
+/* Append to buf; returns number of bytes written, -1 on overflow. */
+static int append_fmt(char *buf, size_t bufsz, size_t *pos, const char *fmt, ...)
+{
+    if (*pos >= bufsz) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *pos, bufsz - *pos, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= bufsz - *pos) return -1;
+    *pos += (size_t)n;
+    return n;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -87,7 +195,7 @@ static void escape_iface(char *out, size_t out_sz, const char *in)
 /* -------------------------------------------------------------------------- */
 
 static int build_snapshot_json(char *buf, size_t bufsz,
-                               const struct control_server *cs)
+                               struct control_server *cs)
 {
     struct stats_container s;
     memset(&s, 0, sizeof(s));
@@ -106,10 +214,11 @@ static int build_snapshot_json(char *buf, size_t bufsz,
         crc         = cs->gateway_cfg->internal_symbol_crc_enabled;
     }
 
-    int n = snprintf(
-        buf, bufsz,
+    size_t pos = 0;
+
+    if (append_fmt(buf, bufsz, &pos,
         "{"
-        "\"schema\":\"fso-gw-stats/1\","
+        "\"schema\":\"fso-gw-stats/2\","
         "\"ts_ms\":%" PRId64 ","
         "\"uptime_sec\":%.3f,"
         "\"config\":{"
@@ -149,8 +258,7 @@ static int build_snapshot_json(char *buf, size_t bufsz,
             "\"blocks_with_loss\":%" PRIu64 ","
             "\"worst_holes_in_block\":%" PRIu64 ","
             "\"total_holes_in_blocks\":%" PRIu64
-        "}"
-        "}\n",
+        "}",
         now_ms(), elapsed_seconds(&cs->start_time),
         k, m, depth, symbol_size, crc, lan, fso,
         s.ingress_packets, s.ingress_bytes,
@@ -166,12 +274,83 @@ static int build_snapshot_json(char *buf, size_t bufsz,
         s.bursts_exceeding_fec_span, s.configured_fec_burst_span,
         s.recoverable_bursts, s.critical_bursts,
         s.blocks_with_loss, s.worst_holes_in_block, s.total_holes_in_blocks
-    );
+    ) < 0) return -1;
 
-    if (n < 0 || (size_t)n >= bufsz) {
-        return -1;
+    /* ---- dil_stats (optional) ------------------------------------------ */
+    if (cs->dil) {
+        dil_stats_t ds;
+        memset(&ds, 0, sizeof(ds));
+        deinterleaver_get_stats(cs->dil, &ds);
+        int active = deinterleaver_active_blocks(cs->dil);
+        int ready  = deinterleaver_ready_count(cs->dil);
+
+        if (append_fmt(buf, bufsz, &pos,
+            ","
+            "\"dil_stats\":{"
+                "\"dropped_duplicate\":%" PRIu64 ","
+                "\"dropped_frozen\":%" PRIu64 ","
+                "\"dropped_erasure\":%" PRIu64 ","
+                "\"dropped_crc_fail\":%" PRIu64 ","
+                "\"evicted_filling\":%" PRIu64 ","
+                "\"evicted_done\":%" PRIu64 ","
+                "\"blocks_ready\":%" PRIu64 ","
+                "\"blocks_failed_timeout\":%" PRIu64 ","
+                "\"blocks_failed_holes\":%" PRIu64 ","
+                "\"active_blocks\":%d,"
+                "\"ready_count\":%d"
+            "}",
+            ds.dropped_symbols_duplicate, ds.dropped_symbols_frozen,
+            ds.dropped_symbols_erasure, ds.dropped_symbols_crc_fail,
+            ds.evicted_filling_blocks, ds.evicted_done_blocks,
+            ds.blocks_ready, ds.blocks_failed_timeout, ds.blocks_failed_holes,
+            active, ready
+        ) < 0) return -1;
     }
-    return n;
+
+    /* ---- arp_cache dump (optional) ------------------------------------- */
+    if (cs->arp_cache) {
+        struct arp_entry arp[ARP_DUMP_MAX];
+        int n_arp = arp_cache_dump(cs->arp_cache, arp, ARP_DUMP_MAX);
+
+        if (append_fmt(buf, bufsz, &pos, ",\"arp\":[") < 0) return -1;
+        for (int i = 0; i < n_arp; ++i) {
+            uint32_t ip = arp[i].ip_nbo;
+            if (append_fmt(buf, bufsz, &pos,
+                "%s{\"ip\":\"%u.%u.%u.%u\","
+                "\"mac\":\"%02x:%02x:%02x:%02x:%02x:%02x\","
+                "\"last_seen_ms\":%" PRId64 "}",
+                i == 0 ? "" : ",",
+                (ip >> 0) & 0xff, (ip >> 8) & 0xff,
+                (ip >> 16) & 0xff, (ip >> 24) & 0xff,
+                arp[i].mac[0], arp[i].mac[1], arp[i].mac[2],
+                arp[i].mac[3], arp[i].mac[4], arp[i].mac[5],
+                arp[i].last_seen_ms
+            ) < 0) return -1;
+        }
+        if (append_fmt(buf, bufsz, &pos, "]") < 0) return -1;
+    }
+
+    /* ---- block events drained from ring --------------------------------- */
+    {
+        struct block_event evs[EVENT_RING_CAP];
+        int n_ev = events_drain(cs, evs, EVENT_RING_CAP);
+
+        if (append_fmt(buf, bufsz, &pos, ",\"block_events\":[") < 0) return -1;
+        for (int i = 0; i < n_ev; ++i) {
+            if (append_fmt(buf, bufsz, &pos,
+                "%s{\"block_id\":%u,\"ts_ms\":%" PRId64 ","
+                "\"reason\":\"%s\",\"evicted\":%d}",
+                i == 0 ? "" : ",",
+                evs[i].block_id, evs[i].ts_ms,
+                reason_str(evs[i].reason), evs[i].is_eviction
+            ) < 0) return -1;
+        }
+        if (append_fmt(buf, bufsz, &pos, "]") < 0) return -1;
+    }
+
+    if (append_fmt(buf, bufsz, &pos, "}\n") < 0) return -1;
+
+    return (int)pos;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -200,7 +379,11 @@ static int write_all(int fd, const char *buf, size_t len)
 static void *worker_main(void *arg)
 {
     struct control_server *cs = (struct control_server *)arg;
-    char buf[SNAPSHOT_BUF_SZ];
+    char *buf = (char *)malloc(SNAPSHOT_BUF_SZ);
+    if (!buf) {
+        LOG_ERROR("control_server: worker malloc failed");
+        return NULL;
+    }
     const long tick_us = 1000000L / (long)cs->tick_hz;
 
     LOG_INFO("control_server: listening on %s (tick=%uHz)",
@@ -214,24 +397,23 @@ static void *worker_main(void *arg)
             LOG_ERROR("control_server: poll(listen) failed: %s", strerror(errno));
             break;
         }
-        if (pr == 0) continue; /* timeout — re-check running flag */
+        if (pr == 0) continue;
         if (!(pfd.revents & POLLIN)) continue;
 
         int client_fd = accept(cs->listen_fd, NULL, NULL);
         if (client_fd < 0) {
             if (errno == EINTR || errno == EAGAIN) continue;
-            if (errno == EBADF || errno == EINVAL) break; /* listen fd closed */
+            if (errno == EBADF || errno == EINVAL) break;
             LOG_ERROR("control_server: accept failed: %s", strerror(errno));
             continue;
         }
 
         LOG_INFO("control_server: client connected");
 
-        /* Per-tick send loop. Exit on client disconnect or shutdown. */
         struct timespec next;
         clock_gettime(CLOCK_MONOTONIC, &next);
         while (atomic_load(&cs->running)) {
-            int n = build_snapshot_json(buf, sizeof(buf), cs);
+            int n = build_snapshot_json(buf, SNAPSHOT_BUF_SZ, cs);
             if (n < 0) {
                 LOG_ERROR("control_server: snapshot too large for buffer");
                 break;
@@ -241,7 +423,6 @@ static void *worker_main(void *arg)
                 break;
             }
 
-            /* Sleep until next tick; allow early wake for shutdown. */
             next.tv_nsec += tick_us * 1000L;
             while (next.tv_nsec >= 1000000000L) {
                 next.tv_nsec -= 1000000000L;
@@ -253,6 +434,7 @@ static void *worker_main(void *arg)
         close(client_fd);
     }
 
+    free(buf);
     LOG_INFO("control_server: worker exiting");
     return NULL;
 }
@@ -280,22 +462,25 @@ control_server_t *control_server_start(const struct control_server_options *opts
     cs->listen_fd = -1;
     cs->tick_hz = hz;
     cs->gateway_cfg = opts ? opts->gateway_cfg : NULL;
+    cs->dil         = opts ? opts->dil         : NULL;
+    cs->arp_cache   = opts ? opts->arp_cache   : NULL;
     snprintf(cs->socket_path, sizeof(cs->socket_path), "%s", path);
     clock_gettime(CLOCK_MONOTONIC, &cs->start_time);
+    pthread_mutex_init(&cs->events_lock, NULL);
     atomic_store(&cs->running, 1);
 
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) {
         LOG_ERROR("control_server: socket() failed: %s", strerror(errno));
+        pthread_mutex_destroy(&cs->events_lock);
         free(cs);
         return NULL;
     }
 
-    /* Remove stale socket from a previous run. unlink() may fail with ENOENT
-     * which is fine; any other failure means we likely can't bind. */
     if (unlink(path) != 0 && errno != ENOENT) {
         LOG_ERROR("control_server: unlink(%s) failed: %s", path, strerror(errno));
         close(fd);
+        pthread_mutex_destroy(&cs->events_lock);
         free(cs);
         return NULL;
     }
@@ -308,26 +493,31 @@ control_server_t *control_server_start(const struct control_server_options *opts
     if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         LOG_ERROR("control_server: bind(%s) failed: %s", path, strerror(errno));
         close(fd);
+        pthread_mutex_destroy(&cs->events_lock);
         free(cs);
         return NULL;
     }
 
-    /* Permissive perms so the user-mode bridge can connect even when the
-     * gateway runs as root. UNIX socket is filesystem-scoped, not network. */
     if (chmod(path, 0666) != 0) {
         LOG_ERROR("control_server: chmod(%s, 0666) failed: %s", path, strerror(errno));
-        /* Non-fatal — listen anyway. */
     }
 
     if (listen(fd, 4) < 0) {
         LOG_ERROR("control_server: listen() failed: %s", strerror(errno));
         unlink(path);
         close(fd);
+        pthread_mutex_destroy(&cs->events_lock);
         free(cs);
         return NULL;
     }
 
     cs->listen_fd = fd;
+
+    /* Register deinterleaver callbacks now that the context is stable. */
+    if (cs->dil) {
+        deinterleaver_set_block_final_callback(cs->dil, on_block_final_cb, cs);
+        deinterleaver_set_eviction_callback   (cs->dil, on_eviction_cb,    cs);
+    }
 
     int rc = pthread_create(&cs->worker, NULL, worker_main, cs);
     if (rc != 0) {
@@ -335,6 +525,7 @@ control_server_t *control_server_start(const struct control_server_options *opts
         atomic_store(&cs->running, 0);
         close(cs->listen_fd);
         unlink(path);
+        pthread_mutex_destroy(&cs->events_lock);
         free(cs);
         errno = rc;
         return NULL;
@@ -349,8 +540,13 @@ void control_server_stop(control_server_t *cs)
 
     atomic_store(&cs->running, 0);
 
-    /* Closing the listen fd also wakes accept() with EBADF on most kernels;
-     * combined with the poll timeout, the worker exits within 200ms. */
+    /* Unregister deinterleaver callbacks before we start tearing down so the
+     * RX thread cannot call into freed memory. */
+    if (cs->dil) {
+        deinterleaver_set_block_final_callback(cs->dil, NULL, NULL);
+        deinterleaver_set_eviction_callback   (cs->dil, NULL, NULL);
+    }
+
     if (cs->listen_fd >= 0) {
         shutdown(cs->listen_fd, SHUT_RDWR);
         close(cs->listen_fd);
@@ -364,5 +560,6 @@ void control_server_stop(control_server_t *cs)
     if (cs->socket_path[0]) {
         unlink(cs->socket_path);
     }
+    pthread_mutex_destroy(&cs->events_lock);
     free(cs);
 }

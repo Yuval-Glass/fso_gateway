@@ -12,6 +12,7 @@
 
 #include "arp_cache.h"
 #include "config.h"
+#include "deinterleaver.h"
 #include "packet_io.h"
 
 #ifdef __cplusplus
@@ -76,6 +77,16 @@ int rx_pipeline_run_once(rx_pipeline_t *pl);
  * Safe to call with NULL.
  */
 void rx_pipeline_destroy(rx_pipeline_t *pl);
+
+/*
+ * rx_pipeline_get_deinterleaver() — borrow the deinterleaver handle.
+ *
+ * The returned pointer is valid for the lifetime of the pipeline and must
+ * not be destroyed by the caller. Intended for the control_server to read
+ * dil_stats and register callbacks for live diagnostics. Returns NULL if
+ * pl is NULL.
+ */
+deinterleaver_t *rx_pipeline_get_deinterleaver(rx_pipeline_t *pl);
 
 #ifdef __cplusplus
 }
