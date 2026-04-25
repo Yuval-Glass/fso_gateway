@@ -360,7 +360,9 @@ static int build_snapshot_json(char *buf, size_t bufsz,
 static int write_all(int fd, const char *buf, size_t len)
 {
     while (len > 0) {
-        ssize_t n = write(fd, buf, len);
+        /* MSG_NOSIGNAL: a client closing its half mustn't take down the
+         * whole daemon via SIGPIPE — surface it as EPIPE on the return. */
+        ssize_t n = send(fd, buf, len, MSG_NOSIGNAL);
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;

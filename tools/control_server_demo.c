@@ -12,9 +12,19 @@
  *   - arp_cache (learns a few peers each tick so the Topology ARP panel
  *     has content in demo mode)
  *
- * Run:
- *   ./build/bin/control_server_demo            # default /tmp/fso_gw.sock
- *   ./build/bin/control_server_demo /tmp/x.sock
+ * Drop-in compatibility with fso_gw_runner CLI
+ * --------------------------------------------
+ * Accepts the same long options as fso_gw_runner so the bridge's
+ * DaemonSupervisor can invoke this binary instead of the real runner
+ * for local lifecycle testing. The interface flags are accepted but
+ * ignored (no real NIC is opened); --k / --m / --depth / --symbol-size
+ * are echoed in the config snapshot so the dashboard reflects them.
+ *
+ * Examples:
+ *   ./build/bin/control_server_demo
+ *   ./build/bin/control_server_demo --socket-path /tmp/x.sock
+ *   ./build/bin/control_server_demo --lan-iface eth0 --fso-iface eth1 \
+ *                                   --k 8 --m 4 --depth 2 --symbol-size 1500
  *
  * Stop with Ctrl+C.
  */
@@ -27,6 +37,7 @@
 #include "stats.h"
 
 #include <arpa/inet.h>
+#include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,26 +92,28 @@ static uint64_t g_block_id = 0;
 /* Push a block's worth of symbols into the deinterleaver with random losses
  * so its FSM actually moves through EMPTY → FILLING → READY_TO_DECODE and the
  * block_final_callback fires. */
-static void drive_deinterleaver(deinterleaver_t *dil)
+static void drive_deinterleaver(deinterleaver_t *dil, int n, int m, int symbol_size)
 {
     symbol_t sym;
     g_block_id++;
 
-    /* Lose 0..2 symbols per block (well within M=4 recovery). */
-    int losses = rand() % 3;
-    int lost_bitmap[DEMO_N] = {0};
+    /* Lose 0..min(2,m) symbols per block (stay within recovery budget). */
+    int max_loss = m < 2 ? m : 2;
+    int losses = max_loss > 0 ? rand() % (max_loss + 1) : 0;
+    int lost_bitmap[64] = {0};
+    if (n > 64) n = 64;
     for (int i = 0; i < losses; ++i) {
-        lost_bitmap[rand() % DEMO_N] = 1;
+        lost_bitmap[rand() % n] = 1;
     }
 
-    for (int fec_id = 0; fec_id < DEMO_N; ++fec_id) {
+    for (int fec_id = 0; fec_id < n; ++fec_id) {
         if (lost_bitmap[fec_id]) continue;
         memset(&sym, 0, sizeof(sym));
         sym.packet_id     = (uint32_t)g_block_id;
         sym.fec_id        = (uint32_t)fec_id;
         sym.symbol_index  = (uint16_t)fec_id;
-        sym.total_symbols = DEMO_N;
-        sym.payload_len   = DEMO_SYMBOL_SIZE;
+        sym.total_symbols = (uint16_t)n;
+        sym.payload_len   = (uint16_t)symbol_size;
         deinterleaver_push_symbol(dil, &sym);
     }
 
@@ -129,27 +142,75 @@ static void seed_arp_cache(arp_cache_t *arp)
 
 int main(int argc, char *argv[])
 {
-    const char *path = (argc > 1) ? argv[1] : NULL;
+    const char *path = NULL;
+
+    /* Defaults — overridden by CLI args. */
+    int k = DEMO_K;
+    int m = DEMO_M;
+    int depth = DEMO_DEPTH;
+    int symbol_size = DEMO_SYMBOL_SIZE;
+    char lan_iface[32] = "demo-lan";
+    char fso_iface[32] = "demo-fso";
+
+    static const struct option long_opts[] = {
+        { "lan-iface",            required_argument, NULL, 'l' },
+        { "fso-iface",            required_argument, NULL, 'f' },
+        { "k",                    required_argument, NULL, 'k' },
+        { "m",                    required_argument, NULL, 'm' },
+        { "depth",                required_argument, NULL, 'e' },
+        { "symbol-size",          required_argument, NULL, 's' },
+        { "socket-path",          required_argument, NULL, 'p' },
+        { "internal-symbol-crc",  required_argument, NULL, 'c' },
+        { "duration",             required_argument, NULL, 'd' },
+        { NULL, 0, NULL, 0 }
+    };
+
+    int opt;
+    /* getopt_long allows us to be tolerant of flag variations the runner uses. */
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        switch (opt) {
+            case 'l': snprintf(lan_iface, sizeof(lan_iface), "%s", optarg); break;
+            case 'f': snprintf(fso_iface, sizeof(fso_iface), "%s", optarg); break;
+            case 'k': k           = atoi(optarg); break;
+            case 'm': m           = atoi(optarg); break;
+            case 'e': depth       = atoi(optarg); break;
+            case 's': symbol_size = atoi(optarg); break;
+            case 'p': path        = optarg;       break;
+            case 'c': /* accepted but always-on in the demo */         break;
+            case 'd': /* accepted but ignored in the demo */            break;
+            case '?': /* unknown flag — keep going for forward compat */ break;
+            default: break;
+        }
+    }
+    if (path == NULL && optind < argc && argv[optind][0] == '/') {
+        path = argv[optind];
+    }
+
+    if (k <= 0) k = DEMO_K;
+    if (m <  0) m = DEMO_M;
+    if (depth <= 0) depth = DEMO_DEPTH;
+    if (symbol_size <= 0) symbol_size = DEMO_SYMBOL_SIZE;
 
     log_set_level(INFO);
-    LOG_INFO("control_server_demo: starting");
+    LOG_INFO("control_server_demo: starting (k=%d m=%d depth=%d sym=%d lan=%s fso=%s)",
+             k, m, depth, symbol_size, lan_iface, fso_iface);
 
     stats_init();
-    stats_set_burst_fec_span((uint64_t)DEMO_M * (uint64_t)DEMO_DEPTH);
+    stats_set_burst_fec_span((uint64_t)m * (uint64_t)depth);
 
     struct config cfg;
     memset(&cfg, 0, sizeof(cfg));
-    snprintf(cfg.lan_iface, sizeof(cfg.lan_iface), "demo-lan");
-    snprintf(cfg.fso_iface, sizeof(cfg.fso_iface), "demo-fso");
-    cfg.k = DEMO_K;
-    cfg.m = DEMO_M;
-    cfg.depth = DEMO_DEPTH;
-    cfg.symbol_size = DEMO_SYMBOL_SIZE;
+    snprintf(cfg.lan_iface, sizeof(cfg.lan_iface), "%s", lan_iface);
+    snprintf(cfg.fso_iface, sizeof(cfg.fso_iface), "%s", fso_iface);
+    cfg.k = k;
+    cfg.m = m;
+    cfg.depth = depth;
+    cfg.symbol_size = symbol_size;
     cfg.internal_symbol_crc_enabled = 1;
 
     /* Real deinterleaver so dil_stats + block_events are live in demo mode. */
     deinterleaver_t *dil = deinterleaver_create(
-        DEMO_DEPTH * 4, DEMO_N, DEMO_K, DEMO_SYMBOL_SIZE, 0.0, 50.0);
+        depth * 4, k + m, k, symbol_size, 0.0, 50.0);
     if (!dil) {
         LOG_ERROR("control_server_demo: deinterleaver_create failed");
         return 1;
@@ -193,7 +254,7 @@ int main(int argc, char *argv[])
         simulate_stats_tick();
         /* Drive ~50 blocks through the deinterleaver per tick. */
         for (int i = 0; i < 50; ++i) {
-            drive_deinterleaver(dil);
+            drive_deinterleaver(dil, k + m, m, symbol_size);
         }
         /* Refresh ARP entries periodically so they don't time out (TTL=5min). */
         if ((ticks++ % 50) == 0) {

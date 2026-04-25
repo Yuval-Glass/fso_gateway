@@ -7,11 +7,13 @@ import { TactileButton } from "@/components/primitives/TactileButton";
 import { TextField } from "@/components/primitives/TextField";
 import { Toggle } from "@/components/primitives/Toggle";
 import { useConfig } from "@/lib/useConfig";
+import { useDaemon, type DaemonStatus } from "@/lib/useDaemon";
 import { CONFIG_BOUNDS, CONFIG_PRESETS, type ConfigPreset } from "@/types/config";
-import { cn, formatBytes, formatPercent } from "@/lib/utils";
+import { cn, formatBytes, formatPercent, formatUptime } from "@/lib/utils";
 
 export default function ConfigurationPage() {
   const cfg = useConfig();
+  const daemon = useDaemon();
 
   if (cfg.status === "loading" || !cfg.draft) {
     return (
@@ -149,29 +151,7 @@ export default function ConfigurationPage() {
             </div>
           </GlassPanel>
 
-          <GlassPanel label="Runtime Controls"
-            trailing={
-              <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-                Phase 3B — office-only
-              </span>
-            }
-          >
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <TactileButton variant="primary" icon={<Play size={13} />} disabled>
-                Start Gateway
-              </TactileButton>
-              <TactileButton variant="secondary" icon={<RotateCcw size={13} />} disabled>
-                Restart
-              </TactileButton>
-              <TactileButton variant="danger" icon={<Square size={13} />} disabled>
-                Stop
-              </TactileButton>
-              <span className="text-[10px] text-[color:var(--color-text-muted)] ml-2">
-                Daemon supervision arrives in Phase 3B; for now apply on the
-                office machine manually.
-              </span>
-            </div>
-          </GlassPanel>
+          <RuntimeControlsPanel daemon={daemon} />
         </div>
 
         {/* RIGHT: presets + action bar */}
@@ -340,6 +320,122 @@ function KV({
         {value}
       </span>
     </li>
+  );
+}
+
+function RuntimeControlsPanel({ daemon }: { daemon: ReturnType<typeof useDaemon> }) {
+  const s = daemon.status;
+  const state: DaemonStatus["state"] = s?.state ?? "stopped";
+  const isStarting = state === "starting";
+  const isStopping = state === "stopping";
+  const isRunning = state === "running";
+  const isStopped = state === "stopped";
+  const isFailed = state === "failed";
+  const busy = isStarting || isStopping;
+  const canStart = !busy && (isStopped || isFailed);
+  const canStop = !busy && (isRunning || isStarting);
+  const canRestart = !busy && isRunning;
+
+  return (
+    <GlassPanel
+      label="Runtime Controls"
+      trailing={<DaemonStateBadge status={s} />}
+    >
+      <div className="flex flex-col gap-3 pt-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <TactileButton
+            variant="primary"
+            icon={<Play size={13} />}
+            onClick={() => daemon.start()}
+            loading={isStarting}
+            disabled={!canStart}
+          >
+            Start Gateway
+          </TactileButton>
+          <TactileButton
+            variant="secondary"
+            icon={<RotateCcw size={13} />}
+            onClick={() => daemon.restart()}
+            disabled={!canRestart}
+          >
+            Restart
+          </TactileButton>
+          <TactileButton
+            variant="danger"
+            icon={<Square size={13} />}
+            onClick={() => daemon.stop()}
+            loading={isStopping}
+            disabled={!canStop}
+          >
+            Stop
+          </TactileButton>
+        </div>
+
+        {daemon.error && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-md border border-[color:var(--color-border-danger)] bg-[color:var(--color-danger)]/10 text-[11px] text-[color:var(--color-danger)]">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span>{daemon.error}</span>
+          </div>
+        )}
+
+        {s?.lastError && isFailed && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-md border border-[color:var(--color-border-danger)] bg-[color:var(--color-danger)]/10 text-[11px] text-[color:var(--color-danger)]">
+            <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+            <span>{s.lastError}</span>
+          </div>
+        )}
+
+        {s && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
+            <KV label="PID" value={s.pid != null ? String(s.pid) : "—"} />
+            <KV
+              label="Uptime"
+              value={s.uptimeSec != null ? formatUptime(s.uptimeSec) : "—"}
+            />
+            <KV label="Sudo" value={s.useSudo ? "yes" : "no"} />
+            <KV
+              label="Binary"
+              value={s.binaryFound ? "found" : "missing"}
+              tone={s.binaryFound ? "success" : "neutral"}
+            />
+          </div>
+        )}
+
+        {s?.binary && (
+          <div className="text-[10px] text-[color:var(--color-text-muted)] leading-snug font-mono break-all">
+            <span className="text-[color:var(--color-text-secondary)]">binary:</span> {s.binary}
+            {s.logFile && (
+              <>
+                <br />
+                <span className="text-[color:var(--color-text-secondary)]">log:</span> {s.logFile}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </GlassPanel>
+  );
+}
+
+function DaemonStateBadge({ status }: { status: DaemonStatus | null }) {
+  const state = status?.state ?? "stopped";
+  const tone =
+    state === "running" ? { bg: "var(--color-success)", glow: "rgba(52, 211, 153, 0.6)", label: "RUNNING" } :
+    state === "starting" ? { bg: "var(--color-warning)", glow: "rgba(255, 176, 32, 0.6)", label: "STARTING" } :
+    state === "stopping" ? { bg: "var(--color-warning)", glow: "rgba(255, 176, 32, 0.6)", label: "STOPPING" } :
+    state === "failed" ? { bg: "var(--color-danger)", glow: "rgba(255, 45, 92, 0.7)", label: "FAILED" } :
+    { bg: "var(--color-text-muted)", glow: "rgba(85, 96, 114, 0.4)", label: "STOPPED" };
+  const breathe = state === "starting" || state === "stopping";
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span
+        className={cn("w-1.5 h-1.5 rounded-full", breathe && "breathe")}
+        style={{ background: tone.bg, boxShadow: `0 0 6px ${tone.glow}` }}
+      />
+      <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-secondary)]">
+        {tone.label}
+      </span>
+    </span>
   );
 }
 

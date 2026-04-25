@@ -37,6 +37,7 @@ from fastapi.responses import PlainTextResponse
 import channel as channel_ctrl
 import experiments as experiments_store
 from config_store import ConfigError, load as config_load, save as config_save, validate as config_validate
+from daemon import DaemonSupervisor
 from gateway_source import GatewaySource
 from log_source import LogManager
 import run_store
@@ -388,6 +389,7 @@ def snapshot(s: SimState, source: str = "mock") -> dict[str, Any]:
 SIM = SimState.fresh()
 GATEWAY = GatewaySource(GATEWAY_SOCKET_PATH)
 LOGS = LogManager()
+DAEMON = DaemonSupervisor()
 
 RECORDER_INTERVAL_SEC = 1.0
 _recorder_task: asyncio.Task[None] | None = None
@@ -430,9 +432,10 @@ async def lifespan(app: FastAPI):
             await asyncio.to_thread(run_store.end_run, _active_run_id)
         await GATEWAY.stop()
         await LOGS.stop()
+        await DAEMON.shutdown()
 
 
-app = FastAPI(title="FSO Gateway Bridge", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="FSO Gateway Bridge", version="1.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -670,3 +673,28 @@ async def experiments_get(name: str) -> dict[str, Any]:
         return await asyncio.to_thread(experiments_store.read_experiment, name)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail=f"experiment '{name}' not found")
+
+
+# ---------------------------------------------------------------------------
+# Daemon supervision (Phase 3B)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/daemon")
+async def daemon_status() -> dict[str, Any]:
+    return DAEMON.status()
+
+
+@app.post("/api/daemon/start")
+async def daemon_start() -> dict[str, Any]:
+    return await DAEMON.start()
+
+
+@app.post("/api/daemon/stop")
+async def daemon_stop() -> dict[str, Any]:
+    return await DAEMON.stop()
+
+
+@app.post("/api/daemon/restart")
+async def daemon_restart() -> dict[str, Any]:
+    return await DAEMON.restart()

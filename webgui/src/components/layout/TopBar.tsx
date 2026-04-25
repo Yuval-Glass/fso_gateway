@@ -2,6 +2,7 @@
 
 import { Bell, Search, Maximize2 } from "lucide-react";
 import { useTelemetry } from "@/lib/useTelemetry";
+import { useDaemon, type DaemonState } from "@/lib/useDaemon";
 import { formatUptime } from "@/lib/utils";
 import { StatusDot } from "../primitives/StatusDot";
 import { ConnectionPill } from "../primitives/ConnectionPill";
@@ -19,6 +20,7 @@ function useClock() {
 
 export function TopBar() {
   const { snapshot: telemetry, connection } = useTelemetry();
+  const { status: daemon } = useDaemon();
   const now = useClock();
 
   const systemStatus =
@@ -57,6 +59,10 @@ export function TopBar() {
             </span>
           </Stat>
           <Divider />
+          <Stat label="Daemon">
+            <DaemonPill state={daemon?.state ?? null} />
+          </Stat>
+          <Divider />
           <Stat label="Uptime">
             <span className="font-mono tabular text-[color:var(--color-text-primary)]">
               {telemetry ? formatUptime(telemetry.link.uptimeSec) : "—"}
@@ -83,6 +89,27 @@ export function TopBar() {
         </div>
       </div>
     </header>
+  );
+}
+
+function DaemonPill({ state }: { state: DaemonState | null }) {
+  const { color, glow, label, breathe } =
+    state === "running" ? { color: "var(--color-success)", glow: "rgba(52,211,153,0.6)", label: "RUNNING", breathe: false } :
+    state === "starting" ? { color: "var(--color-warning)", glow: "rgba(255,176,32,0.65)", label: "STARTING", breathe: true } :
+    state === "stopping" ? { color: "var(--color-warning)", glow: "rgba(255,176,32,0.65)", label: "STOPPING", breathe: true } :
+    state === "failed" ? { color: "var(--color-danger)", glow: "rgba(255,45,92,0.7)", label: "FAILED", breathe: false } :
+    state === "stopped" ? { color: "var(--color-text-muted)", glow: "rgba(85,96,114,0.4)", label: "STOPPED", breathe: false } :
+    { color: "var(--color-text-muted)", glow: "rgba(85,96,114,0.3)", label: "—", breathe: false };
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span
+        className={breathe ? "w-1.5 h-1.5 rounded-full breathe" : "w-1.5 h-1.5 rounded-full"}
+        style={{ background: color, boxShadow: `0 0 6px ${glow}` }}
+      />
+      <span className="font-medium tracking-[0.15em] text-[color:var(--color-text-primary)]">
+        {label}
+      </span>
+    </span>
   );
 }
 
