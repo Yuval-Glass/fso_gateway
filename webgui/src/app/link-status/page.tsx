@@ -18,7 +18,7 @@ import { FieldHint } from "@/components/primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
 import { useLinkHistory, type FadeEvent } from "@/lib/useLinkHistory";
 import { useTelemetry } from "@/lib/useTelemetry";
-import { cn, formatNumber, formatPercent, formatUptime } from "@/lib/utils";
+import { cn, formatCompact, formatNumber, formatPercent, formatUptime } from "@/lib/utils";
 import type { LinkState } from "@/types/telemetry";
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
@@ -120,7 +120,7 @@ export default function LinkStatusPage() {
             <HeroTile label="Block Fail Rate" value={formatPercent(e.blockFailRatio, 4)}
                       tone={e.blockFailRatio > 0.01 ? "danger" : e.blockFailRatio > 0.001 ? "warning" : "success"}
                       icon={<TriangleAlert size={13} />} hintId="errors.blockFailRatio" />
-            <HeroTile label="Blocks Attempted" value={formatNumber(e.blocksAttempted)}
+            <HeroTile label="Blocks Attempted" value={formatCompact(e.blocksAttempted)}
                       icon={<Activity size={13} />} hintId="errors.blocksAttempted" />
             <HeroTile label="Session Uptime" value={formatUptime(l.uptimeSec)} tone="cyan"
                       icon={<ShieldCheck size={13} />} hintId="link.uptimeSec" />

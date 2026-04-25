@@ -2,7 +2,7 @@
 
 import { AlertOctagon, CheckCircle2, ShieldX, TriangleAlert, XCircle } from "lucide-react";
 import { MetricCard } from "@/components/primitives/MetricCard";
-import { formatNumber, formatPercent } from "@/lib/utils";
+import { formatCompact, formatNumber, formatPercent } from "@/lib/utils";
 import type { ErrorMetrics as Errors } from "@/types/telemetry";
 
 export function ErrorMetrics({ errors }: { errors: Errors }) {
@@ -46,7 +46,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
       />
       <MetricCard
         label="CRC Drops"
-        value={formatNumber(errors.crcDrops)}
+        value={formatCompact(errors.crcDrops)}
         tone={errors.crcDrops > 100 ? "warning" : "neutral"}
         icon={<XCircle size={14} />}
         hintId="errors.crcDrops"
@@ -55,7 +55,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
       />
       <MetricCard
         label="Recovered"
-        value={formatNumber(errors.recoveredPackets)}
+        value={formatCompact(errors.recoveredPackets)}
         tone="success"
         icon={<CheckCircle2 size={14} />}
         hintId="errors.recoveredPackets"
@@ -72,7 +72,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
         href="/fec-analytics"
         sub={
           <span className="text-[color:var(--color-text-secondary)]">
-            {formatNumber(errors.blocksRecovered)} / {formatNumber(errors.blocksAttempted)} blocks
+            {formatCompact(errors.blocksRecovered)} / {formatCompact(errors.blocksAttempted)} blocks
           </span>
         }
       />

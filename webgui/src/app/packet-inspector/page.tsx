@@ -13,12 +13,16 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
+import { useConfig } from "@/lib/useConfig";
 import { useLogs } from "@/lib/useLogs";
 import { useTelemetry } from "@/lib/useTelemetry";
-import { cn, formatBytes, formatNumber } from "@/lib/utils";
+import { cn, formatCompact, formatNumber } from "@/lib/utils";
 
 export default function PacketInspectorPage() {
   const { snapshot: snap } = useTelemetry();
+  // Pull the editable draft so the wire diagram updates as soon as the
+  // user changes symbol_size — no need to restart the daemon to preview.
+  const { draft } = useConfig();
   // Re-use the live log feed to surface symbol/packet events without a
   // dedicated capture endpoint (Phase 5 will add real per-packet tap).
   const logs = useLogs(400);
@@ -109,7 +113,7 @@ export default function PacketInspectorPage() {
         />
         <MetricCard
           label="Symbols Processed"
-          value={formatNumber(e.blocksAttempted * (cfg?.k ?? 0))}
+          value={formatCompact(e.blocksAttempted * (cfg?.k ?? 0))}
           tone="cyan"
           icon={<Hash size={14} />}
           hintId="packet.symbolsProcessed"
@@ -121,7 +125,7 @@ export default function PacketInspectorPage() {
         />
         <MetricCard
           label="CRC Drops"
-          value={formatNumber(e.crcDrops)}
+          value={formatCompact(e.crcDrops)}
           tone={e.crcDrops === 0 ? "success" : e.crcDrops > 100 ? "warning" : "cyan"}
           icon={<Shield size={14} />}
           hintId="errors.crcDrops"
@@ -144,7 +148,9 @@ export default function PacketInspectorPage() {
             </span>
           }
         >
-          <WireFormatDiagram symbolSize={cfg?.symbolSize ?? 0} />
+          {/* Prefer the editable draft so the diagram updates immediately
+              when the user tweaks symbol_size. Fall back to configEcho. */}
+          <WireFormatDiagram symbolSize={draft?.symbol_size ?? cfg?.symbolSize ?? 0} />
         </GlassPanel>
 
         <GlassPanel
@@ -244,6 +250,13 @@ const HEADER_FIELDS: HeaderField[] = [
   { name: "crc32",         size: 4, description: "CRC-32C (Castagnoli) over the 14-byte BE header + payload bytes.", color: "#ff2d5c" },
 ];
 
+// Show raw bytes when small, KiB with 2 decimals once we cross the
+// kibibyte. Avoids the "1KB" mush from formatBytes(_, 0).
+function formatPayload(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(2)} KiB`;
+}
+
 function WireFormatDiagram({ symbolSize }: { symbolSize: number }) {
   const totalHeader = HEADER_FIELDS.reduce((a, b) => a + b.size, 0);
   const payloadSize = Math.max(0, symbolSize - totalHeader);
@@ -280,13 +293,13 @@ function WireFormatDiagram({ symbolSize }: { symbolSize: number }) {
             }}
             title={`payload · ${payloadSize}B`}
           >
-            payload · {formatBytes(payloadSize, 0)}
+            payload · {formatPayload(payloadSize)}
           </div>
         </div>
         <div className="mt-2 flex items-center justify-between text-[10px] font-mono tabular text-[color:var(--color-text-muted)]">
           <span>0</span>
           <span>header {totalHeader}B</span>
-          <span>symbol total {formatBytes(symbolSize, 0)}</span>
+          <span>symbol total {formatPayload(symbolSize)}</span>
         </div>
       </div>
 

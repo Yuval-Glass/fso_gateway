@@ -96,6 +96,10 @@ def _build_argv(cfg: GatewayConfig) -> list[str]:
         "--m", str(cfg.m),
         "--depth", str(cfg.depth),
         "--symbol-size", str(cfg.symbol_size),
+        # The runner defaults to CRC-on; pass an explicit 0/1 so the GUI
+        # toggle actually reaches the daemon. Without this the YAML stored
+        # internal_symbol_crc=False would silently be ignored at launch.
+        "--internal-symbol-crc", "1" if cfg.internal_symbol_crc else "0",
     ]
     return argv
 

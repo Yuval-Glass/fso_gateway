@@ -13,37 +13,52 @@ interface ToggleProps {
 }
 
 export function Toggle({ label, checked, onChange, description, hintId }: ToggleProps) {
+  // Explicit pixel layout — bypasses any Tailwind arbitrary-value variance.
+  //   Pill outer:  46×24 (border 1px each side → inner 44×22).
+  //   Knob:        18×18, sits 2px from top.
+  //   Off:         left = 3   (3..21  → 3px clearance from right inner edge)
+  //   On:          left = 25  (25..43 → 1px clearance from right inner edge)
+  const PILL_W = 46;
+  const PILL_H = 24;
+  const KNOB = 18;
+  const KNOB_OFF_LEFT = 3;
+  const KNOB_ON_LEFT = PILL_W - KNOB - KNOB_OFF_LEFT - 2; // = 23
+
   return (
-    <label className="flex items-start gap-3 cursor-pointer select-none group">
+    <label className="flex items-start gap-4 cursor-pointer select-none group">
       <button
         type="button"
         role="switch"
         aria-checked={checked}
         onClick={() => onChange(!checked)}
         className={cn(
-          "relative shrink-0 w-10 h-[22px] rounded-full border transition-colors duration-200",
+          "relative shrink-0 rounded-full border transition-colors duration-200",
           checked
             ? "bg-[color:var(--color-cyan-900)] border-[color:var(--color-border-cyan)]"
             : "bg-white/[0.03] border-[color:var(--color-border-subtle)]",
         )}
-        style={
-          checked
-            ? { boxShadow: "inset 0 0 10px rgba(0, 212, 255, 0.35)" }
-            : undefined
-        }
+        style={{
+          width: PILL_W,
+          height: PILL_H,
+          boxShadow: checked
+            ? "inset 0 0 10px rgba(0, 212, 255, 0.35)"
+            : undefined,
+        }}
       >
         <span
-          className={cn(
-            "absolute top-[2px] w-[16px] h-[16px] rounded-full transition-all duration-200",
-            checked
-              ? "translate-x-[20px] bg-[color:var(--color-cyan-300)]"
-              : "translate-x-[2px] bg-[color:var(--color-text-muted)]",
-          )}
-          style={
-            checked
-              ? { boxShadow: "0 0 8px rgba(0, 212, 255, 0.8)" }
-              : undefined
-          }
+          className="absolute rounded-full transition-[left,background-color,box-shadow] duration-200"
+          style={{
+            top: (PILL_H - 2 - KNOB) / 2, // vertically centered inside the inner area
+            width: KNOB,
+            height: KNOB,
+            left: checked ? KNOB_ON_LEFT : KNOB_OFF_LEFT,
+            background: checked
+              ? "var(--color-cyan-300)"
+              : "var(--color-text-muted)",
+            boxShadow: checked
+              ? "0 0 6px rgba(0, 212, 255, 0.7)"
+              : undefined,
+          }}
         />
       </button>
       <span className="flex-1 min-w-0">

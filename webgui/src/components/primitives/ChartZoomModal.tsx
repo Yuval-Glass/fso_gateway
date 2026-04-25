@@ -47,7 +47,10 @@ export function ChartZoomModal({ title, href, onClose, children }: ChartZoomModa
       aria-label={title}
     >
       <div
-        className="glass-raised rounded-lg w-full max-w-[1400px] max-h-[92vh] flex flex-col"
+        // Explicit height (not just max-h) so the modal always claims the
+        // full vertical envelope — the inner chart is `height: 100%` and
+        // would otherwise collapse to its intrinsic size.
+        className="glass-raised rounded-lg w-full max-w-[1500px] h-[88vh] flex flex-col"
         style={{ background: "rgba(8, 14, 28, 0.95)" }}
         onClick={(e) => e.stopPropagation()}
       >

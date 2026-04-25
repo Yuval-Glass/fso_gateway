@@ -19,7 +19,7 @@ import { FieldHint } from "@/components/primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { useFecHistory } from "@/lib/useFecHistory";
-import { cn, formatBytes, formatNumber, formatPercent } from "@/lib/utils";
+import { cn, formatBytes, formatCompact, formatNumber, formatPercent } from "@/lib/utils";
 import type { TelemetrySnapshot } from "@/types/telemetry";
 
 const ReactECharts = dynamic(() => import("echarts-for-react"), { ssr: false });
@@ -132,7 +132,7 @@ export default function FecAnalyticsPage() {
           hintId="errors.fecSuccessRate"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
-              {formatNumber(e.blocksRecovered)} / {formatNumber(e.blocksAttempted)}
+              {formatCompact(e.blocksRecovered)} / {formatCompact(e.blocksAttempted)}
             </span>
           }
           spark={history.slice(-60).map((s) =>
@@ -155,7 +155,7 @@ export default function FecAnalyticsPage() {
         />
         <MetricCard
           label="Failed Blocks"
-          value={formatNumber(e.blocksFailed)}
+          value={formatCompact(e.blocksFailed)}
           tone={e.blocksFailed === 0 ? "success" : failureRatePct > 0.1 ? "danger" : "warning"}
           icon={<TriangleAlert size={14} />}
           hintId="errors.blocksFailed"

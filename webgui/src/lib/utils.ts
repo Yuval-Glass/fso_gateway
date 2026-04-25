@@ -15,6 +15,27 @@ export function formatNumber(n: number, opts: { decimals?: number } = {}): strin
   });
 }
 
+/**
+ * Compact rendering for cumulative counters that grow without bound.
+ *  < 10,000        → full number with commas ("9,876")
+ *  < 1,000,000     → "12.3K"
+ *  < 1,000,000,000 → "12.3M"
+ *  ≥ 1B            → "12.3B" / "12.3T"
+ *
+ * Used in metric cards where a 9-digit value would overflow the box.
+ */
+export function formatCompact(n: number): string {
+  if (!Number.isFinite(n)) return "—";
+  const abs = Math.abs(n);
+  if (abs < 10_000) return n.toLocaleString("en-US");
+  const sign = n < 0 ? "-" : "";
+  const a = Math.abs(n);
+  if (a < 1_000_000)         return `${sign}${(a / 1_000).toFixed(a < 100_000 ? 1 : 0)}K`;
+  if (a < 1_000_000_000)     return `${sign}${(a / 1_000_000).toFixed(a < 100_000_000 ? 1 : 0)}M`;
+  if (a < 1_000_000_000_000) return `${sign}${(a / 1_000_000_000).toFixed(a < 100_000_000_000 ? 1 : 0)}B`;
+  return `${sign}${(a / 1_000_000_000_000).toFixed(1)}T`;
+}
+
 /** Format bytes → human units. */
 export function formatBytes(bytes: number, decimals = 2): string {
   if (bytes === 0) return "0 B";

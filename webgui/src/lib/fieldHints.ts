@@ -353,12 +353,20 @@ const _HINTS = {
       "Any longer burst is unrecoverable.",
   },
   "interleaver.burstCoverage": {
-    title: "Burst Coverage",
+    title: "Burst Coverage vs Recovery Span",
     body:
-      "Stacked horizontal bar of every burst-length bin observed.\n" +
-      "Each segment's width = that bin's share of all bursts.\n" +
-      "Cyan segments are within the recovery span (M × depth) — they were FEC-recoverable. Red segments exceed the span and could not have been repaired.",
-    source: "snap.burstHistogram + recoverySpanSymbols = m × depth",
+      "Stacked bar of every burst-length bin observed by the daemon.\n" +
+      "\n" +
+      "Bar widths = real measured data:\n" +
+      "  segment_width = bin_count / total_bursts\n" +
+      "\n" +
+      "Color = computed from your config:\n" +
+      "  recovery_span = M × depth (symbols)\n" +
+      "  bin upper-bound ≤ span → cyan (FEC-recoverable)\n" +
+      "  bin upper-bound  > span → red  (exceeds span, unrecoverable)\n" +
+      "\n" +
+      "Updates live: changing M or depth re-colors immediately; new bursts from the daemon re-size segments.",
+    source: "snap.burstHistogram (live) · span = m × depth",
   },
   "interleaver.depth": {
     title: "Depth (rows)",

@@ -54,13 +54,19 @@ export function MetricCard({ label, value, unit, sub, spark, tone = "neutral", i
           </span>
           {icon && <span className="text-[color:var(--color-text-muted)] opacity-80">{icon}</span>}
         </div>
-        <div className="flex items-baseline gap-1.5">
+        <div className="flex items-baseline gap-1.5 min-w-0">
           <span
             className={cn(
-              "font-display text-3xl font-semibold tabular tracking-tight",
+              // text-3xl drops to text-2xl once the value runs long enough
+              // to threaten overflow ("12,345,678" etc.). Combined with the
+              // compact formatter most cumulative counters use, growing
+              // numbers stay inside the card.
+              "font-display font-semibold tabular tracking-tight truncate",
+              String(value).length > 9 ? "text-xl" : String(value).length > 7 ? "text-2xl" : "text-3xl",
               t.text,
             )}
             style={tone === "cyan" ? { textShadow: "0 0 24px rgba(0, 212, 255, 0.35)" } : undefined}
+            title={String(value)}
           >
             {value}
           </span>
