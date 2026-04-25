@@ -56,8 +56,8 @@ const _HINTS = {
     source: "control_server.c — elapsed_seconds() (CLOCK_MONOTONIC)",
   },
   "topbar.time": {
-    title: "Browser Clock (UTC)",
-    body: "Local UTC clock from the browser. Refreshes every second; unrelated to the daemon.",
+    title: "Clock (Israel)",
+    body: "Wall clock in the Asia/Jerusalem timezone, sourced from the browser. Refreshes every second; unrelated to the daemon.",
   },
 
   // ---------- Link / quality ----------
@@ -355,7 +355,10 @@ const _HINTS = {
   "interleaver.burstCoverage": {
     title: "Burst Coverage",
     body:
-      "Fraction of observed bursts whose length fits inside the recovery span — i.e., bursts that were repairable.",
+      "Stacked horizontal bar of every burst-length bin observed.\n" +
+      "Each segment's width = that bin's share of all bursts.\n" +
+      "Cyan segments are within the recovery span (M × depth) — they were FEC-recoverable. Red segments exceed the span and could not have been repaired.",
+    source: "snap.burstHistogram + recoverySpanSymbols = m × depth",
   },
   "interleaver.depth": {
     title: "Depth (rows)",

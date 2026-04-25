@@ -2,10 +2,11 @@
 
 import dynamic from "next/dynamic";
 import type { EChartsOption } from "echarts";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Activity, ArrowDownLeft, ArrowUpRight, Gauge, Package, Zap } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
+import { ChartZoomModal } from "@/components/primitives/ChartZoomModal";
 import { FieldHint } from "@/components/primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
@@ -30,6 +31,11 @@ const baseAxis = {
 const baseOpts: Partial<EChartsOption> = {
   grid: { left: 58, right: 16, top: 28, bottom: 30 },
   textStyle: { fontFamily: "var(--font-sans)" },
+  animation: true,
+  animationDuration: 100,
+  animationDurationUpdate: 100,
+  animationEasing: "linear",
+  animationEasingUpdate: "linear",
   tooltip: {
     trigger: "axis",
     backgroundColor: "rgba(13, 19, 32, 0.95)",
@@ -41,8 +47,11 @@ const baseOpts: Partial<EChartsOption> = {
 
 const LINK_CAPACITY_BPS = 10e9; // 10 Gbps per direction — adjust when we know the spec
 
+type TrafficChartId = "throughput" | "pps";
+
 export default function TrafficPage() {
   const { snapshot: snap } = useTelemetry();
+  const [zoomed, setZoomed] = useState<TrafficChartId | null>(null);
 
   const throughputChart = useMemo(
     () => (snap ? buildThroughputOption(snap.throughput) : null),
@@ -149,6 +158,7 @@ export default function TrafficPage() {
       <GlassPanel
         label="Throughput — TX & RX"
         hintId="traffic.txBps"
+        onBodyClick={() => setZoomed("throughput")}
         trailing={
           <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
             <Legend color={CYAN} label="TX Mbps" />
@@ -163,6 +173,7 @@ export default function TrafficPage() {
       <GlassPanel
         label="Packet Rate — pps"
         hintId="traffic.txPps"
+        onBodyClick={() => setZoomed("pps")}
         trailing={
           <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
             <Legend color={CYAN} label="TX pps" />
@@ -219,6 +230,20 @@ export default function TrafficPage() {
           tone={Math.max(txPeakBps, rxPeakBps) / LINK_CAPACITY_BPS > 0.8 ? "warning" : "cyan"}
         />
       </div>
+
+      {zoomed && (
+        <ChartZoomModal
+          title={zoomed === "throughput" ? "Throughput — TX & RX" : "Packet Rate — pps"}
+          onClose={() => setZoomed(null)}
+        >
+          <ReactECharts
+            option={zoomed === "throughput" ? throughputChart : ppsChart}
+            style={{ height: "100%", width: "100%" }}
+            notMerge={false}
+            lazyUpdate
+          />
+        </ChartZoomModal>
+      )}
     </div>
   );
 }

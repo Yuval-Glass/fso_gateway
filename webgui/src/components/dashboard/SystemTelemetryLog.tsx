@@ -26,6 +26,7 @@ export function SystemTelemetryLog() {
   return (
     <GlassPanel
       label="System Telemetry Log"
+      labelHref="/logs"
       trailing={
         <div className="flex items-center gap-1">
           <button className="flex items-center gap-1 px-2 py-1 rounded text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-secondary)] hover:text-[color:var(--color-cyan-300)] hover:bg-white/[0.04]">

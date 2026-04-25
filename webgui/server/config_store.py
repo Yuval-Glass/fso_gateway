@@ -17,13 +17,21 @@ import yaml
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 SCHEMA_VERSION = 1
 
-# Hard bounds taken from typical config_validate() expectations in config.c.
-# Keep conservative; the C side has its own validation.
+# Hard bounds aligned with the actual C limits — no artificial caps.
+#   k:           >= 2 (fec_wrapper.c requires it for Wirehair to work)
+#                <= 256 (MAX_SYMBOLS_PER_BLOCK in types.h)
+#   m:           >= 0 (C allows zero-parity)
+#                <= 256 (same MAX, with cross-check K+M<=256 in interleaver)
+#   depth:       >= 1 (interleaver.c rejects 0)
+#                <= 1024 (no hard C limit; cap chosen to keep matrix memory
+#                practical — grows linearly with depth)
+#   symbol_size: >= 1
+#                <= 9000 (MAX_SYMBOL_DATA_SIZE in types.h:39, jumbo frame)
 BOUNDS = {
-    "k": (1, 64),
-    "m": (0, 64),
-    "depth": (1, 128),
-    "symbol_size": (64, 9000),
+    "k": (2, 256),
+    "m": (0, 256),
+    "depth": (1, 1024),
+    "symbol_size": (1, 9000),
 }
 
 

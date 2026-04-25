@@ -11,6 +11,10 @@ interface TextFieldProps {
   maxLength?: number;
   mono?: boolean;
   hintId?: FieldHintId;
+  /** Fires when the user presses Enter — typically wired to a save action.
+   *  The current value is passed so callers can avoid React's setState
+   *  batching race when calling save() right after update(). */
+  onCommit?: (value: string) => void;
 }
 
 export function TextField({
@@ -21,6 +25,7 @@ export function TextField({
   maxLength,
   mono = false,
   hintId,
+  onCommit,
 }: TextFieldProps) {
   return (
     <div>
@@ -32,6 +37,12 @@ export function TextField({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onCommit?.(value);
+          }
+        }}
         placeholder={placeholder}
         maxLength={maxLength}
         spellCheck={false}

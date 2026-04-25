@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import type { EChartsOption } from "echarts";
 import {
   Activity,
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
+import { ChartZoomModal } from "@/components/primitives/ChartZoomModal";
 import { FieldHint } from "@/components/primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
@@ -41,6 +42,11 @@ const baseAxis = {
 const baseOpts: Partial<EChartsOption> = {
   grid: { left: 54, right: 16, top: 28, bottom: 30 },
   textStyle: { fontFamily: "var(--font-sans)" },
+  animation: true,
+  animationDuration: 100,
+  animationDurationUpdate: 100,
+  animationEasing: "linear",
+  animationEasingUpdate: "linear",
   tooltip: {
     trigger: "axis",
     backgroundColor: "rgba(13, 19, 32, 0.95)",
@@ -50,9 +56,12 @@ const baseOpts: Partial<EChartsOption> = {
   },
 };
 
+type FecChartId = "outcomes" | "burst";
+
 export default function FecAnalyticsPage() {
   const { snapshot: snap } = useTelemetry();
   const history = useFecHistory(snap);
+  const [zoomed, setZoomed] = useState<FecChartId | null>(null);
 
   // Hooks must be called unconditionally — keep these before any early return.
   const outcomeChart = useMemo(() => buildOutcomesOption(history), [history]);
@@ -194,6 +203,7 @@ export default function FecAnalyticsPage() {
         <GlassPanel
           label="Block Outcomes Over Time"
           hintId="errors.blocksRecovered"
+          onBodyClick={history.length >= 2 ? () => setZoomed("outcomes") : undefined}
           trailing={
             <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
               <Legend color={CYAN} label="Recovered" />
@@ -217,6 +227,7 @@ export default function FecAnalyticsPage() {
         <GlassPanel
           label="Burst-Length Distribution"
           hintId="burst.histogram"
+          onBodyClick={() => setZoomed("burst")}
           trailing={
             <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
               {formatNumber(totalBursts)} total · cyan=recoverable · red=critical
@@ -260,6 +271,20 @@ export default function FecAnalyticsPage() {
           </li>
         </ul>
       </GlassPanel>
+
+      {zoomed && (
+        <ChartZoomModal
+          title={zoomed === "outcomes" ? "Block Outcomes Over Time" : "Burst-Length Distribution"}
+          onClose={() => setZoomed(null)}
+        >
+          <ReactECharts
+            option={zoomed === "outcomes" ? outcomeChart : burstChart}
+            style={{ height: "100%", width: "100%" }}
+            notMerge={false}
+            lazyUpdate
+          />
+        </ChartZoomModal>
+      )}
     </div>
   );
 }
@@ -633,31 +658,49 @@ function buildOutcomesOption(history: Array<{ t: number; recovered: number; fail
   };
 }
 
+// Bin extents (inclusive). 501+ is open-ended — capped at 5000 to keep the
+// rightmost bar finite on a log axis.
+const BURST_BIN_RANGES: Array<[number, number]> = [
+  [1, 1],
+  [2, 5],
+  [6, 10],
+  [11, 50],
+  [51, 100],
+  [101, 500],
+  [501, 5000],
+];
+const BURST_BIN_CENTERS = BURST_BIN_RANGES.map(([lo, hi]) => Math.sqrt(lo * hi));
+const BURST_X_MIN = 0.7;
+const BURST_X_MAX = 6000;
+
 function buildBurstOption(snap: TelemetrySnapshot): EChartsOption {
-  const labels = snap.burstHistogram.map((b) => b.label);
   const counts = snap.burstHistogram.map((b) => b.count);
   const total = counts.reduce((a, b) => a + b, 0) || 1;
   return {
     ...baseOpts,
     tooltip: {
-      trigger: "axis",
+      trigger: "item",
       backgroundColor: "rgba(13, 19, 32, 0.95)",
       borderColor: "rgba(0, 212, 255, 0.3)",
       textStyle: { color: "#e8f1ff", fontSize: 11 },
       formatter: (params: unknown) => {
-        const arr = Array.isArray(params) ? params : [params];
-        const p = arr[0] as { dataIndex: number; value: number; axisValueLabel?: string };
-        const pct = (p.value / total) * 100;
-        return `burst ${p.axisValueLabel ?? labels[p.dataIndex]}<br/>
-          <b>${formatNumber(p.value)}</b> events<br/>
+        const p = (Array.isArray(params) ? params[0] : params) as { dataIndex: number };
+        const i = p.dataIndex;
+        const real = counts[i] ?? 0;
+        const pct = (real / total) * 100;
+        const label = snap.burstHistogram[i].label;
+        return `burst ${label}<br/>
+          <b>${formatNumber(real)}</b> events<br/>
           ${formatPercent(pct / 100, 2)} of all bursts`;
       },
     },
     grid: { left: 54, right: 16, top: 10, bottom: 48 },
     xAxis: {
-      type: "category",
-      data: labels,
-      name: "burst length (symbols)",
+      type: "log",
+      logBase: 10,
+      min: BURST_X_MIN,
+      max: BURST_X_MAX,
+      name: "burst length (symbols, log)",
       nameTextStyle: { color: TEXT_MUTED, fontSize: 10 },
       nameLocation: "middle",
       nameGap: 28,
@@ -672,26 +715,28 @@ function buildBurstOption(snap: TelemetrySnapshot): EChartsOption {
     },
     series: [
       {
-        type: "bar",
-        data: snap.burstHistogram.map((b, i) => ({
-          value: Math.max(1, b.count),
-          itemStyle: {
-            color: i < 2 ? CYAN : i < 4 ? BLUE : i < 6 ? AMBER : RED,
-            borderRadius: [3, 3, 0, 0],
-          },
-        })),
-        barWidth: "60%",
-        label: {
-          show: true,
-          position: "top",
-          color: TEXT_MUTED,
-          fontSize: 10,
-          fontFamily: "var(--font-mono)",
-          formatter: (p) => {
-            const v = typeof p.value === "number" ? p.value : 0;
-            return v > 1 ? String(v) : "";
-          },
+        type: "custom",
+        renderItem: (_params, api) => {
+          const v = api.value(1) as number;
+          const i = api.value(2) as number;
+          const [lo, hi] = BURST_BIN_RANGES[i];
+          const xLo = Math.max(BURST_X_MIN, lo === hi ? lo * 0.85 : lo);
+          const xHi = Math.min(BURST_X_MAX, lo === hi ? lo * 1.15 : hi);
+          const left   = api.coord([xLo, 1])[0];
+          const right  = api.coord([xHi, 1])[0];
+          const top    = api.coord([1, Math.max(1, v)])[1];
+          const bottom = api.coord([1, 1])[1];
+          const w = Math.max(2, right - left - 2);
+          const h = bottom - top;
+          const colors = [CYAN, CYAN, BLUE, BLUE, AMBER, AMBER, RED];
+          return {
+            type: "rect",
+            shape: { x: left + 1, y: top, width: w, height: h, r: [3, 3, 0, 0] },
+            style: { fill: colors[i] },
+          };
         },
+        encode: { x: 0, y: 1, tooltip: [0, 1] },
+        data: snap.burstHistogram.map((b, i) => [BURST_BIN_CENTERS[i], Math.max(1, b.count), i]),
       },
     ],
   };

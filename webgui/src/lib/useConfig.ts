@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { GatewayConfig } from "@/types/config";
 
 function bridgeBase(): string {
@@ -26,8 +26,10 @@ export interface ConfigState {
   setDraft: (cfg: Partial<GatewayConfig>) => void;
   /** Patch a single field in the draft. */
   update: <K extends keyof GatewayConfig>(key: K, value: GatewayConfig[K]) => void;
-  /** POST draft to the bridge. Resolves when saved. */
-  save: () => Promise<boolean>;
+  /** POST draft to the bridge. Optional `override` is merged on top of the
+   *  current draft before sending — useful when a caller updates a field
+   *  and immediately wants to save (avoids the React state-batching race). */
+  save: (override?: Partial<GatewayConfig>) => Promise<boolean>;
   /** Revert the draft back to persisted. */
   revert: () => void;
   /** Refetch persisted config from the bridge. */
@@ -89,15 +91,30 @@ export function useConfig(): ConfigState {
     [],
   );
 
-  const save = useCallback(async () => {
-    if (!draft) return false;
+  // Ref-backed draft so callbacks always read the current state without
+  // having to be rebuilt on every change.
+  const draftRef = useRef<GatewayConfig | null>(null);
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  const save = useCallback(async (override?: Partial<GatewayConfig>) => {
+    const base = draftRef.current;
+    if (!base) return false;
+    // Merge any override the caller passes — covers the case where the
+    // caller just called update() and wants the new value sent immediately
+    // (setState is async, so the ref/state may still be the previous value).
+    const payload: GatewayConfig = override ? { ...base, ...override } : base;
+    // Optimistically reflect the override in local state so the UI doesn't
+    // briefly snap back to the prior value while we wait for the server.
+    if (override) setDraftInternal(payload);
     setStatus("saving");
     setError(null);
     try {
       const res = await fetch(`${bridgeBase()}/api/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: draft }),
+        body: JSON.stringify({ config: payload }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -114,7 +131,7 @@ export function useConfig(): ConfigState {
       setError(e instanceof Error ? e.message : String(e));
       return false;
     }
-  }, [draft]);
+  }, []);
 
   const revert = useCallback(() => {
     setDraftInternal(persisted);

@@ -1,14 +1,16 @@
 "use client";
 
-import { Bell, Search, Maximize2 } from "lucide-react";
+import { Bell, Maximize2, Minimize2 } from "lucide-react";
+import Link from "next/link";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { useDaemon, type DaemonState } from "@/lib/useDaemon";
+import { useAlerts } from "@/lib/useAlerts";
 import { formatUptime } from "@/lib/utils";
 import { StatusDot } from "../primitives/StatusDot";
 import { ConnectionPill } from "../primitives/ConnectionPill";
 import { FieldHint } from "../primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 function useClock() {
   const [now, setNow] = useState<Date | null>(null);
@@ -20,9 +22,25 @@ function useClock() {
   return now;
 }
 
+function useFullscreen() {
+  const [isFs, setIsFs] = useState(false);
+  useEffect(() => {
+    const onChange = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+  const toggle = useCallback(() => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  }, []);
+  return { isFs, toggle };
+}
+
 export function TopBar() {
   const { snapshot: telemetry, connection } = useTelemetry();
   const { status: daemon } = useDaemon();
+  const alerts = useAlerts(telemetry);
+  const { isFs, toggle: toggleFs } = useFullscreen();
   const now = useClock();
 
   const systemStatus =
@@ -74,23 +92,46 @@ export function TopBar() {
             </span>
           </Stat>
           <Divider />
-          <Stat label="Time (UTC)" hintId="topbar.time">
+          <Stat label="Time (IL)" hintId="topbar.time">
             <span className="font-mono tabular text-[color:var(--color-text-primary)]">
-              {now ? now.toISOString().slice(11, 19) : "—"}
+              {now
+                ? now.toLocaleTimeString("en-GB", {
+                    timeZone: "Asia/Jerusalem",
+                    hour12: false,
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  })
+                : "—"}
             </span>
           </Stat>
         </div>
 
         {/* Actions */}
         <div className="flex items-center gap-1 ml-2">
-          <IconButton aria="Search"><Search size={16} strokeWidth={1.8} /></IconButton>
-          <IconButton aria="Fullscreen"><Maximize2 size={16} strokeWidth={1.8} /></IconButton>
-          <IconButton aria="Notifications" hasBadge>
-            <Bell size={16} strokeWidth={1.8} />
+          <IconButton
+            aria={isFs ? "Exit fullscreen" : "Enter fullscreen"}
+            title={isFs ? "Exit fullscreen" : "Enter fullscreen"}
+            onClick={toggleFs}
+          >
+            {isFs ? <Minimize2 size={16} strokeWidth={1.8} /> : <Maximize2 size={16} strokeWidth={1.8} />}
           </IconButton>
-          <div className="w-9 h-9 ml-2 rounded-md border border-[color:var(--color-border-cyan)] bg-[color:var(--color-cyan-900)]/40 flex items-center justify-center text-[11px] font-semibold tracking-[0.1em] text-[color:var(--color-cyan-300)]">
-            OP
-          </div>
+          <Link
+            href="/alerts"
+            aria-label={alerts.counts.active > 0 ? `${alerts.counts.active} active alerts` : "Alerts"}
+            title={alerts.counts.active > 0 ? `${alerts.counts.active} active alert${alerts.counts.active === 1 ? "" : "s"}` : "Alerts"}
+            className="relative w-9 h-9 rounded-md flex items-center justify-center text-[color:var(--color-text-secondary)] hover:text-[color:var(--color-cyan-300)] hover:bg-white/[0.04] transition-colors"
+          >
+            <Bell size={16} strokeWidth={1.8} />
+            {alerts.counts.active > 0 && (
+              <span
+                className="absolute top-1.5 right-1.5 min-w-[14px] h-[14px] px-1 rounded-full bg-[color:var(--color-danger)] text-[9px] font-bold text-white flex items-center justify-center leading-none"
+                style={{ boxShadow: "0 0 6px rgba(255, 45, 92, 0.9)" }}
+              >
+                {alerts.counts.active > 99 ? "99+" : alerts.counts.active}
+              </span>
+            )}
+          </Link>
         </div>
       </div>
     </header>
@@ -145,24 +186,23 @@ function Divider() {
 function IconButton({
   children,
   aria,
-  hasBadge,
+  title,
+  onClick,
 }: {
   children: React.ReactNode;
   aria: string;
-  hasBadge?: boolean;
+  title?: string;
+  onClick?: () => void;
 }) {
   return (
     <button
+      type="button"
       aria-label={aria}
+      title={title ?? aria}
+      onClick={onClick}
       className="relative w-9 h-9 rounded-md flex items-center justify-center text-[color:var(--color-text-secondary)] hover:text-[color:var(--color-cyan-300)] hover:bg-white/[0.04] transition-colors"
     >
       {children}
-      {hasBadge && (
-        <span
-          className="absolute top-2 right-2 w-1.5 h-1.5 rounded-full bg-[color:var(--color-danger)]"
-          style={{ boxShadow: "0 0 6px rgba(255, 45, 92, 0.9)" }}
-        />
-      )}
     </button>
   );
 }

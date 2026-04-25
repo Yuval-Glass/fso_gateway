@@ -28,6 +28,7 @@ export function ThroughputCards({ snap }: { snap: TelemetrySnapshot }) {
         tone="cyan"
         icon={<Zap size={14} />}
         hintId="traffic.txBps"
+        href="/traffic"
         sub={
           <span className="font-mono tabular text-[color:var(--color-text-secondary)]">
             {formatNumber(latest.txPps)} pps
@@ -42,6 +43,7 @@ export function ThroughputCards({ snap }: { snap: TelemetrySnapshot }) {
         tone="cyan"
         icon={<Zap size={14} />}
         hintId="traffic.rxBps"
+        href="/traffic"
         sub={
           <span className="font-mono tabular text-[color:var(--color-text-secondary)]">
             {formatNumber(latest.rxPps)} pps
@@ -55,6 +57,7 @@ export function ThroughputCards({ snap }: { snap: TelemetrySnapshot }) {
         unit="pps"
         icon={<ArrowDownUp size={14} />}
         hintId="traffic.txPps"
+        href="/traffic"
         sub={
           <span className="font-mono tabular text-[color:var(--color-text-secondary)]">
             RX: {formatNumber(latest.rxPps)}
@@ -69,6 +72,7 @@ export function ThroughputCards({ snap }: { snap: TelemetrySnapshot }) {
         tone={utilizationPct > 80 ? "warning" : "success"}
         icon={<Gauge size={14} />}
         hintId="traffic.utilization"
+        href="/traffic"
         sub={
           <span className="text-[color:var(--color-text-secondary)]">
             of 10 Gbps aggregate

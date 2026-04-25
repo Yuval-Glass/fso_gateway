@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { PulseRing } from "@/components/primitives/PulseRing";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { FieldHint } from "@/components/primitives/FieldHint";
@@ -38,9 +39,12 @@ export function LinkStatusHero({ link, cfg }: LinkStatusHeroProps) {
           />
 
           <div className="flex flex-col items-center gap-4">
-            <div className="text-[10px] tracking-[0.32em] uppercase text-[color:var(--color-text-secondary)]">
-              FSO Link Integrity
-            </div>
+            <Link
+              href="/link-status"
+              className="text-[10px] tracking-[0.32em] uppercase text-[color:var(--color-text-secondary)] hover:text-[color:var(--color-cyan-300)] transition-colors"
+            >
+              FSO Link Integrity →
+            </Link>
             <PulseRing state={link.state} qualityPct={link.qualityPct} size={240} />
             <div className="grid grid-cols-3 gap-4 w-full max-w-[440px]">
               <Stat label="State" value={link.state.toUpperCase()} hintId="link.state" />

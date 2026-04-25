@@ -24,6 +24,7 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import time
 from contextlib import asynccontextmanager
@@ -46,7 +47,10 @@ import run_store
 # Config
 # ---------------------------------------------------------------------------
 
-TICK_HZ = 1.0
+# WebSocket broadcast rate. The C daemon emits at 10 Hz already; the bridge
+# downsamples to TICK_HZ before pushing to the GUI. Higher value = smoother
+# charts at the cost of more network/CPU. Override via FSO_BRIDGE_TICK_HZ.
+TICK_HZ = float(os.environ.get("FSO_BRIDGE_TICK_HZ", "5.0"))
 HISTORY_SAMPLES = 300
 ALERT_RING_MAX = 200
 GATEWAY_SOCKET_PATH = "/tmp/fso_gw.sock"
@@ -207,13 +211,18 @@ def _step(s: SimState) -> None:
             s.recoverable_bursts += 1
         s.max_burst_length = max(s.max_burst_length, b)
 
-    # History ring for throughput chart
+    # History ring for throughput + block-outcome charts
     s.history.append({
         "t": now_ms,
         "txBps": s.tx_bps,
         "rxBps": s.rx_bps,
         "txPps": s.tx_pps,
         "rxPps": s.rx_pps,
+        # Per-tick block deltas, expressed as "per second" since each tick
+        # represents 1 second of simulated traffic.
+        "blocksAttempted": float(blocks_this_tick),
+        "blocksRecovered": float(successes),
+        "blocksFailed":    float(failures),
     })
     if len(s.history) > HISTORY_SAMPLES:
         del s.history[: len(s.history) - HISTORY_SAMPLES]

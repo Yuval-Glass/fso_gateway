@@ -31,6 +31,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
         }
         icon={<ShieldX size={14} />}
         hintId="errors.symbolLossRatio"
+        href="/link-status"
         sub={<span className="text-[color:var(--color-text-secondary)]">lost/total on FSO</span>}
       />
       <MetricCard
@@ -40,6 +41,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
         tone={errors.blockFailRatio > 0.01 ? "danger" : errors.blockFailRatio > 0.001 ? "warning" : "success"}
         icon={<TriangleAlert size={14} />}
         hintId="errors.blockFailRatio"
+        href="/fec-analytics"
         sub={<span className="text-[color:var(--color-text-secondary)]">blocks_failed / attempted</span>}
       />
       <MetricCard
@@ -48,6 +50,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
         tone={errors.crcDrops > 100 ? "warning" : "neutral"}
         icon={<XCircle size={14} />}
         hintId="errors.crcDrops"
+        href="/packet-inspector"
         sub={<span className="text-[color:var(--color-text-secondary)]">Since run start</span>}
       />
       <MetricCard
@@ -56,6 +59,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
         tone="success"
         icon={<CheckCircle2 size={14} />}
         hintId="errors.recoveredPackets"
+        href="/fec-analytics"
         sub={<span className="text-[color:var(--color-text-secondary)]">LAN frames re-emitted</span>}
       />
       <MetricCard
@@ -65,6 +69,7 @@ export function ErrorMetrics({ errors }: { errors: Errors }) {
         tone={recoveryRate > 99.9 ? "success" : recoveryRate > 99 ? "cyan" : "warning"}
         icon={<AlertOctagon size={14} />}
         hintId="errors.fecSuccessRate"
+        href="/fec-analytics"
         sub={
           <span className="text-[color:var(--color-text-secondary)]">
             {formatNumber(errors.blocksRecovered)} / {formatNumber(errors.blocksAttempted)} blocks

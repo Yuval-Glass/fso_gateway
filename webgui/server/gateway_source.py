@@ -128,6 +128,9 @@ class GatewaySource:
         d_rx_bytes = max(0, stats["recovered_bytes"]   - prev_stats["recovered_bytes"])
         d_tx_pkts  = max(0, stats["transmitted_packets"] - prev_stats["transmitted_packets"])
         d_rx_pkts  = max(0, stats["recovered_packets"]   - prev_stats["recovered_packets"])
+        d_b_att    = max(0, stats["blocks_attempted"] - prev_stats["blocks_attempted"])
+        d_b_rec    = max(0, stats["blocks_recovered"] - prev_stats["blocks_recovered"])
+        d_b_fail   = max(0, stats["blocks_failed"]    - prev_stats["blocks_failed"])
 
         self._history.append({
             "t": raw["ts_ms"],
@@ -135,6 +138,11 @@ class GatewaySource:
             "rxBps": d_rx_bytes * 8.0 / dt_s,
             "txPps": d_tx_pkts / dt_s,
             "rxPps": d_rx_pkts / dt_s,
+            # Block-outcome rates so the FEC Analytics chart has history on
+            # first paint instead of building it up client-side.
+            "blocksAttempted": d_b_att / dt_s,
+            "blocksRecovered": d_b_rec / dt_s,
+            "blocksFailed":    d_b_fail / dt_s,
         })
         if len(self._history) > HISTORY_SAMPLES:
             del self._history[: len(self._history) - HISTORY_SAMPLES]
@@ -228,6 +236,7 @@ class GatewaySource:
         history = self._history if self._history else [{
             "t": raw["ts_ms"],
             "txBps": 0.0, "rxBps": 0.0, "txPps": 0.0, "rxPps": 0.0,
+            "blocksAttempted": 0.0, "blocksRecovered": 0.0, "blocksFailed": 0.0,
         }]
 
         burst_histogram = [

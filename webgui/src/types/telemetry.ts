@@ -25,6 +25,11 @@ export interface ThroughputSample {
   rxBps: number;   // derived from recovered_bytes deltas (reassembled LAN packets)
   txPps: number;   // transmitted_packets deltas (per-symbol on FSO)
   rxPps: number;   // recovered_packets deltas (per reassembled Ethernet frame)
+  // Per-tick FEC block deltas (rate per second). Optional because older
+  // bridge versions / mock fallbacks may not include them.
+  blocksAttempted?: number;
+  blocksRecovered?: number;
+  blocksFailed?: number;
 }
 
 export interface ErrorMetrics {

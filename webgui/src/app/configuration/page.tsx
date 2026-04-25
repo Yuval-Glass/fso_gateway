@@ -69,6 +69,7 @@ export default function ConfigurationPage() {
                 min={CONFIG_BOUNDS.k.min}
                 max={CONFIG_BOUNDS.k.max}
                 onChange={(v) => cfg.update("k", v)}
+                onCommit={(v) => cfg.save({ k: v })}
                 unit="symbols"
                 hint="data per block"
                 hintId="config.k"
@@ -79,6 +80,7 @@ export default function ConfigurationPage() {
                 min={CONFIG_BOUNDS.m.min}
                 max={CONFIG_BOUNDS.m.max}
                 onChange={(v) => cfg.update("m", v)}
+                onCommit={(v) => cfg.save({ m: v })}
                 unit="symbols"
                 hint="redundancy"
                 hintId="config.m"
@@ -101,6 +103,7 @@ export default function ConfigurationPage() {
                   min={CONFIG_BOUNDS.depth.min}
                   max={CONFIG_BOUNDS.depth.max}
                   onChange={(v) => cfg.update("depth", v)}
+                  onCommit={(v) => cfg.save({ depth: v })}
                   unit="rows"
                   hint="spread across blocks"
                   hintId="config.depth"
@@ -116,6 +119,7 @@ export default function ConfigurationPage() {
                   max={CONFIG_BOUNDS.symbol_size.max}
                   step={1}
                   onChange={(v) => cfg.update("symbol_size", v)}
+                  onCommit={(v) => cfg.save({ symbol_size: v })}
                   unit="bytes"
                   hint="payload per symbol"
                   hintId="config.symbolSize"
@@ -130,6 +134,7 @@ export default function ConfigurationPage() {
                 label="LAN Interface"
                 value={d.lan_iface}
                 onChange={(v) => cfg.update("lan_iface", v)}
+                onCommit={(v) => cfg.save({ lan_iface: v })}
                 placeholder="eth0"
                 maxLength={31}
                 mono
@@ -139,6 +144,7 @@ export default function ConfigurationPage() {
                 label="FSO Interface"
                 value={d.fso_iface}
                 onChange={(v) => cfg.update("fso_iface", v)}
+                onCommit={(v) => cfg.save({ fso_iface: v })}
                 placeholder="eth1"
                 maxLength={31}
                 mono

@@ -20,6 +20,7 @@ import {
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
 import { TactileButton } from "@/components/primitives/TactileButton";
+import { ChartZoomModal } from "@/components/primitives/ChartZoomModal";
 import { FieldHint } from "@/components/primitives/FieldHint";
 import { useRunDetail, useRuns } from "@/lib/useRuns";
 import { useExperimentDetail, useExperiments, type ExperimentSummary } from "@/lib/useExperiments";
@@ -63,10 +64,13 @@ const baseOpts: Partial<EChartsOption> = {
 
 type AnalyticsTab = "runs" | "experiments";
 
+type RunChartId = "throughput" | "quality" | "fec";
+
 export default function AnalyticsPage() {
   const [tab, setTab] = useState<AnalyticsTab>("runs");
   const runs = useRuns();
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [zoomed, setZoomed] = useState<RunChartId | null>(null);
 
   // Default selection: active run, else newest. Re-pick if selection invalid.
   const effectiveSelected = useMemo(() => {
@@ -144,6 +148,7 @@ export default function AnalyticsPage() {
                 <GlassPanel
                   label="Throughput Over Run"
                   hintId="traffic.txBps"
+                  onBodyClick={detail.samples.length >= 2 ? () => setZoomed("throughput") : undefined}
                   trailing={
                     <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
                       <Legend color={CYAN} label="TX" />
@@ -158,7 +163,11 @@ export default function AnalyticsPage() {
                   )}
                 </GlassPanel>
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  <GlassPanel label="Link Quality" hintId="link.qualityPct">
+                  <GlassPanel
+                    label="Link Quality"
+                    hintId="link.qualityPct"
+                    onBodyClick={detail.samples.length >= 2 ? () => setZoomed("quality") : undefined}
+                  >
                     {detail.samples.length < 2 ? <EmptyChart /> : (
                       <ReactECharts option={qualityChart} style={{ height: 200 }} notMerge={false} lazyUpdate />
                     )}
@@ -166,6 +175,7 @@ export default function AnalyticsPage() {
                   <GlassPanel
                     label="FEC Recovery Rate"
                     hintId="errors.fecSuccessRate"
+                    onBodyClick={detail.samples.length >= 2 ? () => setZoomed("fec") : undefined}
                     trailing={
                       <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
                         Per-sample from counter deltas
@@ -182,6 +192,28 @@ export default function AnalyticsPage() {
           )}
         </div>
       </div>
+
+      {zoomed && (
+        <ChartZoomModal
+          title={
+            zoomed === "throughput" ? "Throughput Over Run"
+              : zoomed === "quality" ? "Link Quality"
+              : "FEC Recovery Rate"
+          }
+          onClose={() => setZoomed(null)}
+        >
+          <ReactECharts
+            option={
+              zoomed === "throughput" ? throughputChart
+                : zoomed === "quality" ? qualityChart
+                : fecChart
+            }
+            style={{ height: "100%", width: "100%" }}
+            notMerge={false}
+            lazyUpdate
+          />
+        </ChartZoomModal>
+      )}
     </div>
   );
 }

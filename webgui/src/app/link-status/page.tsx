@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type { EChartsOption } from "echarts";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { PulseRing } from "@/components/primitives/PulseRing";
+import { ChartZoomModal } from "@/components/primitives/ChartZoomModal";
 import { FieldHint } from "@/components/primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
 import { useLinkHistory, type FadeEvent } from "@/lib/useLinkHistory";
@@ -39,6 +40,11 @@ const baseAxis = {
 const baseOpts: Partial<EChartsOption> = {
   grid: { left: 54, right: 20, top: 28, bottom: 28 },
   textStyle: { fontFamily: "var(--font-sans)" },
+  animation: true,
+  animationDuration: 100,
+  animationDurationUpdate: 100,
+  animationEasing: "linear",
+  animationEasingUpdate: "linear",
   tooltip: {
     trigger: "axis",
     backgroundColor: "rgba(13, 19, 32, 0.95)",
@@ -48,9 +54,12 @@ const baseOpts: Partial<EChartsOption> = {
   },
 };
 
+type LinkChartId = "quality" | "loss";
+
 export default function LinkStatusPage() {
   const { snapshot: snap } = useTelemetry();
   const history = useLinkHistory(snap);
+  const [zoomed, setZoomed] = useState<LinkChartId | null>(null);
 
   const qualityChart = useMemo(() => buildQualityOption(history.samples), [history.samples]);
   const lossChart    = useMemo(() => buildLossOption(history.samples),    [history.samples]);
@@ -121,6 +130,7 @@ export default function LinkStatusPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
         <GlassPanel label="Quality Over Time" hintId="link.qualityPct"
+          onBodyClick={history.samples.length >= 2 ? () => setZoomed("quality") : undefined}
           trailing={<span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">derived from blocks_recovered / attempted</span>}>
           {history.samples.length < 2
             ? <EmptyChart />
@@ -128,6 +138,7 @@ export default function LinkStatusPage() {
         </GlassPanel>
 
         <GlassPanel label="Symbol Loss Ratio" hintId="errors.symbolLossRatio"
+          onBodyClick={history.samples.length >= 2 ? () => setZoomed("loss") : undefined}
           trailing={<span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">lost_symbols / total_symbols</span>}>
           {history.samples.length < 2
             ? <EmptyChart />
@@ -146,6 +157,20 @@ export default function LinkStatusPage() {
         />
         <FadeTimelinePanel fades={history.fades} />
       </div>
+
+      {zoomed && (
+        <ChartZoomModal
+          title={zoomed === "quality" ? "Quality Over Time" : "Symbol Loss Ratio"}
+          onClose={() => setZoomed(null)}
+        >
+          <ReactECharts
+            option={zoomed === "quality" ? qualityChart : lossChart}
+            style={{ height: "100%", width: "100%" }}
+            notMerge={false}
+            lazyUpdate
+          />
+        </ChartZoomModal>
+      )}
     </div>
   );
 }

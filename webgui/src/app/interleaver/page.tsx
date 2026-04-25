@@ -7,15 +7,39 @@ import { MetricCard } from "@/components/primitives/MetricCard";
 import { FieldHint } from "@/components/primitives/FieldHint";
 import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
+import { useConfig } from "@/lib/useConfig";
+import { useDaemon } from "@/lib/useDaemon";
 import { cn, formatBytes, formatNumber, formatPercent } from "@/lib/utils";
 
 export default function InterleaverPage() {
   const { snapshot: snap } = useTelemetry();
+  // The matrix should reflect what the user is configuring, not what the
+  // daemon happens to be running with. Prefer the editable draft, fall back
+  // to configEcho (the running daemon's config) when no draft is loaded.
+  const cfgState = useConfig();
+  const { status: daemonStatus } = useDaemon();
+
+  // Active parameters: draft > configEcho > zeros.
+  const draft = cfgState.draft;
+  const echo = snap?.configEcho;
+  const k = draft?.k ?? echo?.k ?? 0;
+  const m = draft?.m ?? echo?.m ?? 0;
+  const depth = draft?.depth ?? echo?.depth ?? 0;
+  const symSize = draft?.symbol_size ?? echo?.symbolSize ?? 0;
+  const haveCfg = (k + m) > 0 && depth > 0;
+
+  // Only warn about a mismatch when the daemon is actually running with
+  // different params. If it's stopped, configEcho is just stale cached
+  // data from a previous run and the warning is noise.
+  const daemonRunning = daemonStatus?.state === "running";
+  const echoMismatch = daemonRunning && !!echo && (
+    echo.k !== k || echo.m !== m || echo.depth !== depth || echo.symbolSize !== symSize
+  );
 
   const matrixCells = useMemo(() => {
-    if (!snap?.configEcho) return null;
-    return computeMatrixCells(snap.configEcho.depth, snap.configEcho.k + snap.configEcho.m);
-  }, [snap?.configEcho?.depth, snap?.configEcho?.k, snap?.configEcho?.m]);
+    if (!haveCfg) return null;
+    return computeMatrixCells(depth, k + m);
+  }, [depth, k, m, haveCfg]);
 
   if (!snap) {
     return (
@@ -27,12 +51,6 @@ export default function InterleaverPage() {
     );
   }
 
-  const cfg = snap.configEcho;
-  const haveCfg = !!cfg;
-  const depth = cfg?.depth ?? 0;
-  const k = cfg?.k ?? 0;
-  const m = cfg?.m ?? 0;
-  const symSize = cfg?.symbolSize ?? 0;
   const total = k + m;
   const cellCount = depth * total;
   const recoverySpanSymbols = m * depth;
@@ -70,6 +88,24 @@ export default function InterleaverPage() {
           Phase 4G · Interleaver View
         </div>
       </div>
+
+      {echoMismatch && (
+        <div
+          className="px-3 py-2 rounded-md border text-[11px] flex items-start gap-2"
+          style={{
+            borderColor: "rgba(255, 176, 32, 0.5)",
+            background: "rgba(255, 176, 32, 0.08)",
+            color: "var(--color-warning)",
+          }}
+        >
+          <Zap size={13} className="mt-0.5 shrink-0" />
+          <span>
+            Showing edited config (K={k}, M={m}, depth={depth}, sym={symSize}). The
+            running daemon still uses {echo?.k}/{echo?.m}/{echo?.depth}/{echo?.symbolSize}.
+            Save and restart the gateway from <span className="font-mono">/configuration</span> to apply.
+          </span>
+        </div>
+      )}
 
       {/* Top strip */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -174,6 +210,7 @@ export default function InterleaverPage() {
       {/* Burst-coverage visualization as a stacked bar */}
       <GlassPanel
         label="Burst Coverage vs Recovery Span"
+        hintId="interleaver.burstCoverage"
         trailing={
           <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
             span = {recoverySpanSymbols} symbols
@@ -206,9 +243,23 @@ interface ComputedCells {
   cells: MatrixCellData[];
 }
 
+// Above this many cells we stop rendering one rect per cell — the DOM cost
+// crushes the renderer (and ultimately page navigation, since the unmount
+// has to dispose every node). For dense grids we collapse each row into
+// just two rects (a cyan K-band and an amber M-band).
+const PER_CELL_LIMIT = 2048;
+
 function computeMatrixCells(depth: number, total: number): ComputedCells {
-  const rows = Math.max(1, Math.min(depth, 32)); // clamp for visual sanity
-  const cols = Math.max(1, Math.min(total, 32));
+  // No clamping — MatrixCanvas uses a responsive viewBox so it can render
+  // any K+M × depth matrix that the daemon accepts.
+  const rows = Math.max(1, depth);
+  const cols = Math.max(1, total);
+  // Skip per-cell allocation when the grid is dense (the canvas will render
+  // a per-row aggregate view in that case). Avoids holding ~92k objects in
+  // memory for depth=1024 × K+M=90.
+  if (rows * cols > PER_CELL_LIMIT) {
+    return { rows, cols, cells: [] };
+  }
   const cells: MatrixCellData[] = [];
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -229,57 +280,97 @@ function MatrixCanvas({
   k: number;
   cellsFlat: MatrixCellData[];
 }) {
-  const cellSize = Math.max(10, Math.min(26, Math.floor(680 / Math.max(rows, cols))));
-  const gap = 3;
-  const totalW = cols * (cellSize + gap);
-  const totalH = rows * (cellSize + gap);
+  // viewBox-coordinate sizes — the SVG itself scales to its container,
+  // so these only define cell:gap proportions, not actual pixel sizes.
+  const CELL = 10;
+  const GAP = 2;
+  const vbW = cols * (CELL + GAP);
+  const vbH = rows * (CELL + GAP);
+  const cellCount = rows * cols;
+  const dense = cellCount > PER_CELL_LIMIT;
+  // Disable per-cell breathe animation when the grid is dense.
+  const animate = cellCount <= 256;
 
   return (
-    <div className="flex flex-col items-center gap-3 py-3">
+    <div className="flex flex-col items-center gap-3 py-3 w-full">
       <div
-        className="relative"
+        className="relative w-full"
         style={{
-          width: totalW,
-          height: totalH,
+          maxWidth: 1100,
           background:
             "radial-gradient(ellipse at center, rgba(0, 212, 255, 0.08), transparent 70%)",
         }}
       >
-        <svg width={totalW} height={totalH} style={{ display: "block" }}>
-          {cellsFlat.map((cell) => {
-            const isRepair = cell.col >= k;
-            const fill = isRepair ? "rgba(255, 176, 32, 0.22)" : "rgba(0, 212, 255, 0.18)";
-            const stroke = isRepair ? "rgba(255, 176, 32, 0.5)" : "rgba(0, 212, 255, 0.45)";
-            const x = cell.col * (cellSize + gap);
-            const y = cell.row * (cellSize + gap);
-            return (
-              <g key={`${cell.row}-${cell.col}`}>
-                <rect
-                  x={x}
-                  y={y}
-                  width={cellSize}
-                  height={cellSize}
-                  fill={fill}
-                  stroke={stroke}
-                  strokeWidth={0.6}
-                  rx={1.5}
-                >
-                  <animate
-                    attributeName="opacity"
-                    from="0.5"
-                    to="1"
-                    dur={`${2 + (cell.row * 0.13 + cell.col * 0.07) % 2}s`}
-                    repeatCount="indefinite"
-                    values="0.55; 1; 0.55"
-                    keyTimes="0; 0.5; 1"
-                  />
-                </rect>
-              </g>
-            );
-          })}
+        <svg
+          viewBox={`0 0 ${vbW} ${vbH}`}
+          preserveAspectRatio="xMidYMid meet"
+          style={{ width: "100%", maxHeight: 320, display: "block" }}
+          shapeRendering="optimizeSpeed"
+        >
+          {dense
+            ? // Per-row mode: two rects per row (K band + M band).
+              // 2 × rows = at most ~2048 elements even for depth=1024.
+              Array.from({ length: rows }, (_, r) => {
+                const y = r * (CELL + GAP);
+                const dataW = k * (CELL + GAP) - GAP;
+                const repairX = k * (CELL + GAP);
+                const repairW = (cols - k) * (CELL + GAP) - GAP;
+                return (
+                  <g key={r}>
+                    {k > 0 && (
+                      <rect
+                        x={0}
+                        y={y}
+                        width={dataW}
+                        height={CELL}
+                        fill="rgba(0, 212, 255, 0.20)"
+                      />
+                    )}
+                    {cols > k && (
+                      <rect
+                        x={repairX}
+                        y={y}
+                        width={repairW}
+                        height={CELL}
+                        fill="rgba(255, 176, 32, 0.25)"
+                      />
+                    )}
+                  </g>
+                );
+              })
+            : cellsFlat.map((cell) => {
+                const isRepair = cell.col >= k;
+                const fill = isRepair ? "rgba(255, 176, 32, 0.22)" : "rgba(0, 212, 255, 0.18)";
+                const stroke = isRepair ? "rgba(255, 176, 32, 0.5)" : "rgba(0, 212, 255, 0.45)";
+                const x = cell.col * (CELL + GAP);
+                const y = cell.row * (CELL + GAP);
+                return (
+                  <rect
+                    key={`${cell.row}-${cell.col}`}
+                    x={x}
+                    y={y}
+                    width={CELL}
+                    height={CELL}
+                    fill={fill}
+                    stroke={stroke}
+                    strokeWidth={0.6}
+                    rx={1}
+                  >
+                    {animate && (
+                      <animate
+                        attributeName="opacity"
+                        dur={`${2 + (cell.row * 0.13 + cell.col * 0.07) % 2}s`}
+                        repeatCount="indefinite"
+                        values="0.55; 1; 0.55"
+                        keyTimes="0; 0.5; 1"
+                      />
+                    )}
+                  </rect>
+                );
+              })}
         </svg>
       </div>
-      <div className="flex gap-6 text-[10px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
+      <div className="flex gap-6 text-[10px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] flex-wrap justify-center">
         <span>
           rows = depth (<span className="text-[color:var(--color-cyan-300)]">{rows}</span>)
         </span>
@@ -290,6 +381,11 @@ function MatrixCanvas({
           K = <span className="text-[color:var(--color-cyan-300)]">{k}</span>
           · repair starts at col {k}
         </span>
+        {dense && (
+          <span className="text-[color:var(--color-text-muted)]">
+            · {rows.toLocaleString()}×{cols.toLocaleString()} = aggregate view
+          </span>
+        )}
       </div>
     </div>
   );

@@ -61,9 +61,21 @@ export const CONFIG_PRESETS: ConfigPreset[] = [
   },
 ];
 
+/**
+ * Bounds taken from the actual C limits, not from arbitrary GUI caps:
+ *   - k:           Wirehair requires K >= 2 (fec_wrapper.c:153).
+ *                  Upper bound is MAX_SYMBOLS_PER_BLOCK = 256 (types.h:100).
+ *                  Cross-parameter constraint K + M <= 256 is checked by the
+ *                  daemon at interleaver_create() time — not modeled here.
+ *   - m:           C allows M = 0 (no parity). Upper bound is also 256, but
+ *                  effectively limited by K + M <= 256.
+ *   - depth:       No explicit ceiling in C — memory grows linearly. 1024 is
+ *                  a practical cap (≈18 MiB per matrix at K+M=12, sym=1500).
+ *   - symbol_size: MAX_SYMBOL_DATA_SIZE = 9000 in types.h:39 (jumbo frame).
+ */
 export const CONFIG_BOUNDS = {
-  k: { min: 1, max: 64, step: 1 },
-  m: { min: 0, max: 64, step: 1 },
-  depth: { min: 1, max: 128, step: 1 },
-  symbol_size: { min: 64, max: 9000, step: 1 },
+  k: { min: 2, max: 256, step: 1 },
+  m: { min: 0, max: 256, step: 1 },
+  depth: { min: 1, max: 1024, step: 1 },
+  symbol_size: { min: 1, max: 9000, step: 1 },
 } as const;
