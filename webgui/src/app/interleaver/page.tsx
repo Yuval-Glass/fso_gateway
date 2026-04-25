@@ -4,6 +4,8 @@ import { useMemo } from "react";
 import { Boxes, Grid3x3, Network, Shield, Zap } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
+import { FieldHint } from "@/components/primitives/FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { cn, formatBytes, formatNumber, formatPercent } from "@/lib/utils";
 
@@ -76,6 +78,7 @@ export default function InterleaverPage() {
           value={haveCfg ? `${depth} × ${total}` : "—"}
           tone="cyan"
           icon={<Grid3x3 size={14} />}
+          hintId="interleaver.matrix"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {formatNumber(cellCount)} cells · {formatBytes(matrixBytes, 1)}
@@ -88,6 +91,7 @@ export default function InterleaverPage() {
           unit="symbols"
           tone="success"
           icon={<Shield size={14} />}
+          hintId="interleaver.recoverySpan"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               m ({m}) × depth ({depth})
@@ -99,6 +103,7 @@ export default function InterleaverPage() {
           value={formatPercent(coverage, 2)}
           tone={coverage > 0.98 ? "success" : coverage > 0.9 ? "cyan" : "warning"}
           icon={<Network size={14} />}
+          hintId="interleaver.burstCoverage"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {formatNumber(withinSpan)} / {formatNumber(totalBursts)} bursts within span
@@ -110,6 +115,7 @@ export default function InterleaverPage() {
           value={formatNumber(exceeding)}
           tone={exceeding > 0 ? "danger" : "success"}
           icon={<Zap size={14} />}
+          hintId="stress.exceedingFecSpan"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               Critical: {formatNumber(critical)} · Recoverable: {formatNumber(recoverable)}
@@ -146,15 +152,15 @@ export default function InterleaverPage() {
 
         <GlassPanel label="Derivations & Knobs">
           <ul className="text-[11px] space-y-2 py-1">
-            <KV label="Depth (rows)" value={formatNumber(depth)} tone="cyan" />
-            <KV label="Block width (K+M)" value={formatNumber(total)} />
-            <KV label="Symbol size" value={symSize > 0 ? `${formatNumber(symSize)} B` : "—"} />
-            <KV label="Symbols per matrix" value={formatNumber(cellCount)} />
-            <KV label="Bytes per matrix" value={formatBytes(matrixBytes, 1)} />
+            <KV label="Depth (rows)" value={formatNumber(depth)} tone="cyan" hintId="interleaver.depth" />
+            <KV label="Block width (K+M)" value={formatNumber(total)} hintId="interleaver.blockWidth" />
+            <KV label="Symbol size" value={symSize > 0 ? `${formatNumber(symSize)} B` : "—"} hintId="interleaver.symbolSize" />
+            <KV label="Symbols per matrix" value={formatNumber(cellCount)} hintId="interleaver.cells" />
+            <KV label="Bytes per matrix" value={formatBytes(matrixBytes, 1)} hintId="interleaver.matrixBytes" />
             <li className="border-t border-[color:var(--color-border-hair)] my-2" />
-            <KV label="Max burst recovered" value={formatNumber(recoverySpanSymbols)} tone="success" />
+            <KV label="Max burst recovered" value={formatNumber(recoverySpanSymbols)} tone="success" hintId="interleaver.recoverySpan" />
             <KV label="Worst holes / block" value={formatNumber(worstHoles)}
-                tone={worstHoles > m ? "danger" : worstHoles > m / 2 ? "warning" : "neutral"} />
+                tone={worstHoles > m ? "danger" : worstHoles > m / 2 ? "warning" : "neutral"} hintId="stress.worstHolesInBlock" />
           </ul>
           <div className="mt-3 text-[10px] leading-relaxed text-[color:var(--color-text-muted)]">
             Each column is a FEC block ({k} data + {m} repair symbols). Column-major
@@ -367,10 +373,12 @@ function KV({
   label,
   value,
   tone = "neutral",
+  hintId,
 }: {
   label: string;
   value: string;
   tone?: "neutral" | "cyan" | "success" | "warning" | "danger";
+  hintId?: FieldHintId;
 }) {
   const colorMap: Record<string, string> = {
     neutral: "var(--color-text-primary)",
@@ -381,8 +389,9 @@ function KV({
   };
   return (
     <li className="flex items-baseline justify-between gap-3">
-      <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </span>
       <span className={cn("tabular font-mono")} style={{ color: colorMap[tone] }}>
         {value}

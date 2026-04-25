@@ -4,6 +4,7 @@ import { Download, Eraser, Pause, Play, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { TactileButton } from "@/components/primitives/TactileButton";
+import { FieldHint } from "@/components/primitives/FieldHint";
 import { cn, formatNumber } from "@/lib/utils";
 import { useLogs } from "@/lib/useLogs";
 import type { LogEvent, LogLevel } from "@/types/logs";
@@ -105,9 +106,12 @@ export function LogConsole({ bufferSize = 1000 }: { bufferSize?: number }) {
           <TactileButton variant="secondary" icon={<Eraser size={12} />} onClick={logs.clear}>
             Clear
           </TactileButton>
-          <TactileButton variant="secondary" icon={<Download size={12} />} onClick={download}>
-            Export
-          </TactileButton>
+          <span className="inline-flex items-center gap-1">
+            <TactileButton variant="secondary" icon={<Download size={12} />} onClick={download}>
+              Export
+            </TactileButton>
+            <FieldHint id="log.export" size={10} />
+          </span>
         </div>
       </div>
 
@@ -187,7 +191,10 @@ function LogRow({ e }: { e: LogEvent }) {
 function LevelFilter({ logs }: { logs: ReturnType<typeof useLogs> }) {
   return (
     <div className="flex items-center gap-1">
-      <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] mr-1">Level</span>
+      <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] mr-1 inline-flex items-center gap-1">
+        <span>Level</span>
+        <FieldHint id="log.level" size={10} />
+      </span>
       {LEVEL_ORDER.map((l) => {
         const active = logs.filter.levels[l];
         const c = LEVEL_COLORS[l];
@@ -224,13 +231,14 @@ function ModuleFilter({ logs }: { logs: ReturnType<typeof useLogs> }) {
   const [open, setOpen] = useState(false);
   const activeCount = Object.values(logs.filter.modules).filter(Boolean).length;
   return (
-    <div className="relative">
+    <div className="relative inline-flex items-center gap-1">
       <button
         onClick={() => setOpen((o) => !o)}
         className="px-2 py-1 rounded border border-[color:var(--color-border-subtle)] text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-secondary)] hover:text-[color:var(--color-cyan-300)] hover:bg-white/[0.04]"
       >
         Modules{activeCount > 0 ? ` · ${activeCount}` : ""}
       </button>
+      <FieldHint id="log.module" size={10} />
       {open && (
         <div className="absolute z-20 top-full mt-1 left-0 w-60 glass-raised rounded-md p-2 space-y-0.5 max-h-72 overflow-y-auto">
           {logs.knownModules.length === 0 ? (

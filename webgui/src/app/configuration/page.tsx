@@ -6,6 +6,7 @@ import { Slider } from "@/components/primitives/Slider";
 import { TactileButton } from "@/components/primitives/TactileButton";
 import { TextField } from "@/components/primitives/TextField";
 import { Toggle } from "@/components/primitives/Toggle";
+import { FieldHint } from "@/components/primitives/FieldHint";
 import { useConfig } from "@/lib/useConfig";
 import { useDaemon, type DaemonStatus } from "@/lib/useDaemon";
 import { CONFIG_BOUNDS, CONFIG_PRESETS, type ConfigPreset } from "@/types/config";
@@ -70,6 +71,7 @@ export default function ConfigurationPage() {
                 onChange={(v) => cfg.update("k", v)}
                 unit="symbols"
                 hint="data per block"
+                hintId="config.k"
               />
               <Slider
                 label="M — Repair Symbols"
@@ -79,13 +81,14 @@ export default function ConfigurationPage() {
                 onChange={(v) => cfg.update("m", v)}
                 unit="symbols"
                 hint="redundancy"
+                hintId="config.m"
               />
             </div>
             <div className="mt-5 grid grid-cols-4 gap-2">
-              <Derived label="Overhead" value={formatPercent(overhead, 1)} tone="cyan" />
-              <Derived label="Code Rate" value={codeRate.toFixed(3)} />
-              <Derived label="Block Size" value={formatBytes(blockBytes, 1)} />
-              <Derived label="Burst Recovery ~" value={`${approxBurstRec} sym`} tone="success" />
+              <Derived label="Overhead" value={formatPercent(overhead, 1)} tone="cyan" hintId="config.overhead" />
+              <Derived label="Code Rate" value={codeRate.toFixed(3)} hintId="config.codeRate" />
+              <Derived label="Block Size" value={formatBytes(blockBytes, 1)} hintId="config.blockSize" />
+              <Derived label="Burst Recovery ~" value={`${approxBurstRec} sym`} tone="success" hintId="config.burstRecovery" />
             </div>
           </GlassPanel>
 
@@ -100,6 +103,7 @@ export default function ConfigurationPage() {
                   onChange={(v) => cfg.update("depth", v)}
                   unit="rows"
                   hint="spread across blocks"
+                  hintId="config.depth"
                 />
               </div>
             </GlassPanel>
@@ -114,6 +118,7 @@ export default function ConfigurationPage() {
                   onChange={(v) => cfg.update("symbol_size", v)}
                   unit="bytes"
                   hint="payload per symbol"
+                  hintId="config.symbolSize"
                 />
               </div>
             </GlassPanel>
@@ -128,6 +133,7 @@ export default function ConfigurationPage() {
                 placeholder="eth0"
                 maxLength={31}
                 mono
+                hintId="config.lanIface"
               />
               <TextField
                 label="FSO Interface"
@@ -136,6 +142,7 @@ export default function ConfigurationPage() {
                 placeholder="eth1"
                 maxLength={31}
                 mono
+                hintId="config.fsoIface"
               />
             </div>
           </GlassPanel>
@@ -147,6 +154,7 @@ export default function ConfigurationPage() {
                 checked={d.internal_symbol_crc}
                 onChange={(v) => cfg.update("internal_symbol_crc", v)}
                 description="Per-symbol CRC-32C (Castagnoli) — invalid symbols are dropped on RX and treated as erasures by the FEC layer."
+                hintId="config.internalSymbolCrc"
               />
             </div>
           </GlassPanel>
@@ -208,6 +216,7 @@ export default function ConfigurationPage() {
                     ? "Saved — restart to apply"
                     : "In sync with bridge"}
                 </span>
+                <FieldHint id="config.statusDot" size={11} />
               </div>
               {cfg.error && (
                 <div className="flex items-start gap-2 px-3 py-2 rounded-md border border-[color:var(--color-border-danger)] bg-[color:var(--color-danger)]/10 text-[11px] text-[color:var(--color-danger)]">
@@ -215,7 +224,7 @@ export default function ConfigurationPage() {
                   <span>{cfg.error}</span>
                 </div>
               )}
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 <TactileButton
                   variant="primary"
                   icon={<Save size={13} />}
@@ -226,6 +235,7 @@ export default function ConfigurationPage() {
                 >
                   Apply Changes
                 </TactileButton>
+                <FieldHint id="config.applyBtn" size={11} />
                 <TactileButton
                   variant="secondary"
                   icon={<Undo2 size={13} />}
@@ -234,6 +244,7 @@ export default function ConfigurationPage() {
                 >
                   Revert
                 </TactileButton>
+                <FieldHint id="config.revertBtn" size={11} />
               </div>
               <div className="text-[10px] text-[color:var(--color-text-muted)] leading-snug">
                 Saving persists to <span className="font-mono">webgui/server/config.yaml</span>.
@@ -244,13 +255,13 @@ export default function ConfigurationPage() {
 
           <GlassPanel label="Live Derived">
             <ul className="text-[11px] space-y-1.5 py-1">
-              <KV label="FEC Overhead"          value={formatPercent(overhead, 2)} tone="cyan" />
-              <KV label="Code Rate (k/(k+m))"   value={codeRate.toFixed(4)} />
-              <KV label="Symbols per Block"     value={`${total}`} />
-              <KV label="Block Payload"         value={formatBytes(k * symSize, 1)} />
-              <KV label="Block Wire Size"       value={formatBytes(blockBytes, 1)} />
-              <KV label="Interleaver Window"    value={`${depth} × ${total} = ${depth * total} sym`} />
-              <KV label="Approx. Burst Recovery" value={`${approxBurstRec} symbols`} tone="success" />
+              <KV label="FEC Overhead"           value={formatPercent(overhead, 2)} tone="cyan" hintId="config.overhead" />
+              <KV label="Code Rate (k/(k+m))"    value={codeRate.toFixed(4)} hintId="config.codeRate" />
+              <KV label="Symbols per Block"      value={`${total}`} hintId="interleaver.blockWidth" />
+              <KV label="Block Payload"          value={formatBytes(k * symSize, 1)} />
+              <KV label="Block Wire Size"        value={formatBytes(blockBytes, 1)} hintId="config.blockSize" />
+              <KV label="Interleaver Window"     value={`${depth} × ${total} = ${depth * total} sym`} hintId="interleaver.matrix" />
+              <KV label="Approx. Burst Recovery" value={`${approxBurstRec} symbols`} tone="success" hintId="config.burstRecovery" />
             </ul>
           </GlassPanel>
         </div>
@@ -273,10 +284,12 @@ function Derived({
   label,
   value,
   tone = "neutral",
+  hintId,
 }: {
   label: string;
   value: string;
   tone?: "neutral" | "cyan" | "success";
+  hintId?: import("@/lib/fieldHints").FieldHintId;
 }) {
   const color =
     tone === "cyan"
@@ -286,8 +299,9 @@ function Derived({
       : "var(--color-text-primary)";
   return (
     <div className="glass rounded-md px-3 py-2 border-[color:var(--color-border-hair)]">
-      <div className="text-[9px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <div className="text-[9px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </div>
       <div className="font-display text-base font-semibold tabular mt-0.5" style={{ color }}>
         {value}
@@ -300,10 +314,12 @@ function KV({
   label,
   value,
   tone = "neutral",
+  hintId,
 }: {
   label: string;
   value: string;
   tone?: "neutral" | "cyan" | "success";
+  hintId?: import("@/lib/fieldHints").FieldHintId;
 }) {
   const color =
     tone === "cyan"
@@ -313,8 +329,9 @@ function KV({
       : "var(--color-text-primary)";
   return (
     <li className="flex items-baseline justify-between gap-3">
-      <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </span>
       <span className="font-mono tabular" style={{ color }}>
         {value}
@@ -343,32 +360,41 @@ function RuntimeControlsPanel({ daemon }: { daemon: ReturnType<typeof useDaemon>
     >
       <div className="flex flex-col gap-3 pt-1">
         <div className="flex flex-wrap items-center gap-2">
-          <TactileButton
-            variant="primary"
-            icon={<Play size={13} />}
-            onClick={() => daemon.start()}
-            loading={isStarting}
-            disabled={!canStart}
-          >
-            Start Gateway
-          </TactileButton>
-          <TactileButton
-            variant="secondary"
-            icon={<RotateCcw size={13} />}
-            onClick={() => daemon.restart()}
-            disabled={!canRestart}
-          >
-            Restart
-          </TactileButton>
-          <TactileButton
-            variant="danger"
-            icon={<Square size={13} />}
-            onClick={() => daemon.stop()}
-            loading={isStopping}
-            disabled={!canStop}
-          >
-            Stop
-          </TactileButton>
+          <span className="inline-flex items-center gap-1">
+            <TactileButton
+              variant="primary"
+              icon={<Play size={13} />}
+              onClick={() => daemon.start()}
+              loading={isStarting}
+              disabled={!canStart}
+            >
+              Start Gateway
+            </TactileButton>
+            <FieldHint id="daemon.startBtn" size={11} />
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <TactileButton
+              variant="secondary"
+              icon={<RotateCcw size={13} />}
+              onClick={() => daemon.restart()}
+              disabled={!canRestart}
+            >
+              Restart
+            </TactileButton>
+            <FieldHint id="daemon.restartBtn" size={11} />
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <TactileButton
+              variant="danger"
+              icon={<Square size={13} />}
+              onClick={() => daemon.stop()}
+              loading={isStopping}
+              disabled={!canStop}
+            >
+              Stop
+            </TactileButton>
+            <FieldHint id="daemon.stopBtn" size={11} />
+          </span>
         </div>
 
         {daemon.error && (
@@ -387,16 +413,18 @@ function RuntimeControlsPanel({ daemon }: { daemon: ReturnType<typeof useDaemon>
 
         {s && (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px]">
-            <KV label="PID" value={s.pid != null ? String(s.pid) : "—"} />
+            <KV label="PID" value={s.pid != null ? String(s.pid) : "—"} hintId="daemon.pid" />
             <KV
               label="Uptime"
               value={s.uptimeSec != null ? formatUptime(s.uptimeSec) : "—"}
+              hintId="daemon.uptime"
             />
-            <KV label="Sudo" value={s.useSudo ? "yes" : "no"} />
+            <KV label="Sudo" value={s.useSudo ? "yes" : "no"} hintId="daemon.sudo" />
             <KV
               label="Binary"
               value={s.binaryFound ? "found" : "missing"}
               tone={s.binaryFound ? "success" : "neutral"}
+              hintId="daemon.binary"
             />
           </div>
         )}

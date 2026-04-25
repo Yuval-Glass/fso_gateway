@@ -42,16 +42,16 @@ export function LiveCharts({ snap }: { snap: TelemetrySnapshot }) {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <GlassPanel label="Throughput Over Time" trailing={<RangePill />}>
+      <GlassPanel label="Throughput Over Time" hintId="traffic.txBps" trailing={<RangePill />}>
         <ReactECharts option={throughputOpt} style={{ height: 220 }} notMerge={false} lazyUpdate />
       </GlassPanel>
-      <GlassPanel label="Packet Rate (pps)" trailing={<RangePill />}>
+      <GlassPanel label="Packet Rate (pps)" hintId="traffic.txPps" trailing={<RangePill />}>
         <ReactECharts option={ppsOpt} style={{ height: 220 }} notMerge={false} lazyUpdate />
       </GlassPanel>
-      <GlassPanel label="Burst-Length Distribution">
+      <GlassPanel label="Burst-Length Distribution" hintId="burst.histogram">
         <ReactECharts option={burstOpt} style={{ height: 220 }} notMerge={false} lazyUpdate />
       </GlassPanel>
-      <GlassPanel label="Cumulative Counters">
+      <GlassPanel label="Cumulative Counters" hintId="stress.blocksWithLoss">
         <ReactECharts option={symbolLossOpt} style={{ height: 220 }} notMerge={false} lazyUpdate />
       </GlassPanel>
     </div>

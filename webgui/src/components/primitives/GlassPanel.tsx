@@ -1,11 +1,14 @@
 import { cn } from "@/lib/utils";
 import type { HTMLAttributes, ReactNode } from "react";
+import { FieldHint } from "./FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 
 interface GlassPanelProps extends HTMLAttributes<HTMLDivElement> {
   variant?: "default" | "raised" | "cyan";
   label?: string;
   trailing?: ReactNode;
   padded?: boolean;
+  hintId?: FieldHintId;
 }
 
 export function GlassPanel({
@@ -13,6 +16,7 @@ export function GlassPanel({
   label,
   trailing,
   padded = true,
+  hintId,
   className,
   children,
   ...rest
@@ -31,8 +35,9 @@ export function GlassPanel({
     >
       {label !== undefined && (
         <div className="flex items-center justify-between px-4 pt-3 pb-2 border-b border-[color:var(--color-border-hair)]">
-          <h3 className="text-[10px] font-medium tracking-[0.18em] uppercase text-[color:var(--color-text-secondary)]">
-            {label}
+          <h3 className="text-[10px] font-medium tracking-[0.18em] uppercase text-[color:var(--color-text-secondary)] inline-flex items-center gap-1">
+            <span>{label}</span>
+            {hintId && <FieldHint id={hintId} size={11} />}
           </h3>
           {trailing && <div className="flex items-center gap-2">{trailing}</div>}
         </div>

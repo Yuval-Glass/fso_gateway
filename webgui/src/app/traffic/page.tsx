@@ -6,6 +6,8 @@ import { useMemo } from "react";
 import { Activity, ArrowDownLeft, ArrowUpRight, Gauge, Package, Zap } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
+import { FieldHint } from "@/components/primitives/FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { formatBitrate, formatNumber } from "@/lib/utils";
 import type { ThroughputSample } from "@/types/telemetry";
@@ -146,6 +148,7 @@ export default function TrafficPage() {
       {/* Charts */}
       <GlassPanel
         label="Throughput — TX & RX"
+        hintId="traffic.txBps"
         trailing={
           <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
             <Legend color={CYAN} label="TX Mbps" />
@@ -159,6 +162,7 @@ export default function TrafficPage() {
 
       <GlassPanel
         label="Packet Rate — pps"
+        hintId="traffic.txPps"
         trailing={
           <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
             <Legend color={CYAN} label="TX pps" />
@@ -177,6 +181,7 @@ export default function TrafficPage() {
           unit={formatBitrate(latest.txBps + latest.rxBps).unit}
           tone="cyan"
           icon={<Gauge size={14} />}
+          hintId="traffic.combined"
           sub={<span className="text-[color:var(--color-text-secondary)]">TX + RX, current second</span>}
         />
         <MetricCard
@@ -184,6 +189,7 @@ export default function TrafficPage() {
           value={formatNumber(Math.round(latest.txPps + latest.rxPps))}
           unit="pps"
           icon={<Zap size={14} />}
+          hintId="traffic.combinedPps"
           sub={
             <span className="font-mono tabular text-[color:var(--color-text-secondary)]">
               Peak: {formatNumber(Math.round(Math.max(txPpsPeak, rxPpsPeak)))}
@@ -195,6 +201,7 @@ export default function TrafficPage() {
           value={avgTxPkt > 0 ? avgTxPkt.toFixed(0) : "—"}
           unit="bytes"
           icon={<Package size={14} />}
+          hintId="traffic.avgPacket"
           sub={<span className="text-[color:var(--color-text-secondary)]">Derived from bps/pps</span>}
           tone={avgTxPkt > 1500 ? "cyan" : "neutral"}
         />
@@ -203,6 +210,7 @@ export default function TrafficPage() {
           value={(Math.max(txPeakBps, rxPeakBps) / LINK_CAPACITY_BPS * 100).toFixed(1)}
           unit="%"
           icon={<Activity size={14} />}
+          hintId="traffic.peakUtil"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               vs {formatBitrate(LINK_CAPACITY_BPS).value} {formatBitrate(LINK_CAPACITY_BPS).unit} link
@@ -259,8 +267,9 @@ function DirectionCard({
         <div>
           <div className="flex items-center gap-2">
             <Arrow size={14} className="text-[color:var(--color-cyan-300)]" />
-            <span className="text-[10px] font-semibold tracking-[0.25em] uppercase text-[color:var(--color-cyan-300)]">
-              {direction} Direction
+            <span className="text-[10px] font-semibold tracking-[0.25em] uppercase text-[color:var(--color-cyan-300)] inline-flex items-center gap-1">
+              <span>{direction} Direction</span>
+              <FieldHint id={direction === "TX" ? "traffic.txBps" : "traffic.rxBps"} size={10} />
             </span>
           </div>
           <div className="mt-2 flex items-baseline gap-1.5">
@@ -275,8 +284,9 @@ function DirectionCard({
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-            Utilization
+          <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+            <span>Utilization</span>
+            <FieldHint id="traffic.utilization" size={10} />
           </div>
           <div className="font-display text-xl font-semibold tabular mt-0.5"
             style={{ color: utilColor }}>
@@ -302,9 +312,9 @@ function DirectionCard({
 
       {/* Sub-stats */}
       <div className="grid grid-cols-3 gap-2 px-5 pb-4">
-        <SubTile label="Peak" value={`${peak.value} ${peak.unit}`} />
-        <SubTile label="Avg" value={`${avg.value} ${avg.unit}`} />
-        <SubTile label="Peak PPS" value={formatNumber(Math.round(peakPps))} />
+        <SubTile label="Peak" value={`${peak.value} ${peak.unit}`} hintId="traffic.peakRate" />
+        <SubTile label="Avg" value={`${avg.value} ${avg.unit}`} hintId="traffic.avgRate" />
+        <SubTile label="Peak PPS" value={formatNumber(Math.round(peakPps))} hintId="traffic.peakPps" />
       </div>
       <div className="px-5 pb-4 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
         Avg packet size:{" "}
@@ -316,11 +326,12 @@ function DirectionCard({
   );
 }
 
-function SubTile({ label, value }: { label: string; value: string }) {
+function SubTile({ label, value, hintId }: { label: string; value: string; hintId?: FieldHintId }) {
   return (
     <div className="glass rounded px-2 py-1.5">
-      <div className="text-[9px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <div className="text-[9px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </div>
       <div className="font-mono text-xs tabular text-[color:var(--color-text-primary)] mt-0.5 truncate">
         {value}

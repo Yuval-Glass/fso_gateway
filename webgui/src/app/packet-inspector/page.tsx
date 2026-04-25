@@ -88,6 +88,7 @@ export default function PacketInspectorPage() {
           unit="tx"
           tone="cyan"
           icon={<Activity size={14} />}
+          hintId="traffic.txPps"
           sub={
             <span className="font-mono tabular text-[color:var(--color-text-secondary)]">
               RX: {formatNumber(Math.round(latest.rxPps))}
@@ -99,6 +100,7 @@ export default function PacketInspectorPage() {
           value={avgTxPkt > 0 ? avgTxPkt.toFixed(0) : "—"}
           unit="bytes"
           icon={<Ruler size={14} />}
+          hintId="traffic.avgPacket"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               ≈ {symbolsPerPacket} symbols each
@@ -110,6 +112,7 @@ export default function PacketInspectorPage() {
           value={formatNumber(e.blocksAttempted * (cfg?.k ?? 0))}
           tone="cyan"
           icon={<Hash size={14} />}
+          hintId="packet.symbolsProcessed"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               Source symbols since start
@@ -121,6 +124,7 @@ export default function PacketInspectorPage() {
           value={formatNumber(e.crcDrops)}
           tone={e.crcDrops === 0 ? "success" : e.crcDrops > 100 ? "warning" : "cyan"}
           icon={<Shield size={14} />}
+          hintId="errors.crcDrops"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {cfg?.internalSymbolCrc ? "Per-symbol CRC-32C enabled" : "CRC disabled"}
@@ -133,6 +137,7 @@ export default function PacketInspectorPage() {
       <div className="grid grid-cols-1 xl:grid-cols-[3fr_2fr] gap-4">
         <GlassPanel
           label="Symbol Wire Format"
+          hintId="packet.headerSize"
           trailing={
             <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
               18-byte header + payload

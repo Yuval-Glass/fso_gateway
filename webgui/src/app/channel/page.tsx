@@ -6,6 +6,7 @@ import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { Slider } from "@/components/primitives/Slider";
 import { TactileButton } from "@/components/primitives/TactileButton";
 import { TextField } from "@/components/primitives/TextField";
+import { FieldHint } from "@/components/primitives/FieldHint";
 import { useChannel } from "@/lib/useChannel";
 import { cn, formatPercent } from "@/lib/utils";
 
@@ -145,6 +146,7 @@ export default function ChannelImpairmentPage() {
               onChange={(v) => { setEnter(v); setActivePreset(null); }}
               unit="%"
               hint="Good→Bad transition"
+              hintId="channel.enterPct"
             />
             <Slider
               label="Exit Burst (P_BG)"
@@ -152,6 +154,7 @@ export default function ChannelImpairmentPage() {
               onChange={(v) => { setExit(v); setActivePreset(null); }}
               unit="%"
               hint="Bad→Good transition"
+              hintId="channel.exitPct"
             />
             <Slider
               label="Loss in Bad"
@@ -159,6 +162,7 @@ export default function ChannelImpairmentPage() {
               onChange={(v) => { setLoss(v); setActivePreset(null); }}
               unit="%"
               hint="loss probability while in bad state"
+              hintId="channel.lossPct"
             />
           </div>
 
@@ -169,14 +173,20 @@ export default function ChannelImpairmentPage() {
           </div>
 
           <div className="mt-4 flex items-center gap-2">
-            <TactileButton variant="primary" icon={<Play size={13} />}
-                           onClick={apply} loading={busy} disabled={!tcAvailable || busy}>
-              Apply on {ch.state?.iface ?? ch.iface}
-            </TactileButton>
-            <TactileButton variant="secondary" icon={<Eraser size={13} />}
-                           onClick={clear} loading={busy} disabled={!tcAvailable || busy}>
-              Clear netem
-            </TactileButton>
+            <span className="inline-flex items-center gap-1">
+              <TactileButton variant="primary" icon={<Play size={13} />}
+                             onClick={apply} loading={busy} disabled={!tcAvailable || busy}>
+                Apply on {ch.state?.iface ?? ch.iface}
+              </TactileButton>
+              <FieldHint id="channel.applyBtn" size={11} />
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <TactileButton variant="secondary" icon={<Eraser size={13} />}
+                             onClick={clear} loading={busy} disabled={!tcAvailable || busy}>
+                Clear netem
+              </TactileButton>
+              <FieldHint id="channel.clearBtn" size={11} />
+            </span>
           </div>
 
           <div className="mt-4 text-[10px] text-[color:var(--color-text-muted)] leading-snug">
@@ -236,6 +246,7 @@ export default function ChannelImpairmentPage() {
               placeholder="enp1s0f1np1"
               maxLength={31}
               mono
+              hintId="channel.iface"
             />
           </div>
           <div className="flex-1">

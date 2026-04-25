@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { PulseRing } from "@/components/primitives/PulseRing";
+import { FieldHint } from "@/components/primitives/FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import { useLinkHistory, type FadeEvent } from "@/lib/useLinkHistory";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { cn, formatNumber, formatPercent, formatUptime } from "@/lib/utils";
@@ -97,35 +99,35 @@ export default function LinkStatusPage() {
           <PulseRing state={l.state} qualityPct={l.qualityPct} size={220} />
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <HeroTile label="State" value={l.state.toUpperCase()} tone={toneForState(l.state)}
-                      icon={<Signal size={13} />} />
+                      icon={<Signal size={13} />} hintId="link.state" />
             <HeroTile label="Quality" value={formatPercent(l.qualityPct / 100, 3)}
                       tone={l.qualityPct > 99 ? "success" : l.qualityPct > 95 ? "cyan" : "warning"}
-                      icon={<ShieldCheck size={13} />} />
+                      icon={<ShieldCheck size={13} />} hintId="link.qualityPct" />
             <HeroTile label="Symbol Loss" value={lossStr}
                       tone={lossRatio == null ? "muted"
                         : lossRatio > 1e-3 ? "danger"
                         : lossRatio > 1e-4 ? "warning" : "success"}
-                      icon={<Shield size={13} />} />
+                      icon={<Shield size={13} />} hintId="errors.symbolLossRatio" />
             <HeroTile label="Block Fail Rate" value={formatPercent(e.blockFailRatio, 4)}
                       tone={e.blockFailRatio > 0.01 ? "danger" : e.blockFailRatio > 0.001 ? "warning" : "success"}
-                      icon={<TriangleAlert size={13} />} />
+                      icon={<TriangleAlert size={13} />} hintId="errors.blockFailRatio" />
             <HeroTile label="Blocks Attempted" value={formatNumber(e.blocksAttempted)}
-                      icon={<Activity size={13} />} />
+                      icon={<Activity size={13} />} hintId="errors.blocksAttempted" />
             <HeroTile label="Session Uptime" value={formatUptime(l.uptimeSec)} tone="cyan"
-                      icon={<ShieldCheck size={13} />} />
+                      icon={<ShieldCheck size={13} />} hintId="link.uptimeSec" />
           </div>
         </div>
       </GlassPanel>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-        <GlassPanel label="Quality Over Time"
+        <GlassPanel label="Quality Over Time" hintId="link.qualityPct"
           trailing={<span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">derived from blocks_recovered / attempted</span>}>
           {history.samples.length < 2
             ? <EmptyChart />
             : <ReactECharts option={qualityChart} style={{ height: 220 }} notMerge={false} lazyUpdate />}
         </GlassPanel>
 
-        <GlassPanel label="Symbol Loss Ratio"
+        <GlassPanel label="Symbol Loss Ratio" hintId="errors.symbolLossRatio"
           trailing={<span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">lost_symbols / total_symbols</span>}>
           {history.samples.length < 2
             ? <EmptyChart />
@@ -151,11 +153,12 @@ export default function LinkStatusPage() {
 /* -------------------------------------------------------------------------- */
 
 function HeroTile({
-  label, value, tone = "cyan", icon,
+  label, value, tone = "cyan", icon, hintId,
 }: {
   label: string; value: string;
   tone?: "cyan" | "success" | "warning" | "danger" | "muted";
   icon?: React.ReactNode;
+  hintId?: FieldHintId;
 }) {
   const toneColor =
     tone === "success" ? "var(--color-success)"
@@ -166,7 +169,10 @@ function HeroTile({
   return (
     <div className="glass rounded-md px-3 py-2.5 border-[color:var(--color-border-hair)]">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">{label}</span>
+        <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+          <span>{label}</span>
+          {hintId && <FieldHint id={hintId} size={10} />}
+        </span>
         {icon && <span style={{ color: toneColor, opacity: 0.7 }}>{icon}</span>}
       </div>
       <div className="font-display text-base font-semibold tabular truncate" style={{ color: toneColor }}>

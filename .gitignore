@@ -28,3 +28,6 @@ webgui/server/*.tmp
 # Windows/WSL NTFS metadata
 *.Identifier
 *:Zone.Identifier
+
+# MS Office lockfiles
+~$*

@@ -1,5 +1,8 @@
 "use client";
 
+import { FieldHint } from "./FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
+
 interface TextFieldProps {
   label: string;
   value: string;
@@ -7,6 +10,7 @@ interface TextFieldProps {
   placeholder?: string;
   maxLength?: number;
   mono?: boolean;
+  hintId?: FieldHintId;
 }
 
 export function TextField({
@@ -16,11 +20,13 @@ export function TextField({
   placeholder,
   maxLength,
   mono = false,
+  hintId,
 }: TextFieldProps) {
   return (
     <div>
       <label className="block text-[10px] font-medium tracking-[0.2em] uppercase text-[color:var(--color-text-secondary)] mb-1">
-        {label}
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={11} className="ml-1" />}
       </label>
       <input
         type="text"

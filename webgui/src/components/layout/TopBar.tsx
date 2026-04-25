@@ -6,6 +6,8 @@ import { useDaemon, type DaemonState } from "@/lib/useDaemon";
 import { formatUptime } from "@/lib/utils";
 import { StatusDot } from "../primitives/StatusDot";
 import { ConnectionPill } from "../primitives/ConnectionPill";
+import { FieldHint } from "../primitives/FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import { useEffect, useState } from "react";
 
 function useClock() {
@@ -50,26 +52,29 @@ export function TopBar() {
 
         {/* Status panel */}
         <div className="flex items-center gap-5 text-xs">
-          <ConnectionPill status={connection} source={telemetry?.source} />
+          <span className="inline-flex items-center gap-1">
+            <ConnectionPill status={connection} source={telemetry?.source} />
+            <FieldHint id="topbar.connection" size={11} />
+          </span>
           <Divider />
-          <Stat label="System">
+          <Stat label="System" hintId="topbar.system">
             <StatusDot status={systemStatus} />
             <span className="font-medium tracking-[0.15em] text-[color:var(--color-text-primary)]">
               {statusLabel}
             </span>
           </Stat>
           <Divider />
-          <Stat label="Daemon">
+          <Stat label="Daemon" hintId="topbar.daemon">
             <DaemonPill state={daemon?.state ?? null} />
           </Stat>
           <Divider />
-          <Stat label="Uptime">
+          <Stat label="Uptime" hintId="topbar.uptime">
             <span className="font-mono tabular text-[color:var(--color-text-primary)]">
               {telemetry ? formatUptime(telemetry.link.uptimeSec) : "—"}
             </span>
           </Stat>
           <Divider />
-          <Stat label="Time (UTC)">
+          <Stat label="Time (UTC)" hintId="topbar.time">
             <span className="font-mono tabular text-[color:var(--color-text-primary)]">
               {now ? now.toISOString().slice(11, 19) : "—"}
             </span>
@@ -113,11 +118,20 @@ function DaemonPill({ state }: { state: DaemonState | null }) {
   );
 }
 
-function Stat({ label, children }: { label: string; children: React.ReactNode }) {
+function Stat({
+  label,
+  children,
+  hintId,
+}: {
+  label: string;
+  children: React.ReactNode;
+  hintId?: FieldHintId;
+}) {
   return (
     <div className="flex flex-col leading-tight">
-      <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] mb-0.5">
-        {label}
+      <span className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] mb-0.5 inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </span>
       <div className="flex items-center gap-2">{children}</div>
     </div>

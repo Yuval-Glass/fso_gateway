@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { BrandMark } from "@/components/layout/BrandMark";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
+import { FieldHint } from "@/components/primitives/FieldHint";
 import { useHealth } from "@/lib/useHealth";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { cn, formatUptime } from "@/lib/utils";
@@ -97,6 +98,7 @@ export default function AboutPage() {
           status={bridgeUp ? "online" : "offline"}
           primary={bridgeUp ? "Connected" : "Unreachable"}
           detail={bridgeUp ? `Tick ${health?.tick_hz}Hz` : "Start it with `uv run uvicorn …`"}
+          hintId="about.bridge"
         />
         <StatusCard
           icon={<Server size={16} />}
@@ -104,6 +106,7 @@ export default function AboutPage() {
           status={gatewayUp ? "online" : "warning"}
           primary={gatewayUp ? "Live (control_server)" : "Mock data"}
           detail={gatewayUp ? "Streaming via UNIX socket" : "control_server_demo or fso_gw_runner not running"}
+          hintId="about.gateway"
         />
         <StatusCard
           icon={<Database size={16} />}
@@ -111,6 +114,7 @@ export default function AboutPage() {
           status={activeRun !== null ? "online" : "offline"}
           primary={activeRun !== null ? `Run #${activeRun}` : "Not recording"}
           detail={activeRun !== null ? `Logs mode: ${logsMode}` : "Open Analytics to start a run"}
+          hintId="about.recording"
         />
       </div>
 
@@ -155,12 +159,14 @@ function StatusCard({
   status,
   primary,
   detail,
+  hintId,
 }: {
   icon: React.ReactNode;
   label: string;
   status: "online" | "warning" | "offline";
   primary: string;
   detail: string;
+  hintId?: import("@/lib/fieldHints").FieldHintId;
 }) {
   const color =
     status === "online" ? "var(--color-success)"
@@ -184,8 +190,9 @@ function StatusCard({
           {icon}
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-[9px] font-medium tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-            {label}
+          <div className="text-[9px] font-medium tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+            <span>{label}</span>
+            {hintId && <FieldHint id={hintId} size={10} />}
           </div>
           <div
             className="font-display text-base font-semibold mt-0.5 truncate"

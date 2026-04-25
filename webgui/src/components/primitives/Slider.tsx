@@ -1,6 +1,8 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { FieldHint } from "./FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 
 interface SliderProps {
   label: string;
@@ -10,7 +12,10 @@ interface SliderProps {
   step?: number;
   onChange: (v: number) => void;
   unit?: string;
+  /** Optional one-line legend shown below the slider. */
   hint?: string;
+  /** Tooltip on the label, looked up in FIELD_HINTS. */
+  hintId?: FieldHintId;
 }
 
 export function Slider({
@@ -22,13 +27,15 @@ export function Slider({
   onChange,
   unit,
   hint,
+  hintId,
 }: SliderProps) {
   const pct = ((value - min) / (max - min)) * 100;
   return (
     <div className="space-y-1.5">
       <div className="flex items-baseline justify-between">
-        <label className="text-[10px] font-medium tracking-[0.2em] uppercase text-[color:var(--color-text-secondary)]">
-          {label}
+        <label className="text-[10px] font-medium tracking-[0.2em] uppercase text-[color:var(--color-text-secondary)] inline-flex items-center gap-1">
+          <span>{label}</span>
+          {hintId && <FieldHint id={hintId} size={11} />}
         </label>
         <div className="flex items-baseline gap-1">
           <span className="font-display text-base font-semibold tabular text-[color:var(--color-cyan-300)]">

@@ -1,15 +1,18 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { FieldHint } from "./FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 
 interface ToggleProps {
   label: string;
   checked: boolean;
   onChange: (v: boolean) => void;
   description?: string;
+  hintId?: FieldHintId;
 }
 
-export function Toggle({ label, checked, onChange, description }: ToggleProps) {
+export function Toggle({ label, checked, onChange, description, hintId }: ToggleProps) {
   return (
     <label className="flex items-start gap-3 cursor-pointer select-none group">
       <button
@@ -45,7 +48,8 @@ export function Toggle({ label, checked, onChange, description }: ToggleProps) {
       </button>
       <span className="flex-1 min-w-0">
         <span className="block text-xs font-medium tracking-[0.1em] uppercase text-[color:var(--color-text-primary)]">
-          {label}
+          <span>{label}</span>
+          {hintId && <FieldHint id={hintId} size={11} className="ml-1" />}
         </span>
         {description && (
           <span className="block text-[10px] text-[color:var(--color-text-muted)] mt-0.5 leading-tight">

@@ -14,6 +14,7 @@ import {
 import { useMemo, useState } from "react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { TactileButton } from "@/components/primitives/TactileButton";
+import { FieldHint } from "@/components/primitives/FieldHint";
 import { useAlerts } from "@/lib/useAlerts";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { cn, formatNumber } from "@/lib/utils";
@@ -167,16 +168,19 @@ export default function AlertsPage() {
           </div>
 
           {/* Module filter */}
-          <select
-            value={moduleFilter ?? ""}
-            onChange={(e) => setModuleFilter(e.target.value || null)}
-            className="bg-white/[0.02] border border-[color:var(--color-border-subtle)] rounded-md px-2 py-1.5 text-[11px] text-[color:var(--color-text-primary)] outline-none focus:border-[color:var(--color-cyan-500)]"
-          >
-            <option value="">All modules</option>
-            {knownModules.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
+          <span className="inline-flex items-center gap-1">
+            <select
+              value={moduleFilter ?? ""}
+              onChange={(e) => setModuleFilter(e.target.value || null)}
+              className="bg-white/[0.02] border border-[color:var(--color-border-subtle)] rounded-md px-2 py-1.5 text-[11px] text-[color:var(--color-text-primary)] outline-none focus:border-[color:var(--color-cyan-500)]"
+            >
+              <option value="">All modules</option>
+              {knownModules.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+            <FieldHint id="alert.module" size={10} />
+          </span>
 
           {/* Search */}
           <div className="relative">

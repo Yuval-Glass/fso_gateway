@@ -20,6 +20,7 @@ import {
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
 import { TactileButton } from "@/components/primitives/TactileButton";
+import { FieldHint } from "@/components/primitives/FieldHint";
 import { useRunDetail, useRuns } from "@/lib/useRuns";
 import { useExperimentDetail, useExperiments, type ExperimentSummary } from "@/lib/useExperiments";
 import {
@@ -142,6 +143,7 @@ export default function AnalyticsPage() {
               <div className="grid grid-cols-1 gap-4">
                 <GlassPanel
                   label="Throughput Over Run"
+                  hintId="traffic.txBps"
                   trailing={
                     <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
                       <Legend color={CYAN} label="TX" />
@@ -156,13 +158,14 @@ export default function AnalyticsPage() {
                   )}
                 </GlassPanel>
                 <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                  <GlassPanel label="Link Quality">
+                  <GlassPanel label="Link Quality" hintId="link.qualityPct">
                     {detail.samples.length < 2 ? <EmptyChart /> : (
                       <ReactECharts option={qualityChart} style={{ height: 200 }} notMerge={false} lazyUpdate />
                     )}
                   </GlassPanel>
                   <GlassPanel
                     label="FEC Recovery Rate"
+                    hintId="errors.fecSuccessRate"
                     trailing={
                       <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
                         Per-sample from counter deltas
@@ -686,6 +689,7 @@ function RunSummaryCard({ run, samples }: { run: RunSummary; samples: RunSample[
           >
             <FileDown size={12} /> CSV
           </a>
+          <FieldHint id="run.exportCsv" size={11} />
         </div>
       </div>
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3 p-4">
@@ -693,6 +697,7 @@ function RunSummaryCard({ run, samples }: { run: RunSummary; samples: RunSample[
           label="Samples"
           value={formatNumber(run.sampleCount)}
           icon={<Database size={14} />}
+          hintId="run.sampleCount"
           sub={<span className="text-[color:var(--color-text-secondary)]">{samples.length} plotted</span>}
         />
         <MetricCard
@@ -701,6 +706,7 @@ function RunSummaryCard({ run, samples }: { run: RunSummary; samples: RunSample[
           unit={formatBitrate(txPeakBps).unit}
           tone="cyan"
           icon={<Zap size={14} />}
+          hintId="run.peakThroughput"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               Avg {formatBitrate(txAvgBps).value} {formatBitrate(txAvgBps).unit}
@@ -713,6 +719,7 @@ function RunSummaryCard({ run, samples }: { run: RunSummary; samples: RunSample[
           unit={formatBitrate(rxPeakBps).unit}
           tone="cyan"
           icon={<Download size={14} />}
+          hintId="run.peakThroughput"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               Avg {formatBitrate(rxAvgBps).value} {formatBitrate(rxAvgBps).unit}
@@ -724,6 +731,7 @@ function RunSummaryCard({ run, samples }: { run: RunSummary; samples: RunSample[
           value={formatPercent(qualityAvg / 100, 2)}
           tone={qualityAvg > 99 ? "success" : qualityAvg > 95 ? "cyan" : "warning"}
           icon={<Check size={14} />}
+          hintId="run.avgQuality"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               Min {formatPercent(qualityMin / 100, 2)}
@@ -735,6 +743,7 @@ function RunSummaryCard({ run, samples }: { run: RunSummary; samples: RunSample[
           value={formatPercent(recoveryPct / 100, 3)}
           tone={recoveryPct > 99.9 ? "success" : recoveryPct > 99 ? "cyan" : "warning"}
           icon={<Check size={14} />}
+          hintId="errors.fecSuccessRate"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {formatNumber(blocksFailed)} failed

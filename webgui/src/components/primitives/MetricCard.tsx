@@ -1,6 +1,8 @@
 import { cn } from "@/lib/utils";
 import { GlassPanel } from "./GlassPanel";
 import { Sparkline } from "./Sparkline";
+import { FieldHint } from "./FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import type { ReactNode } from "react";
 
 type Tone = "neutral" | "cyan" | "success" | "warning" | "danger";
@@ -13,6 +15,7 @@ interface MetricCardProps {
   spark?: number[];
   tone?: Tone;
   icon?: ReactNode;
+  hintId?: FieldHintId;
 }
 
 const toneMap: Record<Tone, { text: string; color: string; border: string }> = {
@@ -23,14 +26,15 @@ const toneMap: Record<Tone, { text: string; color: string; border: string }> = {
   danger: { text: "text-[color:var(--color-danger)]", color: "var(--color-danger)", border: "" },
 };
 
-export function MetricCard({ label, value, unit, sub, spark, tone = "neutral", icon }: MetricCardProps) {
+export function MetricCard({ label, value, unit, sub, spark, tone = "neutral", icon, hintId }: MetricCardProps) {
   const t = toneMap[tone];
   return (
     <GlassPanel padded={false} className="group">
       <div className="px-4 pt-3 pb-3 flex flex-col h-full">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[10px] font-medium tracking-[0.18em] uppercase text-[color:var(--color-text-secondary)]">
-            {label}
+          <span className="text-[10px] font-medium tracking-[0.18em] uppercase text-[color:var(--color-text-secondary)] inline-flex items-center gap-1">
+            <span>{label}</span>
+            {hintId && <FieldHint id={hintId} size={11} />}
           </span>
           {icon && <span className="text-[color:var(--color-text-muted)] opacity-80">{icon}</span>}
         </div>

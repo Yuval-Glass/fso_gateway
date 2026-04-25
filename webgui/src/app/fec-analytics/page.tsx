@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
 import { MetricCard } from "@/components/primitives/MetricCard";
+import { FieldHint } from "@/components/primitives/FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import { useTelemetry } from "@/lib/useTelemetry";
 import { useFecHistory } from "@/lib/useFecHistory";
 import { cn, formatBytes, formatNumber, formatPercent } from "@/lib/utils";
@@ -118,6 +120,7 @@ export default function FecAnalyticsPage() {
           unit="%"
           tone={recoveryRatePct > 99.9 ? "success" : recoveryRatePct > 99 ? "cyan" : "warning"}
           icon={<CheckCircle2 size={14} />}
+          hintId="errors.fecSuccessRate"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {formatNumber(e.blocksRecovered)} / {formatNumber(e.blocksAttempted)}
@@ -133,6 +136,7 @@ export default function FecAnalyticsPage() {
           unit="blk/s"
           tone="cyan"
           icon={<Activity size={14} />}
+          hintId="fec.blocksPerSec"
           sub={
             <span className="font-mono tabular text-[color:var(--color-text-secondary)]">
               {formatNumber(Math.round(recoveredRate))} rec · {formatNumber(Math.round(failedRate * 100) / 100)} fail
@@ -145,6 +149,7 @@ export default function FecAnalyticsPage() {
           value={formatNumber(e.blocksFailed)}
           tone={e.blocksFailed === 0 ? "success" : failureRatePct > 0.1 ? "danger" : "warning"}
           icon={<TriangleAlert size={14} />}
+          hintId="errors.blocksFailed"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {formatPercent(failureRatePct / 100, 4)} of attempts
@@ -166,6 +171,7 @@ export default function FecAnalyticsPage() {
             : "success"
           }
           icon={<ShieldX size={14} />}
+          hintId="errors.symbolLossRatio"
           sub={<span className="text-[color:var(--color-text-secondary)]">lost_symbols / total</span>}
         />
         <MetricCard
@@ -173,6 +179,7 @@ export default function FecAnalyticsPage() {
           value={formatNumber(criticalCount)}
           tone={criticalCount === 0 ? "success" : criticalPct > 0.5 ? "danger" : "warning"}
           icon={<Zap size={14} />}
+          hintId="fec.criticalBursts"
           sub={
             <span className="text-[color:var(--color-text-secondary)]">
               {formatPercent(criticalPct / 100, 2)} of all bursts
@@ -186,6 +193,7 @@ export default function FecAnalyticsPage() {
         <FecConfigPanel snap={snap} />
         <GlassPanel
           label="Block Outcomes Over Time"
+          hintId="errors.blocksRecovered"
           trailing={
             <div className="flex items-center gap-3 text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
               <Legend color={CYAN} label="Recovered" />
@@ -208,6 +216,7 @@ export default function FecAnalyticsPage() {
       <div className="grid grid-cols-1 xl:grid-cols-[2fr_1fr] gap-4">
         <GlassPanel
           label="Burst-Length Distribution"
+          hintId="burst.histogram"
           trailing={
             <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
               {formatNumber(totalBursts)} total · cyan=recoverable · red=critical
@@ -274,16 +283,18 @@ function FecConfigPanel({ snap }: { snap: TelemetrySnapshot }) {
       </span>
     }>
       <div className="grid grid-cols-2 gap-3">
-        <ConfigTile label="K · Source" value={k || "—"} />
-        <ConfigTile label="M · Repair" value={m || "—"} />
+        <ConfigTile label="K · Source" value={k || "—"} hintId="config.k" />
+        <ConfigTile label="M · Repair" value={m || "—"} hintId="config.m" />
         <ConfigTile
           label="Overhead"
           value={total > 0 ? formatPercent(overhead, 1) : "—"}
           tone="cyan"
+          hintId="config.overhead"
         />
         <ConfigTile
           label="Code Rate"
           value={total > 0 ? codeRate.toFixed(3) : "—"}
+          hintId="config.codeRate"
         />
       </div>
       <div className="mt-4 pt-3 border-t border-[color:var(--color-border-hair)]">
@@ -291,11 +302,11 @@ function FecConfigPanel({ snap }: { snap: TelemetrySnapshot }) {
           Interfaces
         </div>
         <ul className="text-[11px] space-y-1.5">
-          <KV label="LAN" value={echo?.lanIface ?? "—"} mono />
-          <KV label="FSO" value={echo?.fsoIface ?? "—"} mono />
-          <KV label="Symbol size" value={echo ? `${echo.symbolSize} B` : "—"} mono />
+          <KV label="LAN" value={echo?.lanIface ?? "—"} mono hintId="config.lanIface" />
+          <KV label="FSO" value={echo?.fsoIface ?? "—"} mono hintId="config.fsoIface" />
+          <KV label="Symbol size" value={echo ? `${echo.symbolSize} B` : "—"} mono hintId="config.symbolSize" />
           <KV label="Symbol CRC" value={echo?.internalSymbolCrc ? "CRC-32C" : "Disabled"}
-              tone={echo?.internalSymbolCrc ? "success" : "neutral"} />
+              tone={echo?.internalSymbolCrc ? "success" : "neutral"} hintId="config.internalSymbolCrc" />
         </ul>
       </div>
     </GlassPanel>
@@ -323,26 +334,26 @@ function DeinterleaverPanel({ snap }: { snap: TelemetrySnapshot }) {
       }
     >
       <div className="grid grid-cols-2 gap-2 mb-3">
-        <SlotTile label="Active" value={dil.activeBlocks} tone="cyan" />
-        <SlotTile label="Ready" value={dil.readyCount} tone={dil.readyCount > 0 ? "warning" : "success"} />
+        <SlotTile label="Active" value={dil.activeBlocks} tone="cyan" hintId="dil.active" />
+        <SlotTile label="Ready" value={dil.readyCount} tone={dil.readyCount > 0 ? "warning" : "success"} hintId="dil.ready" />
       </div>
       <ul className="text-[11px] space-y-1.5 py-1">
-        <KV label="Blocks ready (cum)"  value={formatNumber(dil.blocksReady)} tone="success" />
+        <KV label="Blocks ready (cum)"  value={formatNumber(dil.blocksReady)} tone="success" hintId="dil.blocksReady" />
         <KV label="Failed · timeout"    value={formatNumber(dil.blocksFailedTimeout)}
-            tone={dil.blocksFailedTimeout > 0 ? "warning" : "neutral"} />
+            tone={dil.blocksFailedTimeout > 0 ? "warning" : "neutral"} hintId="dil.failedTimeout" />
         <KV label="Failed · holes"      value={formatNumber(dil.blocksFailedHoles)}
-            tone={dil.blocksFailedHoles > 0 ? "danger" : "neutral"} />
+            tone={dil.blocksFailedHoles > 0 ? "danger" : "neutral"} hintId="dil.failedHoles" />
         <li className="border-t border-[color:var(--color-border-hair)] my-2" />
-        <KV label="Dropped · duplicate" value={formatNumber(dil.droppedDuplicate)} />
-        <KV label="Dropped · frozen"    value={formatNumber(dil.droppedFrozen)} />
-        <KV label="Dropped · erasure"   value={formatNumber(dil.droppedErasure)} />
+        <KV label="Dropped · duplicate" value={formatNumber(dil.droppedDuplicate)} hintId="dil.droppedDuplicate" />
+        <KV label="Dropped · frozen"    value={formatNumber(dil.droppedFrozen)} hintId="dil.droppedFrozen" />
+        <KV label="Dropped · erasure"   value={formatNumber(dil.droppedErasure)} hintId="dil.droppedErasure" />
         <KV label="Dropped · CRC fail"  value={formatNumber(dil.droppedCrcFail)}
-            tone={dil.droppedCrcFail > 0 ? "warning" : "neutral"} />
+            tone={dil.droppedCrcFail > 0 ? "warning" : "neutral"} hintId="dil.droppedCrcFail" />
         <li className="border-t border-[color:var(--color-border-hair)] my-2" />
         <KV label="Evicted · filling"   value={formatNumber(dil.evictedFilling)}
-            tone={dil.evictedFilling > 0 ? "warning" : "neutral"} />
+            tone={dil.evictedFilling > 0 ? "warning" : "neutral"} hintId="dil.evictedFilling" />
         <KV label="Evicted · done"      value={formatNumber(dil.evictedDone)}
-            tone={dil.evictedDone > 0 ? "warning" : "neutral"} />
+            tone={dil.evictedDone > 0 ? "warning" : "neutral"} hintId="dil.evictedDone" />
       </ul>
       <div className="mt-3 text-[10px] text-[color:var(--color-text-muted)] leading-snug">
         FSM: <span className="font-mono">EMPTY → FILLING → READY_TO_DECODE → EMPTY</span>.
@@ -355,14 +366,15 @@ function DeinterleaverPanel({ snap }: { snap: TelemetrySnapshot }) {
   );
 }
 
-function SlotTile({ label, value, tone }: { label: string; value: number; tone: "cyan" | "success" | "warning" }) {
+function SlotTile({ label, value, tone, hintId }: { label: string; value: number; tone: "cyan" | "success" | "warning"; hintId?: FieldHintId }) {
   const color = tone === "warning" ? "var(--color-warning)"
               : tone === "success" ? "var(--color-success)"
               : "var(--color-cyan-300)";
   return (
     <div className="glass rounded-md px-3 py-2 border-[color:var(--color-border-hair)]">
-      <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </div>
       <div className="font-display text-2xl font-bold tabular mt-0.5" style={{ color }}>
         {value}
@@ -387,7 +399,7 @@ function BlockEventFeed({ snap }: { snap: TelemetrySnapshot }) {
   };
 
   return (
-    <GlassPanel label="Block Lifecycle Events"
+    <GlassPanel label="Block Lifecycle Events" hintId="block.eventFeed"
       trailing={
         <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
           drained from deinterleaver callback ring
@@ -448,16 +460,16 @@ function StressPanel({ snap }: { snap: TelemetrySnapshot }) {
   return (
     <GlassPanel label="Decoder Stress">
       <ul className="text-[11px] space-y-2 py-1">
-        <KV label="Blocks with Loss" value={formatNumber(blocksLoss)} />
+        <KV label="Blocks with Loss" value={formatNumber(blocksLoss)} hintId="stress.blocksWithLoss" />
         <KV label="Worst Holes / Block" value={formatNumber(worstHoles)}
-            tone={worstHoles > 3 ? "warning" : "neutral"} />
-        <KV label="Total Holes" value={formatNumber(totalHoles)} />
+            tone={worstHoles > 3 ? "warning" : "neutral"} hintId="stress.worstHolesInBlock" />
+        <KV label="Total Holes" value={formatNumber(totalHoles)} hintId="stress.totalHolesInBlocks" />
         <li className="border-t border-[color:var(--color-border-hair)] my-2" />
-        <KV label="Recoverable Bursts" value={formatNumber(recoverable)} tone="success" />
+        <KV label="Recoverable Bursts" value={formatNumber(recoverable)} tone="success" hintId="stress.recoverableBursts" />
         <KV label="Critical Bursts" value={formatNumber(critical)}
-            tone={critical > 0 ? "danger" : "neutral"} />
+            tone={critical > 0 ? "danger" : "neutral"} hintId="stress.criticalBursts" />
         <KV label="Exceeding FEC Span" value={formatNumber(exceeding)}
-            tone={exceeding > 0 ? "danger" : "neutral"} />
+            tone={exceeding > 0 ? "danger" : "neutral"} hintId="stress.exceedingFecSpan" />
       </ul>
       <div className="mt-3 text-[10px] text-[color:var(--color-text-muted)] leading-snug">
         Holes are missing-symbol slots in a block after deinterleave. Bursts
@@ -472,10 +484,12 @@ function ConfigTile({
   label,
   value,
   tone = "neutral",
+  hintId,
 }: {
   label: string;
   value: string | number;
   tone?: "neutral" | "cyan" | "success";
+  hintId?: FieldHintId;
 }) {
   const color =
     tone === "cyan"
@@ -485,8 +499,9 @@ function ConfigTile({
       : "var(--color-text-primary)";
   return (
     <div className="glass rounded-md px-3 py-2 border-[color:var(--color-border-hair)]">
-      <div className="text-[9px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <div className="text-[9px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </div>
       <div className="font-display text-lg font-semibold tabular mt-0.5" style={{ color }}>
         {value}
@@ -500,11 +515,13 @@ function KV({
   value,
   mono,
   tone = "neutral",
+  hintId,
 }: {
   label: string;
   value: string | number;
   mono?: boolean;
   tone?: "neutral" | "cyan" | "success" | "warning" | "danger";
+  hintId?: FieldHintId;
 }) {
   const colorMap: Record<string, string> = {
     neutral: "var(--color-text-primary)",
@@ -515,8 +532,9 @@ function KV({
   };
   return (
     <li className="flex items-baseline justify-between gap-3">
-      <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <span className="text-[10px] tracking-[0.18em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </span>
       <span
         className={cn("tabular", mono && "font-mono")}

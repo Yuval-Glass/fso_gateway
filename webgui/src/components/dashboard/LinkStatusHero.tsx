@@ -2,6 +2,8 @@
 
 import { PulseRing } from "@/components/primitives/PulseRing";
 import { GlassPanel } from "@/components/primitives/GlassPanel";
+import { FieldHint } from "@/components/primitives/FieldHint";
+import type { FieldHintId } from "@/lib/fieldHints";
 import type { ConfigEcho, LinkStatus } from "@/types/telemetry";
 import { formatNumber, formatPercent } from "@/lib/utils";
 
@@ -41,9 +43,9 @@ export function LinkStatusHero({ link, cfg }: LinkStatusHeroProps) {
             </div>
             <PulseRing state={link.state} qualityPct={link.qualityPct} size={240} />
             <div className="grid grid-cols-3 gap-4 w-full max-w-[440px]">
-              <Stat label="State" value={link.state.toUpperCase()} />
-              <Stat label="Quality" value={formatPercent(link.qualityPct / 100, 2)} />
-              <Stat label="K/M/D" value={`${cfg.k}/${cfg.m}/${cfg.depth}`} />
+              <Stat label="State" value={link.state.toUpperCase()} hintId="link.state" />
+              <Stat label="Quality" value={formatPercent(link.qualityPct / 100, 2)} hintId="link.qualityPct" />
+              <Stat label="K/M/D" value={`${cfg.k}/${cfg.m}/${cfg.depth}`} hintId="config.k" />
             </div>
           </div>
 
@@ -107,8 +109,8 @@ function GatewaySide({
         </span>
       </div>
       <div className={`mt-4 grid grid-cols-2 gap-3 ${side === "B" ? "justify-items-end" : ""}`}>
-        <IfaceInfo label="LAN IFACE" value={lan} align={side === "B" ? "right" : "left"} />
-        <IfaceInfo label="FSO IFACE" value={fso} align={side === "B" ? "right" : "left"} />
+        <IfaceInfo label="LAN IFACE" value={lan} align={side === "B" ? "right" : "left"} hintId="config.lanIface" />
+        <IfaceInfo label="FSO IFACE" value={fso} align={side === "B" ? "right" : "left"} hintId="config.fsoIface" />
       </div>
     </div>
   );
@@ -118,26 +120,30 @@ function IfaceInfo({
   label,
   value,
   align,
+  hintId,
 }: {
   label: string;
   value: string;
   align: "left" | "right";
+  hintId?: FieldHintId;
 }) {
   return (
     <div className={align === "right" ? "text-right" : ""}>
-      <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <div className={`text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1 ${align === "right" ? "flex-row-reverse" : ""}`}>
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </div>
       <div className="font-mono text-xs text-[color:var(--color-text-primary)] mt-0.5">{value}</div>
     </div>
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value, hintId }: { label: string; value: string; hintId?: FieldHintId }) {
   return (
     <div className="text-center glass rounded-md px-3 py-2 border-[color:var(--color-border-cyan)]/40">
-      <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)]">
-        {label}
+      <div className="text-[9px] tracking-[0.22em] uppercase text-[color:var(--color-text-muted)] inline-flex items-center gap-1">
+        <span>{label}</span>
+        {hintId && <FieldHint id={hintId} size={10} />}
       </div>
       <div className="font-mono text-sm font-semibold tabular text-[color:var(--color-cyan-300)] mt-0.5">
         {value}

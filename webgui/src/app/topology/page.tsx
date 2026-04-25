@@ -134,7 +134,7 @@ export default function TopologyPage() {
 
       <ArpCachePanel arp={snap.arpEntries ?? []} />
 
-      <GlassPanel label="Recent Link Events" trailing={
+      <GlassPanel label="Recent Link Events" hintId="topology.recentEvents" trailing={
         <span className="text-[10px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
           From live stream
         </span>
@@ -175,6 +175,7 @@ function ArpCachePanel({ arp }: { arp: ArpEntry[] }) {
   return (
     <GlassPanel
       label="ARP Cache (proxy-ARP)"
+      hintId="topology.arpEntries"
       trailing={
         <span className="text-[10px] tracking-[0.2em] uppercase text-[color:var(--color-text-muted)]">
           {arp.length} {arp.length === 1 ? "entry" : "entries"} · learned by RX pipeline
