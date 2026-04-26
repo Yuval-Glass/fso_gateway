@@ -16,7 +16,7 @@ typedef struct block_builder_t {
     int symbol_count;
     int k_limit;
     symbol_t *symbols;
-    struct timespec last_activity;
+    struct timespec first_activity;
 } block_builder_t;
 
 /**

@@ -67,8 +67,8 @@ int block_builder_init(block_builder_t *bb, int k)
     bb->symbol_count = 0;
     bb->k_limit = 0;
     bb->symbols = NULL;
-    bb->last_activity.tv_sec = 0;
-    bb->last_activity.tv_nsec = 0;
+    bb->first_activity.tv_sec = 0;
+    bb->first_activity.tv_nsec = 0;
 
     bb->symbols = (symbol_t *)malloc((size_t)k * sizeof(symbol_t));
     if (bb->symbols == NULL) {
@@ -81,8 +81,8 @@ int block_builder_init(block_builder_t *bb, int k)
     bb->block_id = 1U;
     bb->symbol_count = 0;
     bb->k_limit = k;
-    bb->last_activity.tv_sec = 0;
-    bb->last_activity.tv_nsec = 0;
+    bb->first_activity.tv_sec = 0;
+    bb->first_activity.tv_nsec = 0;
 
     LOG_INFO("Block builder initialized: block_id=%lu k=%d",
              (unsigned long)bb->block_id,
@@ -120,9 +120,13 @@ int block_builder_add_symbol(block_builder_t *bb, const symbol_t *sym)
     bb->symbols[bb->symbol_count] = *sym;
     bb->symbol_count++;
 
-    if (block_builder_get_now(&bb->last_activity) != 0) {
-        LOG_ERROR("block_builder_add_symbol: clock_gettime failed");
-        return -1;
+    /* Record timestamp only on the first symbol so the timeout measures
+     * age of the block, not idle time since the last packet. */
+    if (bb->symbol_count == 1) {
+        if (block_builder_get_now(&bb->first_activity) != 0) {
+            LOG_ERROR("block_builder_add_symbol: clock_gettime failed");
+            return -1;
+        }
     }
 
     if (bb->symbol_count == bb->k_limit) {
@@ -156,7 +160,7 @@ int block_builder_check_timeout(block_builder_t *bb, double timeout_ms)
         return -1;
     }
 
-    elapsed_ms = block_builder_elapsed_ms(&bb->last_activity, &now);
+    elapsed_ms = block_builder_elapsed_ms(&bb->first_activity, &now);
 
     if (elapsed_ms >= timeout_ms) {
         return 1;
@@ -222,8 +226,8 @@ void block_builder_reset(block_builder_t *bb)
         bb->block_id = 1U;
     }
 
-    bb->last_activity.tv_sec = 0;
-    bb->last_activity.tv_nsec = 0;
+    bb->first_activity.tv_sec = 0;
+    bb->first_activity.tv_nsec = 0;
 }
 
 void block_builder_destroy(block_builder_t *bb)
@@ -241,6 +245,6 @@ void block_builder_destroy(block_builder_t *bb)
     bb->block_id = 0;
     bb->symbol_count = 0;
     bb->k_limit = 0;
-    bb->last_activity.tv_sec = 0;
-    bb->last_activity.tv_nsec = 0;
+    bb->first_activity.tv_sec = 0;
+    bb->first_activity.tv_nsec = 0;
 }

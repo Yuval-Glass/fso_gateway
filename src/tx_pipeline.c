@@ -41,8 +41,8 @@
 /* Internal constants                                                          */
 /* -------------------------------------------------------------------------- */
 
-#define TX_BLOCK_TIMEOUT_MS               10.0
-#define TX_INTERLEAVER_FLUSH_TIMEOUT_MS   20
+#define TX_BLOCK_TIMEOUT_MS               2.0
+#define TX_INTERLEAVER_FLUSH_TIMEOUT_MS   5
 
 /* Receive buffer size — must hold the largest possible Ethernet frame */
 #define TX_RX_BUF_SIZE       9200U
@@ -339,6 +339,26 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
                 return -1;
             }
         }
+    }
+
+    /* Check block timeout even when packets keep arriving — without this,
+     * a partial block containing a SYN packet can be stuck indefinitely
+     * behind a stream of background LAN traffic (IPv6 ND, ARP broadcasts). */
+    timeout_rc = block_builder_check_timeout(&pl->builder, TX_BLOCK_TIMEOUT_MS);
+    if (timeout_rc == -1) {
+        LOG_ERROR("[tx_pipeline] run_once: block_builder_check_timeout failed");
+        return -1;
+    }
+    if (timeout_rc == 1 && pl->builder.symbol_count > 0) {
+        block_builder_finalize_with_padding(&pl->builder);
+        if (encode_and_drain(pl) != 0) {
+            return -1;
+        }
+        block_builder_reset(&pl->builder);
+    }
+
+    if (tick_and_drain_interleaver(pl) != 0) {
+        return -1;
     }
 
     return 0;
