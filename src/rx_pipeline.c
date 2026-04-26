@@ -133,11 +133,14 @@ rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
     }
 
     /* Create deinterleaver */
+    /* stabilization_ms: wait after valid>=K before promoting so repair
+     * symbols have time to arrive (~0.5ms) and won't create stale slots
+     * that exhaust the pool and cause mass block evictions. */
     pl->dil = deinterleaver_create(cfg->depth * 4,
                                    cfg->k + cfg->m,
                                    cfg->k,
                                    (size_t)cfg->symbol_size,
-                                   0.0,
+                                   2.0,
                                    RX_BLOCK_MAX_AGE_MS);
     if (pl->dil == NULL) {
         LOG_ERROR("[rx_pipeline] create: deinterleaver_create failed "
