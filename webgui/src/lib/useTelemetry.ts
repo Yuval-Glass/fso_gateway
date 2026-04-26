@@ -80,7 +80,14 @@ export function useTelemetry(): TelemetryFeed {
         if (!mounted.current) return;
         try {
           const parsed = JSON.parse(ev.data) as TelemetrySnapshot;
-          setSnap(parsed);
+          // Functional update with identity bail-out: when the bridge
+          // re-sends the same frame (same generatedAt) React 18+ skips
+          // the re-render entirely. Prevents update-depth thrash under
+          // 10 Hz streaming + dev-mode strict checks.
+          setSnap((prev) => {
+            if (prev && prev.generatedAt === parsed.generatedAt) return prev;
+            return parsed;
+          });
         } catch {
           // malformed frame — ignore, next one will arrive
         }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AlertEvent, TelemetrySnapshot } from "@/types/telemetry";
 
 const ACK_STORAGE_KEY = "fso-gw:ack-alerts";
@@ -59,10 +59,19 @@ export interface AlertsView {
 export function useAlerts(snap: TelemetrySnapshot | null): AlertsView {
   const [all, setAll] = useState<AlertEvent[]>([]);
   const [acked, setAcked] = useState<Set<string>>(() => loadAcks());
+  // Cheap fingerprint of the alert IDs we already merged, so the effect
+  // can early-exit instead of running setAll(prev=>prev) on every 10 Hz
+  // tick — that path was contributing to dev-mode update-depth warnings.
+  const seenFingerprint = useRef<string>("");
 
   // Merge incoming alerts (deduped).
   useEffect(() => {
     if (!snap || snap.alerts.length === 0) return;
+    // Build a fingerprint from the incoming alert IDs (in order) — fast
+    // string compare beats running the dedup loop when nothing changed.
+    const fp = snap.alerts.map((a) => a.id).join("|");
+    if (fp === seenFingerprint.current) return;
+    seenFingerprint.current = fp;
     setAll((prev) => {
       const seen = new Set(prev.map((a) => a.id));
       const added: AlertEvent[] = [];

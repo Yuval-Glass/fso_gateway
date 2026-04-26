@@ -50,7 +50,17 @@ export function Sparkline({
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      {area && <path d={area} fill={`url(#${gid})`} />}
+      {area && (
+        <path
+          d={area}
+          fill={`url(#${gid})`}
+          // Tween between consecutive paths so the bar doesn't snap on
+          // every 10 Hz tick. Modern browsers (Chrome 98+, Firefox 124+,
+          // Safari 17.4+) interpolate the `d` property; older ones
+          // gracefully fall through to the discrete update.
+          style={{ transition: "d 100ms linear" }}
+        />
+      )}
       <path
         d={path}
         fill="none"
@@ -60,6 +70,7 @@ export function Sparkline({
         strokeLinecap="round"
         // Keep the line crisp regardless of how much the X axis was stretched.
         vectorEffect="non-scaling-stroke"
+        style={{ transition: "d 100ms linear" }}
       />
     </svg>
   );
