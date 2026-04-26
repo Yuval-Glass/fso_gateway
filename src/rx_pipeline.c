@@ -296,9 +296,9 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
         if (symbol_verify_crc(&sym) == 0) {
             deinterleaver_inc_crc_drop(pl->dil);
             stats_inc_crc_drop_symbol();
-            LOG_DEBUG("[rx_pipeline] run_once: CRC fail — "
-                      "packet_id=%u fec_id=%u dropped as erasure",
-                      sym.packet_id, sym.fec_id);
+            LOG_WARN("[rx_pipeline] run_once: CRC fail — "
+                     "packet_id=%u fec_id=%u payload_len=%u dropped",
+                     sym.packet_id, sym.fec_id, sym.payload_len);
             return 0;
         }
     }
