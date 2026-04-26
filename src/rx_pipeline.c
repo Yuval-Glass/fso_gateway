@@ -226,9 +226,11 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
     /* ------------------------------------------------------------------ */
     rc = packet_io_receive(pl->rx_ctx, wire_buf, sizeof(wire_buf), &wire_len);
 
+    /* Always tick so stab-window blocks are promoted promptly even under
+     * continuous traffic (when rc==0 never fires). */
+    deinterleaver_tick(pl->dil, -1.0);
+
     if (rc == 0) {
-        /* No packet — tick the deinterleaver and try to drain */
-        deinterleaver_tick(pl->dil, -1.0);
         drain_ready_blocks(pl);
         return 0;
     }
