@@ -274,6 +274,8 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
         }
 
         if (timeout_rc == 1 && pl->builder.symbol_count > 0) {
+            LOG_INFO("[tx_pipeline] idle-timeout flush: block_id=%lu symbols=%d",
+                     pl->builder.block_id, pl->builder.symbol_count);
             block_builder_finalize_with_padding(&pl->builder);
             if (encode_and_drain(pl) != 0) {
                 return -1;
@@ -354,6 +356,8 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
         return -1;
     }
     if (timeout_rc == 1 && pl->builder.symbol_count > 0) {
+        LOG_INFO("[tx_pipeline] busy-timeout flush: block_id=%lu symbols=%d",
+                 pl->builder.block_id, pl->builder.symbol_count);
         block_builder_finalize_with_padding(&pl->builder);
         if (encode_and_drain(pl) != 0) {
             return -1;
