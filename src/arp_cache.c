@@ -11,7 +11,7 @@
 #define ARP_CACHE_MAX_ENTRIES 256
 #define ARP_CACHE_TTL_SECS    300   /* 5 minutes */
 
-struct arp_entry {
+struct arp_cache_slot {
     uint32_t ip_nbo;
     uint8_t  mac[6];
     int      valid;
@@ -19,9 +19,9 @@ struct arp_entry {
 };
 
 struct arp_cache {
-    struct arp_entry entries[ARP_CACHE_MAX_ENTRIES];
-    int              count;
-    pthread_mutex_t  lock;
+    struct arp_cache_slot entries[ARP_CACHE_MAX_ENTRIES];
+    int                   count;
+    pthread_mutex_t       lock;
 };
 
 arp_cache_t *arp_cache_create(void)
@@ -141,4 +141,30 @@ int arp_cache_lookup(arp_cache_t *c, uint32_t ip_nbo, uint8_t *mac_out)
 
     pthread_mutex_unlock(&c->lock);
     return found;
+}
+
+int arp_cache_dump(arp_cache_t *c, struct arp_entry *out, int max)
+{
+    int    i;
+    int    written = 0;
+    time_t now;
+
+    if (c == NULL || out == NULL || max <= 0) {
+        return 0;
+    }
+
+    now = time(NULL);
+
+    pthread_mutex_lock(&c->lock);
+    for (i = 0; i < c->count && written < max; ++i) {
+        if (!c->entries[i].valid) continue;
+        if ((now - c->entries[i].last_seen) > ARP_CACHE_TTL_SECS) continue;
+        out[written].ip_nbo       = c->entries[i].ip_nbo;
+        memcpy(out[written].mac, c->entries[i].mac, 6);
+        /* Convert wall-clock time to ms since epoch for the wire format. */
+        out[written].last_seen_ms = (int64_t)c->entries[i].last_seen * 1000;
+        written++;
+    }
+    pthread_mutex_unlock(&c->lock);
+    return written;
 }

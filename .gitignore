@@ -1,2 +1,33 @@
 build/
 *.o
+
+# Web GUI — Node / Next.js
+webgui/node_modules/
+webgui/.next/
+webgui/out/
+webgui/.turbo/
+webgui/next-env.d.ts
+
+# Web GUI — Python bridge
+webgui/server/.venv/
+webgui/server/__pycache__/
+webgui/server/**/__pycache__/
+
+# Web GUI — runtime / local state
+webgui/server/runs.db
+webgui/server/runs.db-journal
+webgui/server/runs.db-wal
+webgui/server/runs.db-shm
+webgui/server/config.yaml
+webgui/server/*.tmp
+
+# Logs
+*.log
+/tmp/*.log
+
+# Windows/WSL NTFS metadata
+*.Identifier
+*:Zone.Identifier
+
+# MS Office lockfiles
+~$*

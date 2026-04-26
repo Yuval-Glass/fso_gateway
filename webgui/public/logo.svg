@@ -1,0 +1,19 @@
+<svg width="128" height="128" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4de3ff"/>
+      <stop offset="50%" stop-color="#00d4ff"/>
+      <stop offset="100%" stop-color="#0a7690"/>
+    </linearGradient>
+    <linearGradient id="wing" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.8"/>
+      <stop offset="100%" stop-color="#00d4ff" stop-opacity="0.1"/>
+    </linearGradient>
+  </defs>
+  <polygon points="50,4 88,25 88,75 50,96 12,75 12,25" fill="none" stroke="url(#grad)" stroke-width="1.5" opacity="0.7"/>
+  <polygon points="50,14 79,31 79,69 50,86 21,69 21,31" fill="rgba(0, 212, 255, 0.08)" stroke="url(#grad)" stroke-width="0.8"/>
+  <path d="M 18,50 Q 8,42 10,30 Q 18,35 30,48 Z" fill="url(#wing)"/>
+  <path d="M 82,50 Q 92,42 90,30 Q 82,35 70,48 Z" fill="url(#wing)" transform="scale(-1,1) translate(-100,0)"/>
+  <path d="M 38,30 L 38,70 M 38,50 L 62,30 M 38,50 L 62,70 M 62,30 L 66,26 M 62,70 L 66,74" stroke="url(#grad)" stroke-width="2.8" stroke-linecap="round" fill="none"/>
+  <circle cx="50" cy="50" r="1.8" fill="#4de3ff"/>
+</svg>

@@ -17,6 +17,21 @@ extern "C" {
 
 typedef struct arp_cache arp_cache_t;
 
+/*
+ * Public entry shape for arp_cache_dump().
+ *
+ * ip_nbo       — IPv4 address in network byte order (same value that was
+ *                passed to arp_cache_learn()).
+ * mac[6]       — the MAC address.
+ * last_seen_ms — wall-clock time of the last learn for this entry, in
+ *                milliseconds since the epoch.
+ */
+struct arp_entry {
+    uint32_t ip_nbo;
+    uint8_t  mac[6];
+    int64_t  last_seen_ms;
+};
+
 arp_cache_t *arp_cache_create(void);
 void         arp_cache_destroy(arp_cache_t *cache);
 
@@ -33,6 +48,14 @@ void arp_cache_learn(arp_cache_t *cache, uint32_t ip_nbo,
  */
 int  arp_cache_lookup(arp_cache_t *cache, uint32_t ip_nbo,
                       uint8_t *mac_out);
+
+/*
+ * arp_cache_dump() — copy up to `max` entries into `out`.
+ *
+ * Returns the number of entries written. Thread-safe. Intended for the
+ * control_server to expose ARP state to diagnostics UIs.
+ */
+int arp_cache_dump(arp_cache_t *cache, struct arp_entry *out, int max);
 
 #ifdef __cplusplus
 }

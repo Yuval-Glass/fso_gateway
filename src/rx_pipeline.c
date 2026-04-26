@@ -31,6 +31,7 @@
 #include "packet_io.h"
 #include "packet_reassembler.h"
 #include "rx_pipeline.h"
+#include "stats.h"
 #include "symbol.h"
 #include "types.h"
 
@@ -192,6 +193,11 @@ void rx_pipeline_destroy(rx_pipeline_t *pl)
     free(pl);
 }
 
+deinterleaver_t *rx_pipeline_get_deinterleaver(rx_pipeline_t *pl)
+{
+    return (pl != NULL) ? pl->dil : NULL;
+}
+
 /* -------------------------------------------------------------------------- */
 /* rx_pipeline_run_once                                                        */
 /* -------------------------------------------------------------------------- */
@@ -289,6 +295,7 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
     if (pl->cfg.internal_symbol_crc_enabled) {
         if (symbol_verify_crc(&sym) == 0) {
             deinterleaver_inc_crc_drop(pl->dil);
+            stats_inc_crc_drop_symbol();
             LOG_DEBUG("[rx_pipeline] run_once: CRC fail — "
                       "packet_id=%u fec_id=%u dropped as erasure",
                       sym.packet_id, sym.fec_id);
@@ -337,7 +344,18 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
 
     while (deinterleaver_get_ready_block(pl->dil, pl->block_buf) == 0) {
 
-        /* ---- a. FEC decode ------------------------------------------- */
+        /* ---- a. Per-block accounting (before FEC decode) --------------- */
+        {
+            int n = pl->block_buf->symbols_per_block;
+            int c = pl->block_buf->symbol_count;
+            int holes = (n > c) ? (n - c) : 0;
+
+            stats_inc_block_attempt();
+            stats_add_symbols((uint64_t)n, (uint64_t)holes);
+            stats_record_block((uint64_t)holes);
+        }
+
+        /* ---- b. FEC decode -------------------------------------------- */
         memset(pl->recon_buf, 0, recon_size);
 
         fec_rc = fec_decode_block(pl->fec,
@@ -347,6 +365,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                   pl->recon_buf);
 
         if (fec_rc == FEC_DECODE_TOO_MANY_HOLES || fec_rc == FEC_DECODE_ERR) {
+            stats_inc_block_failure();
             LOG_WARN("[rx_pipeline] drain: FEC decode failed "
                      "(block_id=%lu symbol_count=%d rc=%d)",
                      (unsigned long)pl->block_buf->block_id,
@@ -355,6 +374,9 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                       (uint32_t)pl->block_buf->block_id, 0);
             continue;
         }
+
+        /* FEC decode succeeded for this block. */
+        stats_inc_block_success();
 
         /* ---- b. Reconstruct source symbols from decoded bytes ---------- */
         /*
@@ -438,6 +460,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                                     sizeof(reassem_buf));
                     if (reassem_len > 0) {
                         arp_learn_from_packet(pl, reassem_buf, reassem_len);
+                        stats_inc_recovered((size_t)reassem_len);
                         if (packet_io_send(pl->tx_ctx, reassem_buf,
                                            (size_t)reassem_len) != 0) {
                             LOG_WARN("[rx_pipeline] drain: packet_io_send "
@@ -446,6 +469,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                      packet_io_last_error(pl->tx_ctx));
                         }
                     } else {
+                        stats_inc_failed_packet();
                         LOG_WARN("[rx_pipeline] drain: reassemble_packet "
                                  "failed for packet_id=%u (sym_count=%d)",
                                  cur_packet_id, pkt_sym_count);
@@ -475,6 +499,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                                 sizeof(reassem_buf));
                 if (reassem_len > 0) {
                     arp_learn_from_packet(pl, reassem_buf, reassem_len);
+                    stats_inc_recovered((size_t)reassem_len);
                     if (packet_io_send(pl->tx_ctx, reassem_buf,
                                        (size_t)reassem_len) != 0) {
                         LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
@@ -483,6 +508,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                  packet_io_last_error(pl->tx_ctx));
                     }
                 } else {
+                    stats_inc_failed_packet();
                     LOG_WARN("[rx_pipeline] drain: reassemble_packet failed "
                              "for packet_id=%u (sym_count=%d)",
                              cur_packet_id, pkt_sym_count);
@@ -500,6 +526,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                                             sizeof(reassem_buf));
             if (reassem_len > 0) {
                 arp_learn_from_packet(pl, reassem_buf, reassem_len);
+                stats_inc_recovered((size_t)reassem_len);
                 if (packet_io_send(pl->tx_ctx, reassem_buf,
                                    (size_t)reassem_len) != 0) {
                     LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
@@ -508,6 +535,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                              packet_io_last_error(pl->tx_ctx));
                 }
             } else {
+                stats_inc_failed_packet();
                 LOG_WARN("[rx_pipeline] drain: reassemble_packet failed "
                          "for packet_id=%u (sym_count=%d)",
                          cur_packet_id, pkt_sym_count);

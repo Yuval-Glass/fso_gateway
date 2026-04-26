@@ -33,6 +33,7 @@
 #include "logging.h"
 #include "packet_fragmenter.h"
 #include "packet_io.h"
+#include "stats.h"
 #include "symbol.h"
 #include "tx_pipeline.h"
 #include "types.h"
@@ -306,6 +307,9 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
         }
     }
 
+    /* Real LAN packet accepted for forwarding — count as ingress. */
+    stats_inc_ingress(pkt_len);
+
     num_frags = fragment_packet(rx_buf,
                                 pkt_len,
                                 pl->packet_id_counter,
@@ -565,6 +569,9 @@ static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
                  packet_io_last_error(pl->tx_ctx));
         return -1;
     }
+
+    /* Wire-level transmitted counter (per symbol, including FEC repair). */
+    stats_inc_transmitted(wire_len);
 
     return 0;
 }
