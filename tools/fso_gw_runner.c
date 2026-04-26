@@ -121,13 +121,14 @@ static void *live_stats_thread(void *arg)
 int main(int argc, char *argv[])
 {
     static const struct option long_opts[] = {
-        { "lan-iface", required_argument, NULL, 'l' },
-        { "fso-iface", required_argument, NULL, 'f' },
-        { "duration", required_argument, NULL, 'd' },
-        { "k", required_argument, NULL, 'k' },
-        { "m", required_argument, NULL, 'm' },
-        { "depth", required_argument, NULL, 'e' },
-        { "symbol-size", required_argument, NULL, 's' },
+        { "lan-iface",           required_argument, NULL, 'l' },
+        { "fso-iface",           required_argument, NULL, 'f' },
+        { "duration",            required_argument, NULL, 'd' },
+        { "k",                   required_argument, NULL, 'k' },
+        { "m",                   required_argument, NULL, 'm' },
+        { "depth",               required_argument, NULL, 'e' },
+        { "symbol-size",         required_argument, NULL, 's' },
+        { "internal-symbol-crc", required_argument, NULL, 'c' },
         { NULL, 0, NULL, 0 }
     };
 
@@ -138,6 +139,7 @@ int main(int argc, char *argv[])
     int m = DEFAULT_M;
     int depth = DEFAULT_DEPTH;
     int symbol_size = DEFAULT_SYMBOL_SIZE;
+    int internal_crc = 1;
 
     struct config cfg;
     struct sigaction sa;
@@ -172,6 +174,7 @@ int main(int argc, char *argv[])
         case 'm': parse_int_arg("--m", optarg, &m); break;
         case 'e': parse_int_arg("--depth", optarg, &depth); break;
         case 's': parse_int_arg("--symbol-size", optarg, &symbol_size); break;
+        case 'c': parse_int_arg("--internal-symbol-crc", optarg, &internal_crc); break;
         default: print_usage(); return 1;
         }
     }
@@ -188,7 +191,7 @@ int main(int argc, char *argv[])
     cfg.m = m;
     cfg.depth = depth;
     cfg.symbol_size = symbol_size;
-    cfg.internal_symbol_crc_enabled = 1;
+    cfg.internal_symbol_crc_enabled = (internal_crc != 0) ? 1 : 0;
 
     printf("fso_gw_runner: starting\n");
     printf("  lan-iface:   %s\n", cfg.lan_iface);

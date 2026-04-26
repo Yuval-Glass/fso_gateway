@@ -149,11 +149,7 @@ GW_RUNNER_BIN  := $(BIN_DIR)/fso_gw_runner
 endif
 
 .PHONY: all
-ifeq ($(USE_DPDK),1)
 all: $(TARGET) $(GW_RUNNER_BIN)
-else
-all: $(TARGET)
-endif
 
 $(TARGET): $(OBJS) $(WIREHAIR_OBJS) | $(BIN_DIR)
 	$(Q)echo "  LINK  $@"
