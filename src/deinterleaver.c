@@ -652,14 +652,17 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
         return -1;
     }
 
-    /* 4. total_symbols consistency (non-fatal) */
+    /* 4. total_symbols consistency (non-fatal).
+     * Source symbols carry per-packet fragment count in this field (not the
+     * FEC block size), so mismatches against symbols_per_block are expected
+     * and normal.  Log at DEBUG only to avoid WARN noise in hot path. */
     if (sym->total_symbols != 0 &&
         (int)sym->total_symbols != self->symbols_per_block)
     {
-        LOG_WARN("[DIL] push_symbol: total_symbols=%u != N=%d "
-                 "block_id=%u fec_id=%u",
-                 (unsigned)sym->total_symbols, self->symbols_per_block,
-                 (unsigned)sym->packet_id, (unsigned)sym->fec_id);
+        LOG_DEBUG("[DIL] push_symbol: total_symbols=%u != N=%d "
+                  "block_id=%u fec_id=%u",
+                  (unsigned)sym->total_symbols, self->symbols_per_block,
+                  (unsigned)sym->packet_id, (unsigned)sym->fec_id);
     }
 
     now_monotonic(&now);

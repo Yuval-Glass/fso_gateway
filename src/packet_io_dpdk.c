@@ -703,12 +703,12 @@ int packet_io_receive(packet_io_ctx_t *ctx,
             if ((++ctx->port->rx_poll_count & 0xFFFFF) == 0) {
                 struct rte_eth_stats st;
                 if (rte_eth_stats_get(ctx->port->port_id, &st) == 0) {
-                    LOG_INFO("[packet_io_dpdk] port %u HW stats: "
-                             "ipackets=%" PRIu64 " ibytes=%" PRIu64
-                             " imissed=%" PRIu64 " ierrors=%" PRIu64,
+                    LOG_INFO("[packet_io_dpdk] port %u HW stats (idle): "
+                             "ipackets=%" PRIu64 " imissed=%" PRIu64
+                             " opackets=%" PRIu64 " oerrors=%" PRIu64,
                              ctx->port->port_id,
-                             st.ipackets, st.ibytes,
-                             st.imissed, st.ierrors);
+                             st.ipackets, st.imissed,
+                             st.opackets, st.oerrors);
                 }
             }
             return 0;   /* no packets available */
@@ -730,11 +730,11 @@ int packet_io_receive(packet_io_ctx_t *ctx,
                 struct rte_eth_stats st;
                 if (rte_eth_stats_get(ctx->port->port_id, &st) == 0) {
                     LOG_WARN("[packet_io_dpdk] port %u HW stats: "
-                             "ipackets=%" PRIu64 " ibytes=%" PRIu64
-                             " imissed=%" PRIu64 " ierrors=%" PRIu64,
+                             "ipackets=%" PRIu64 " imissed=%" PRIu64
+                             " opackets=%" PRIu64 " oerrors=%" PRIu64,
                              ctx->port->port_id,
-                             st.ipackets, st.ibytes,
-                             st.imissed, st.ierrors);
+                             st.ipackets, st.imissed,
+                             st.opackets, st.oerrors);
                 }
             }
         }
