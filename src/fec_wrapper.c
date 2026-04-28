@@ -55,9 +55,11 @@
 #include "types.h"
 
 struct fec_ctx {
-    int k;
-    int symbol_size;
-    int block_bytes;
+    int            k;
+    int            symbol_size;
+    int            block_bytes;
+    unsigned char *symbol_buf;  /* pre-allocated encode scratch, symbol_size bytes */
+    WirehairCodec  encoder;     /* reused across fec_encode_block calls */
 };
 
 typedef struct fec_decode_telemetry_t {
@@ -165,6 +167,14 @@ fec_handle_t fec_create(int k, int symbol_size)
     ctx->k           = k;
     ctx->symbol_size = symbol_size;
     ctx->block_bytes = k * symbol_size;
+    ctx->encoder     = NULL;
+
+    ctx->symbol_buf = (unsigned char *)malloc((size_t)symbol_size);
+    if (ctx->symbol_buf == NULL) {
+        LOG_ERROR("[FEC] fec_create: malloc(symbol_buf, %d) failed", symbol_size);
+        free(ctx);
+        return NULL;
+    }
 
     LOG_INFO("[FEC] Created: k=%d symbol_size=%d block_bytes=%d",
              ctx->k, ctx->symbol_size, ctx->block_bytes);
@@ -174,7 +184,15 @@ fec_handle_t fec_create(int k, int symbol_size)
 
 void fec_destroy(fec_handle_t handle)
 {
-    free(handle);
+    struct fec_ctx *ctx = handle;
+    if (ctx == NULL) {
+        return;
+    }
+    if (ctx->encoder != NULL) {
+        wirehair_free(ctx->encoder);
+    }
+    free(ctx->symbol_buf);
+    free(ctx);
 }
 
 int fec_encode_block(fec_handle_t          handle,
@@ -183,9 +201,7 @@ int fec_encode_block(fec_handle_t          handle,
                      int                   m)
 {
     struct fec_ctx   *ctx = handle;
-    WirehairCodec    encoder = NULL;
-    unsigned char    *symbol_buf = NULL;
-    int               result = FEC_DECODE_ERR;
+    WirehairCodec     new_enc;
     int               i;
 
     if (ctx == NULL || source_data == NULL || out_repair_symbols == NULL || m < 1) {
@@ -193,31 +209,28 @@ int fec_encode_block(fec_handle_t          handle,
         return FEC_DECODE_ERR;
     }
 
-    symbol_buf = (unsigned char *)calloc((size_t)ctx->symbol_size, sizeof(unsigned char));
-    if (symbol_buf == NULL) {
-        LOG_ERROR("[FEC] fec_encode_block: symbol buffer allocation failed");
-        return FEC_DECODE_ERR;
-    }
-
-    encoder = wirehair_encoder_create(NULL,
+    /* Reuse encoder allocation across calls — wirehair_encoder_create with a
+     * non-NULL first argument reinitialises the existing codec in place, avoiding
+     * a heap alloc/free on every block.  The returned pointer replaces ctx->encoder
+     * (it may be the same pointer or a newly allocated one if the codec had to grow). */
+    new_enc = wirehair_encoder_create(ctx->encoder,
                                       source_data,
                                       (uint64_t)ctx->block_bytes,
                                       (uint32_t)ctx->symbol_size);
-    if (encoder == NULL) {
+    if (new_enc == NULL) {
         LOG_ERROR("[FEC] fec_encode_block: wirehair_encoder_create() failed");
-        goto cleanup;
+        return FEC_DECODE_ERR;
     }
+    ctx->encoder = new_enc;
 
     for (i = 0; i < m; ++i) {
         uint32_t       bytes_out     = 0U;
         uint32_t       repair_fec_id = (uint32_t)(ctx->k + i);
         WirehairResult wr;
 
-        memset(symbol_buf, 0, (size_t)ctx->symbol_size);
-
-        wr = wirehair_encode(encoder,
+        wr = wirehair_encode(ctx->encoder,
                              repair_fec_id,
-                             symbol_buf,
+                             ctx->symbol_buf,
                              (uint32_t)ctx->symbol_size,
                              &bytes_out);
 
@@ -228,36 +241,28 @@ int fec_encode_block(fec_handle_t          handle,
                       (unsigned)repair_fec_id,
                       (int)wr,
                       (unsigned)bytes_out);
-            goto cleanup;
+            return FEC_DECODE_ERR;
         }
 
         /*
-         * Populate only the FEC-layer fields here.
-         *
-         * packet_id, symbol_index, and total_symbols are left at zero.
-         * The caller (e.g. sim_runner's sr_encode_one_block) MUST set
-         * those fields AND then call symbol_compute_crc() before pushing
-         * the repair symbol to the interleaver.
-         *
-         * crc32 is intentionally left at 0 so that any accidental use of
-         * an unfinished repair symbol is detectable via CRC failure on RX.
+         * Set only the fields that fec_encode_block owns.
+         * packet_id, symbol_index, total_symbols are set to 0 here and
+         * filled by the caller before the symbol is pushed to the interleaver.
+         * crc32 = 0 so any accidental use of an unfinished symbol fails CRC.
+         * data[] is written by memcpy below — no full-struct memset needed.
          */
-        memset(&out_repair_symbols[i], 0, sizeof(symbol_t));
-        out_repair_symbols[i].fec_id      = repair_fec_id;
-        out_repair_symbols[i].payload_len = (uint16_t)bytes_out;
+        out_repair_symbols[i].packet_id     = 0;
+        out_repair_symbols[i].fec_id        = repair_fec_id;
+        out_repair_symbols[i].symbol_index  = 0;
+        out_repair_symbols[i].total_symbols = 0;
+        out_repair_symbols[i].payload_len   = (uint16_t)bytes_out;
+        out_repair_symbols[i].crc32         = 0;
         memcpy(out_repair_symbols[i].data,
-               symbol_buf,
+               ctx->symbol_buf,
                (size_t)ctx->symbol_size);
     }
 
-    result = FEC_DECODE_OK;
-
-cleanup:
-    if (encoder != NULL) {
-        wirehair_free(encoder);
-    }
-    free(symbol_buf);
-    return result;
+    return FEC_DECODE_OK;
 }
 
 int fec_decode_block(fec_handle_t   handle,

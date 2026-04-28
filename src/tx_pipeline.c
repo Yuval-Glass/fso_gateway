@@ -409,8 +409,6 @@ static int encode_and_drain(tx_pipeline_t *pl)
     sym_size = pl->cfg.symbol_size;
     crc_on = pl->cfg.internal_symbol_crc_enabled;
 
-    memset(pl->repair_syms, 0, sizeof(symbol_t) * (size_t)m);
-
     for (i = 0; i < k; ++i) {
         memcpy(pl->source_buf + (size_t)i * (size_t)sym_size,
                pl->builder.symbols[i].data,
