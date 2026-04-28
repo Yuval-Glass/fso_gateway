@@ -54,6 +54,16 @@
 /* Wire header size in bytes */
 #define WIRE_HDR_SIZE        18U
 
+/* FSO Ethernet II header prepended to every FEC wire frame so the mlx5 NIC
+ * classifies frames as Ethernet II (EtherType ≥ 0x0600) rather than IEEE 802.3
+ * length frames.  EtherType 0x7FEC is in the locally-assigned range. */
+#define FSO_ETH_HDR_SIZE     14U
+static const unsigned char FSO_ETH_HDR[FSO_ETH_HDR_SIZE] = {
+    0x01, 0x7f, 0x45, 0x43, 0x00, 0x01,  /* dst: multicast, locally-administered */
+    0x02, 0x7f, 0x45, 0x43, 0x00, 0x01,  /* src: locally-administered */
+    0x7f, 0xec                             /* EtherType 0x7FEC — custom FSO FEC */
+};
+
 /* -------------------------------------------------------------------------- */
 /* Internal struct                                                             */
 /* -------------------------------------------------------------------------- */
@@ -531,7 +541,7 @@ static int tick_and_drain_interleaver(tx_pipeline_t *pl)
 
 static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
 {
-    unsigned char wire[WIRE_HDR_SIZE + MAX_SYMBOL_DATA_SIZE];
+    unsigned char wire[FSO_ETH_HDR_SIZE + WIRE_HDR_SIZE + MAX_SYMBOL_DATA_SIZE];
     uint32_t      tmp32;
     uint16_t      tmp16;
     size_t        wire_len;
@@ -541,29 +551,32 @@ static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
         return -1;
     }
 
+    /* Prepend FSO Ethernet II header so EtherType ≥ 0x0600 (mlx5 requirement) */
+    memcpy(wire, FSO_ETH_HDR, FSO_ETH_HDR_SIZE);
+
     tmp32 = htonl(sym->packet_id);
-    memcpy(wire + 0, &tmp32, 4);
+    memcpy(wire + FSO_ETH_HDR_SIZE + 0, &tmp32, 4);
 
     tmp32 = htonl(sym->fec_id);
-    memcpy(wire + 4, &tmp32, 4);
+    memcpy(wire + FSO_ETH_HDR_SIZE + 4, &tmp32, 4);
 
     tmp16 = htons(sym->symbol_index);
-    memcpy(wire + 8, &tmp16, 2);
+    memcpy(wire + FSO_ETH_HDR_SIZE + 8, &tmp16, 2);
 
     tmp16 = htons(sym->total_symbols);
-    memcpy(wire + 10, &tmp16, 2);
+    memcpy(wire + FSO_ETH_HDR_SIZE + 10, &tmp16, 2);
 
     tmp16 = htons(sym->payload_len);
-    memcpy(wire + 12, &tmp16, 2);
+    memcpy(wire + FSO_ETH_HDR_SIZE + 12, &tmp16, 2);
 
     tmp32 = htonl(sym->crc32);
-    memcpy(wire + 14, &tmp32, 4);
+    memcpy(wire + FSO_ETH_HDR_SIZE + 14, &tmp32, 4);
 
     if (sym->payload_len > 0) {
-        memcpy(wire + WIRE_HDR_SIZE, sym->data, sym->payload_len);
+        memcpy(wire + FSO_ETH_HDR_SIZE + WIRE_HDR_SIZE, sym->data, sym->payload_len);
     }
 
-    wire_len = WIRE_HDR_SIZE + sym->payload_len;
+    wire_len = FSO_ETH_HDR_SIZE + WIRE_HDR_SIZE + sym->payload_len;
 
     if (packet_io_send(pl->tx_ctx, wire, wire_len) != 0) {
         LOG_WARN("[tx_pipeline] tx_serialize_and_send: packet_io_send failed "

@@ -45,6 +45,11 @@
 /* Wire header size in bytes */
 #define WIRE_HDR_SIZE        18U
 
+/* FSO Ethernet II header size — stripped from every received FEC wire frame */
+#define FSO_ETH_HDR_SIZE     14U
+#define FSO_ETHERTYPE_HI     0x7f
+#define FSO_ETHERTYPE_LO     0xec
+
 /* block_max_age for the deinterleaver */
 #define RX_BLOCK_MAX_AGE_MS  50.0
 
@@ -242,6 +247,19 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
     }
 
     /* rc == 1: packet received */
+
+    /* ------------------------------------------------------------------ */
+    /* Step 1b — Strip FSO Ethernet II header (EtherType 0x7FEC)          */
+    /* ------------------------------------------------------------------ */
+    if (wire_len >= FSO_ETH_HDR_SIZE &&
+        wire_buf[12] == FSO_ETHERTYPE_HI &&
+        wire_buf[13] == FSO_ETHERTYPE_LO) {
+        wire_len -= FSO_ETH_HDR_SIZE;
+        memmove(wire_buf, wire_buf + FSO_ETH_HDR_SIZE, wire_len);
+    } else {
+        /* Frame without FSO EtherType — drop silently (stray kernel frame) */
+        return 0;
+    }
 
     /* ------------------------------------------------------------------ */
     /* Step 2 — Deserialize wire format → symbol_t                        */
