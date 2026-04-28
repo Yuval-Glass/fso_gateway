@@ -178,18 +178,49 @@ body::before {
 
 @keyframes pulseRing {
   0% {
-    transform: scale(0.85);
-    opacity: 0.8;
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  70% {
+    opacity: 0.25;
   }
   100% {
-    transform: scale(1.6);
+    transform: scale(1.45);
     opacity: 0;
   }
 }
 
 .pulse-ring {
-  animation: pulseRing 2.4s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite;
+  animation: pulseRing 2s cubic-bezier(0.25, 0.46, 0.45, 0.94) infinite;
+  /* The rings expand outward from the gauge — make sure no ancestor
+     `overflow: hidden` chops them off. */
+  pointer-events: none;
 }
+
+/* ============================================================
+ * Hero gauge — multi-layer composition animations.
+ * Designed to feel alive without being jittery: long periods,
+ * compositor-only properties (transform/opacity).
+ * ============================================================ */
+
+@keyframes ring-spin {
+  from { transform: rotate(0deg);   }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes ring-spin-rev {
+  from { transform: rotate(0deg);    }
+  to   { transform: rotate(-360deg); }
+}
+
+.ring-spin-slow    { animation: ring-spin 40s linear infinite; }
+.ring-spin-reverse { animation: ring-spin-rev 25s linear infinite; }
+.ring-sweep        { animation: ring-spin 6s linear infinite; }
+
+/* Orbital particles — each at its own period to break the synchrony. */
+.ring-orbit-a { animation: ring-spin     14s linear infinite; }
+.ring-orbit-b { animation: ring-spin-rev 22s linear infinite; }
+.ring-orbit-c { animation: ring-spin     30s linear infinite; }
 
 @keyframes breathe {
   0%, 100% {
@@ -319,16 +350,8 @@ body::before {
   border-radius: 2px;
 }
 
-/* ============================================================
- * Reduced motion — respect user preference
- * ============================================================ */
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
+/* The previous `prefers-reduced-motion` global override killed every
+ * animation in the app for users with that OS setting. The dashboard's
+ * hero gauge and live charts are key UX, so we no longer disable them
+ * wholesale. If specific animations turn out to be vestibular-unfriendly,
+ * we should opt them out individually. */

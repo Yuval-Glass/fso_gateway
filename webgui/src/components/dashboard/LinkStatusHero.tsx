@@ -25,7 +25,7 @@ interface LinkStatusHeroProps {
 
 export function LinkStatusHero({ link, cfg }: LinkStatusHeroProps) {
   return (
-    <GlassPanel variant="raised" padded={false} className="overflow-hidden">
+    <GlassPanel variant="raised" padded={false}>
       <div className="relative">
         <div className="scanlines absolute inset-0 pointer-events-none" />
 
