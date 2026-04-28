@@ -340,6 +340,25 @@ int tx_pipeline_run_once(tx_pipeline_t *pl)
 
     pl->packet_id_counter++;
 
+    /* Keep all fragments of one packet in the same FEC block so that
+     * reassemble_packet always receives a complete set.
+     * If the current block cannot hold all num_frags without overflowing,
+     * flush it with padding now — before adding any fragment of this packet.
+     * num_frags ≤ max_frags_per_packet ≤ k_limit, so the new block always
+     * has enough room for the entire packet. */
+    if (num_frags > 0 &&
+        pl->builder.symbol_count > 0 &&
+        pl->builder.symbol_count + num_frags > pl->builder.k_limit) {
+        block_builder_finalize_with_padding(&pl->builder);
+        if (encode_and_drain(pl) != 0) {
+            return -1;
+        }
+        block_builder_reset(&pl->builder);
+        if (tick_and_drain_interleaver(pl) != 0) {
+            return -1;
+        }
+    }
+
     for (i = 0; i < num_frags; ++i) {
         add_rc = block_builder_add_symbol(&pl->builder, &pl->frag_syms[i]);
         if (add_rc == -1) {
