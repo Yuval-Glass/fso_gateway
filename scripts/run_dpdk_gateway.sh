@@ -11,7 +11,7 @@
 #   GW_K            FEC source symbols            (default 10)
 #   GW_M            FEC repair symbols            (default 4)
 #   GW_DEPTH        interleaver depth             (default 8)
-#   GW_SYMBOL_SIZE  symbol size in bytes          (default 1400)
+#   GW_SYMBOL_SIZE  symbol size in bytes          (default 1514 = max standard Ethernet frame)
 #   GW_DURATION     run duration in seconds, 0=forever (default 0)
 #   DPDK_CORES      CPU list for EAL -l flag      (default 0-3)
 #   HUGEPAGES_2M    number of 2 MB hugepages to allocate (default 1024)
@@ -32,7 +32,7 @@ FSO_IFACE="${FSO_IFACE:-}"
 GW_K="${GW_K:-10}"
 GW_M="${GW_M:-4}"
 GW_DEPTH="${GW_DEPTH:-8}"
-GW_SYMBOL_SIZE="${GW_SYMBOL_SIZE:-1400}"
+GW_SYMBOL_SIZE="${GW_SYMBOL_SIZE:-1514}"
 DPDK_CORES="${DPDK_CORES:-0-3}"
 HUGEPAGES_2M="${HUGEPAGES_2M:-1024}"
 SIDE=""
