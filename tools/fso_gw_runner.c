@@ -223,7 +223,7 @@ int main(int argc, char *argv[])
     sigaction(SIGTERM,&sa,NULL);
 
     stats = hw_stats_create();
-    gw = gateway_create(&cfg);
+    gw = gateway_create(&cfg, stats);
     g_gw = gw;
 
     if (duration > 0) {

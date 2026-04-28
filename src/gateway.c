@@ -49,6 +49,7 @@ struct gateway {
     packet_io_ctx_t  *ctx_fso_rx;   /* FSO NIC — promiscuous, RX source      */
     packet_io_ctx_t  *ctx_lan_tx;   /* LAN NIC — non-promiscuous, RX sink    */
     arp_cache_t      *arp_cache;
+    hw_stats_t       *hw_stats;
     tx_pipeline_t    *tx_pl;
     rx_pipeline_t    *rx_pl;
     control_server_t *cs;           /* NULL if telemetry socket failed to open */
@@ -109,7 +110,7 @@ static void *rx_thread_func(void *arg)
 /* Lifecycle                                                                   */
 /* -------------------------------------------------------------------------- */
 
-gateway_t *gateway_create(const struct config *cfg)
+gateway_t *gateway_create(const struct config *cfg, hw_stats_t *hw_stats)
 {
     gateway_t *gw;
     char       errbuf[ERRBUF_SIZE];
@@ -125,8 +126,9 @@ gateway_t *gateway_create(const struct config *cfg)
         return NULL;
     }
     memset(gw, 0, sizeof(gateway_t));
-    gw->cfg     = *cfg;
-    gw->running = 0;
+    gw->cfg      = *cfg;
+    gw->hw_stats = hw_stats;
+    gw->running  = 0;
 
     /* Fresh counters for this run, and tell stats what the FEC recovery span
      * is so it can classify bursts exceeding it. */
@@ -213,7 +215,7 @@ gateway_t *gateway_create(const struct config *cfg)
     /* ---- Create RX pipeline -------------------------------------------- */
 
     gw->rx_pl = rx_pipeline_create(cfg, gw->ctx_fso_rx, gw->ctx_lan_tx,
-                                   gw->arp_cache);
+                                   gw->arp_cache, gw->hw_stats);
     if (gw->rx_pl == NULL) {
         LOG_ERROR("[gateway] create: rx_pipeline_create failed");
         tx_pipeline_destroy(gw->tx_pl);

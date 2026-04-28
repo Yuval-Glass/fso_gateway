@@ -13,6 +13,7 @@
 #include "arp_cache.h"
 #include "config.h"
 #include "deinterleaver.h"
+#include "hw_stats.h"
 #include "packet_io.h"
 
 #ifdef __cplusplus
@@ -53,7 +54,8 @@ typedef struct rx_pipeline rx_pipeline_t;
 rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
                                   packet_io_ctx_t     *rx_ctx,
                                   packet_io_ctx_t     *tx_ctx,
-                                  arp_cache_t         *arp_cache);
+                                  arp_cache_t         *arp_cache,
+                                  hw_stats_t          *hw_stats);
 
 /*
  * rx_pipeline_run_once() — execute one iteration of the RX pipeline.

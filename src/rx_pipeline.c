@@ -27,6 +27,7 @@
 #include "config.h"
 #include "deinterleaver.h"
 #include "fec_wrapper.h"
+#include "hw_stats.h"
 #include "logging.h"
 #include "packet_io.h"
 #include "packet_reassembler.h"
@@ -61,6 +62,7 @@ struct rx_pipeline {
     packet_io_ctx_t  *tx_ctx;    /* LAN NIC — transmit side                  */
     deinterleaver_t  *dil;       /* block collector / deinterleaver           */
     fec_handle_t      fec;       /* Wirehair FEC context                      */
+    hw_stats_t       *hw_stats;  /* live stats handle (may be NULL)           */
     unsigned char    *recon_buf; /* k * symbol_size, heap-allocated           */
     /* block_buf removed: deinterleaver_get_ready_block() returns a direct
      * pointer into the deinterleaver's block_pool — no per-block copy needed. */
@@ -83,7 +85,8 @@ static void arp_learn_from_packet(rx_pipeline_t *pl,
 rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
                                   packet_io_ctx_t     *rx_ctx,
                                   packet_io_ctx_t     *tx_ctx,
-                                  arp_cache_t         *arp_cache)
+                                  arp_cache_t         *arp_cache,
+                                  hw_stats_t          *hw_stats)
 {
     rx_pipeline_t *pl;
     size_t         recon_size;
@@ -112,6 +115,7 @@ rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
     pl->rx_ctx    = rx_ctx;
     pl->tx_ctx    = tx_ctx;
     pl->arp_cache = arp_cache;
+    pl->hw_stats  = hw_stats;
 
     /* Heap-allocate recon_buf (k * symbol_size can be up to ~576 kB) */
     recon_size = (size_t)cfg->k * (size_t)cfg->symbol_size;
@@ -352,16 +356,17 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
     recon_size = (size_t)k * (size_t)sym_size;
 
     while ((blk = deinterleaver_get_ready_block(pl->dil)) != NULL) {
+        int block_holes;
 
         /* ---- a. Per-block accounting (before FEC decode) --------------- */
         {
             int n = blk->symbols_per_block;
             int c = blk->symbol_count;
-            int holes = (n > c) ? (n - c) : 0;
+            block_holes = (n > c) ? (n - c) : 0;
 
             stats_inc_block_attempt();
-            stats_add_symbols((uint64_t)n, (uint64_t)holes);
-            stats_record_block((uint64_t)holes);
+            stats_add_symbols((uint64_t)n, (uint64_t)block_holes);
+            stats_record_block((uint64_t)block_holes);
         }
 
         /* ---- b. FEC decode -------------------------------------------- */
@@ -375,6 +380,10 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
 
         if (fec_rc == FEC_DECODE_TOO_MANY_HOLES || fec_rc == FEC_DECODE_ERR) {
             stats_inc_block_failure();
+            if (pl->hw_stats) {
+                hw_stats_block_failed(pl->hw_stats);
+                hw_stats_record_block_holes(pl->hw_stats, block_holes);
+            }
             LOG_WARN("[rx_pipeline] drain: FEC decode failed "
                      "(block_id=%lu symbol_count=%d rc=%d)",
                      (unsigned long)blk->block_id,
@@ -386,6 +395,10 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
 
         /* FEC decode succeeded for this block. */
         stats_inc_block_success();
+        if (pl->hw_stats) {
+            hw_stats_block_success(pl->hw_stats);
+            hw_stats_record_block_holes(pl->hw_stats, block_holes);
+        }
 
         /* ---- b. Reconstruct source symbols from decoded bytes ---------- */
         /*
@@ -470,6 +483,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                     if (reassem_len > 0) {
                         arp_learn_from_packet(pl, reassem_buf, reassem_len);
                         stats_inc_recovered((size_t)reassem_len);
+                        if (pl->hw_stats) hw_stats_packet_recovered(pl->hw_stats);
                         if (packet_io_send(pl->tx_ctx, reassem_buf,
                                            (size_t)reassem_len) != 0) {
                             LOG_WARN("[rx_pipeline] drain: packet_io_send "
@@ -479,6 +493,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                         }
                     } else {
                         stats_inc_failed_packet();
+                        if (pl->hw_stats) hw_stats_packet_failed(pl->hw_stats);
                         LOG_WARN("[rx_pipeline] drain: reassemble_packet "
                                  "failed for packet_id=%u (sym_count=%d)",
                                  cur_packet_id, pkt_sym_count);
@@ -509,6 +524,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                 if (reassem_len > 0) {
                     arp_learn_from_packet(pl, reassem_buf, reassem_len);
                     stats_inc_recovered((size_t)reassem_len);
+                    if (pl->hw_stats) hw_stats_packet_recovered(pl->hw_stats);
                     if (packet_io_send(pl->tx_ctx, reassem_buf,
                                        (size_t)reassem_len) != 0) {
                         LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
@@ -518,6 +534,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                     }
                 } else {
                     stats_inc_failed_packet();
+                    if (pl->hw_stats) hw_stats_packet_failed(pl->hw_stats);
                     LOG_WARN("[rx_pipeline] drain: reassemble_packet failed "
                              "for packet_id=%u (sym_count=%d)",
                              cur_packet_id, pkt_sym_count);
@@ -536,6 +553,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
             if (reassem_len > 0) {
                 arp_learn_from_packet(pl, reassem_buf, reassem_len);
                 stats_inc_recovered((size_t)reassem_len);
+                if (pl->hw_stats) hw_stats_packet_recovered(pl->hw_stats);
                 if (packet_io_send(pl->tx_ctx, reassem_buf,
                                    (size_t)reassem_len) != 0) {
                     LOG_WARN("[rx_pipeline] drain: packet_io_send failed "
@@ -545,6 +563,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
                 }
             } else {
                 stats_inc_failed_packet();
+                if (pl->hw_stats) hw_stats_packet_failed(pl->hw_stats);
                 LOG_WARN("[rx_pipeline] drain: reassemble_packet failed "
                          "for packet_id=%u (sym_count=%d)",
                          cur_packet_id, pkt_sym_count);

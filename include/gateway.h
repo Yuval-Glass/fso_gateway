@@ -17,6 +17,7 @@
 #define GATEWAY_H
 
 #include "config.h"
+#include "hw_stats.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -50,7 +51,7 @@ typedef struct gateway gateway_t;
  *
  * Returns non-NULL on success.
  */
-gateway_t *gateway_create(const struct config *cfg);
+gateway_t *gateway_create(const struct config *cfg, hw_stats_t *hw_stats);
 
 /*
  * gateway_run() — start both pipeline threads and block until they stop.

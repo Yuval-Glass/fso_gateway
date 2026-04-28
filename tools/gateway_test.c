@@ -376,7 +376,7 @@ int main(int argc, char *argv[])
     }
 
     /* Create gateway */
-    g_gw = gateway_create(&cfg);
+    g_gw = gateway_create(&cfg, g_stats);
     if (g_gw == NULL) {
         LOG_ERROR("[gateway_test] gateway_create failed");
         hw_stats_destroy(g_stats);
