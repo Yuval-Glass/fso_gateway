@@ -193,8 +193,19 @@ static double elapsed_ms(const struct timespec *start,
 
 static void slot_reset(slot_t *s)
 {
-    memset(s, 0, sizeof(slot_t));
-    /* state == 0 == BLOCK_EMPTY after memset */
+    /* Clear only the slot metadata — intentionally skip block.symbols[].
+     * block.symbols[i].packet_id is zeroed per-slot by init_slot() for the
+     * N positions actually used, which is far cheaper than memset(2.3 MB). */
+    s->state        = BLOCK_EMPTY;
+    s->block_id     = 0;
+    s->valid_symbols = 0;
+    memset(&s->first_sym_time, 0, sizeof(s->first_sym_time));
+    memset(&s->last_sym_time,  0, sizeof(s->last_sym_time));
+    memset(s->received_mask,   0, sizeof(s->received_mask));
+    s->block.block_id          = 0;
+    s->block.symbol_count      = 0;
+    s->block.symbols_per_block = 0;
+    s->block.k_limit           = 0;
 }
 
 static void init_slot(slot_t               *s,
@@ -203,11 +214,18 @@ static void init_slot(slot_t               *s,
                       int                   k,
                       const struct timespec *now)
 {
+    int i;
+
     s->state                   = BLOCK_FILLING;
     s->block_id                = block_id;
     s->valid_symbols           = 0;
     s->first_sym_time          = *now;
     s->last_sym_time           = *now;
+
+    /* Zero packet_id for the N symbol slots so fec_decode_block() treats
+     * unfilled positions as erasures (packet_id==0 is the FEC sentinel). */
+    for (i = 0; i < n; ++i)
+        s->block.symbols[i].packet_id = 0;
 
     s->block.block_id          = (uint64_t)block_id;
     s->block.symbol_count      = 0;
@@ -694,8 +712,21 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
         return 0;
     }
 
-    /* Store symbol at its sparse fec_id position */
-    slot->block.symbols[fec_pos] = *sym;
+    /* Store symbol at its sparse fec_id position.
+     * Copy only the header fields + symbol_size bytes of payload instead of
+     * the full symbol_t (9018 B).  sym->data[payload_len..symbol_size-1] is
+     * guaranteed zero by the memset(&sym,0) in rx_pipeline_run_once(), so
+     * Wirehair sees correct zero-padding for partial symbols. */
+    {
+        symbol_t *d = &slot->block.symbols[fec_pos];
+        d->packet_id     = sym->packet_id;
+        d->fec_id        = sym->fec_id;
+        d->symbol_index  = sym->symbol_index;
+        d->total_symbols = sym->total_symbols;
+        d->payload_len   = sym->payload_len;
+        d->crc32         = sym->crc32;
+        memcpy(d->data, sym->data, self->symbol_size);
+    }
 
     bitset_set(slot->received_mask, fec_pos);
     slot->valid_symbols++;
