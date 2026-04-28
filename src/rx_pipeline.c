@@ -62,7 +62,8 @@ struct rx_pipeline {
     deinterleaver_t  *dil;       /* block collector / deinterleaver           */
     fec_handle_t      fec;       /* Wirehair FEC context                      */
     unsigned char    *recon_buf; /* k * symbol_size, heap-allocated           */
-    block_t          *block_buf;     /* heap-allocated, one block_t            */
+    /* block_buf removed: deinterleaver_get_ready_block() returns a direct
+     * pointer into the deinterleaver's block_pool — no per-block copy needed. */
     symbol_t         *pkt_syms_buf;  /* heap, MAX_SYMBOLS_PER_BLOCK elements   */
     arp_cache_t      *arp_cache;    /* optional: populate on decoded ARP pkts */
 };
@@ -152,23 +153,11 @@ rx_pipeline_t *rx_pipeline_create(const struct config *cfg,
         return NULL;
     }
 
-    /* Heap-allocate block_buf (sizeof(block_t) ~ 2.3 MB — too large for stack) */
-    pl->block_buf = (block_t *)malloc(sizeof(block_t));
-    if (pl->block_buf == NULL) {
-        LOG_ERROR("[rx_pipeline] create: malloc(block_buf) failed");
-        deinterleaver_destroy(pl->dil);
-        fec_destroy(pl->fec);
-        free(pl->recon_buf);
-        free(pl);
-        return NULL;
-    }
-
     /* Heap-allocate pkt_syms_buf (256 × ~9024 bytes — too large for stack) */
     pl->pkt_syms_buf = (symbol_t *)malloc(
         sizeof(symbol_t) * MAX_SYMBOLS_PER_BLOCK);
     if (pl->pkt_syms_buf == NULL) {
         LOG_ERROR("[rx_pipeline] create: malloc(pkt_syms_buf) failed");
-        free(pl->block_buf);
         deinterleaver_destroy(pl->dil);
         fec_destroy(pl->fec);
         free(pl->recon_buf);
@@ -191,7 +180,6 @@ void rx_pipeline_destroy(rx_pipeline_t *pl)
     deinterleaver_destroy(pl->dil);
     fec_destroy(pl->fec);
     free(pl->pkt_syms_buf);
-    free(pl->block_buf);
     free(pl->recon_buf);
     free(pl);
 }
@@ -351,6 +339,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
     int           sym_size;
     int           i;
     size_t        recon_size;
+    block_t      *blk;
 
     /* Per-packet_id grouping array — heap-allocated via pl->pkt_syms_buf */
     int           pkt_sym_count;
@@ -362,12 +351,12 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
     sym_size = pl->cfg.symbol_size;
     recon_size = (size_t)k * (size_t)sym_size;
 
-    while (deinterleaver_get_ready_block(pl->dil, pl->block_buf) == 0) {
+    while ((blk = deinterleaver_get_ready_block(pl->dil)) != NULL) {
 
         /* ---- a. Per-block accounting (before FEC decode) --------------- */
         {
-            int n = pl->block_buf->symbols_per_block;
-            int c = pl->block_buf->symbol_count;
+            int n = blk->symbols_per_block;
+            int c = blk->symbol_count;
             int holes = (n > c) ? (n - c) : 0;
 
             stats_inc_block_attempt();
@@ -379,19 +368,19 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
         memset(pl->recon_buf, 0, recon_size);
 
         fec_rc = fec_decode_block(pl->fec,
-                                  pl->block_buf->symbols,
-                                  pl->block_buf->symbol_count,
-                                  pl->block_buf->symbols_per_block,
+                                  blk->symbols,
+                                  blk->symbol_count,
+                                  blk->symbols_per_block,
                                   pl->recon_buf);
 
         if (fec_rc == FEC_DECODE_TOO_MANY_HOLES || fec_rc == FEC_DECODE_ERR) {
             stats_inc_block_failure();
             LOG_WARN("[rx_pipeline] drain: FEC decode failed "
                      "(block_id=%lu symbol_count=%d rc=%d)",
-                     (unsigned long)pl->block_buf->block_id,
-                     pl->block_buf->symbol_count, fec_rc);
+                     (unsigned long)blk->block_id,
+                     blk->symbol_count, fec_rc);
             deinterleaver_mark_result(pl->dil,
-                                      (uint32_t)pl->block_buf->block_id, 0);
+                                      (uint32_t)blk->block_id, 0);
             continue;
         }
 
@@ -401,7 +390,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
         /* ---- b. Reconstruct source symbols from decoded bytes ---------- */
         /*
          * Walk source symbol slots (fec_id < k, payload_len > 0).
-         * The metadata in pl->block_buf->symbols[i] (packet_id, symbol_index,
+         * The metadata in blk->symbols[i] (packet_id, symbol_index,
          * total_symbols, payload_len) is authoritative; the payload bytes
          * are taken from the decoded recon_buf at offset i * sym_size.
          *
@@ -428,14 +417,14 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
             symbol_t  reconstructed;
 
             /* Only source symbols (fec_id < k) with non-zero payload */
-            if ((int)pl->block_buf->symbols[i].fec_id >= k) {
+            if ((int)blk->symbols[i].fec_id >= k) {
                 continue;
             }
-            if (pl->block_buf->symbols[i].payload_len == 0) {
+            if (blk->symbols[i].payload_len == 0) {
                 continue;
             }
 
-            meta = &pl->block_buf->symbols[i];
+            meta = &blk->symbols[i];
 
             /* Build the reconstructed symbol */
             memset(&reconstructed, 0, sizeof(reconstructed));
@@ -564,7 +553,7 @@ static void drain_ready_blocks(rx_pipeline_t *pl)
 
         /* ---- c. Mark block as successfully processed ------------------- */
         deinterleaver_mark_result(pl->dil,
-                                  (uint32_t)pl->block_buf->block_id, 1);
+                                  (uint32_t)blk->block_id, 1);
     }
 }
 

@@ -239,7 +239,11 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym);
 /* Retrieval                                                                   */
 /* -------------------------------------------------------------------------- */
 
-int deinterleaver_get_ready_block(deinterleaver_t *self, block_t *out_block);
+/* Returns a pointer directly into the deinterleaver's internal block storage
+ * (no copy).  The pointer is valid until the next deinterleaver_mark_result()
+ * call on the same block_id.  Caller MUST call mark_result() immediately after
+ * processing to release the slot.  Returns NULL when no block is ready. */
+block_t *deinterleaver_get_ready_block(deinterleaver_t *self);
 
 /* -------------------------------------------------------------------------- */
 /* Explicit acknowledgment  (MANDATORY after every get_ready_block)          */

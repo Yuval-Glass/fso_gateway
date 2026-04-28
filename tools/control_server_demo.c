@@ -118,9 +118,9 @@ static void drive_deinterleaver(deinterleaver_t *dil, int n, int m, int symbol_s
     }
 
     /* Drain any ready blocks — this triggers the final_callback. */
-    block_t blk;
-    while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-        deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    block_t *blk;
+    while ((blk = deinterleaver_get_ready_block(dil)) != NULL) {
+        deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     }
     deinterleaver_tick(dil, -1.0);
 }

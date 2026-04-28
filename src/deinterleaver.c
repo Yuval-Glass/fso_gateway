@@ -96,7 +96,8 @@ typedef struct {
 
     uint8_t         received_mask[MASK_BYTES]; /* O(1) dup detect bitset      */
 
-    block_t         block;           /* sparse symbol storage (by fec_id)     */
+    block_t        *block;           /* sparse symbol storage (by fec_id) —   */
+                                    /* points into deinterleaver_t.block_pool */
 } slot_t;
 
 /* -------------------------------------------------------------------------- */
@@ -113,7 +114,8 @@ struct deinterleaver {
     double  stabilization_ms;
     double  block_max_age_ms;
 
-    slot_t *slots;
+    slot_t  *slots;
+    block_t *block_pool;  /* backing store for slots[i].block pointers        */
 
     dil_stats_t stats;
 
@@ -202,10 +204,10 @@ static void slot_reset(slot_t *s)
     memset(&s->first_sym_time, 0, sizeof(s->first_sym_time));
     memset(&s->last_sym_time,  0, sizeof(s->last_sym_time));
     memset(s->received_mask,   0, sizeof(s->received_mask));
-    s->block.block_id          = 0;
-    s->block.symbol_count      = 0;
-    s->block.symbols_per_block = 0;
-    s->block.k_limit           = 0;
+    s->block->block_id          = 0;
+    s->block->symbol_count      = 0;
+    s->block->symbols_per_block = 0;
+    s->block->k_limit           = 0;
 }
 
 static void init_slot(slot_t               *s,
@@ -225,12 +227,12 @@ static void init_slot(slot_t               *s,
     /* Zero packet_id for the N symbol slots so fec_decode_block() treats
      * unfilled positions as erasures (packet_id==0 is the FEC sentinel). */
     for (i = 0; i < n; ++i)
-        s->block.symbols[i].packet_id = 0;
+        s->block->symbols[i].packet_id = 0;
 
-    s->block.block_id          = (uint64_t)block_id;
-    s->block.symbol_count      = 0;
-    s->block.symbols_per_block = n;
-    s->block.k_limit           = k;
+    s->block->block_id          = (uint64_t)block_id;
+    s->block->symbol_count      = 0;
+    s->block->symbols_per_block = n;
+    s->block->k_limit           = k;
 }
 
 /* find_slot_any — locate a non-EMPTY slot by block_id */
@@ -585,6 +587,23 @@ deinterleaver_t *deinterleaver_create(int    max_active_blocks,
         return NULL;
     }
 
+    /* block_pool: backing store for slot[i].block pointers.  Separated from
+     * slot_t so sizeof(slot_t) stays small (~88 B) — all 32 slots fit in L1
+     * cache, making O(max_active_blocks) scans cheap. */
+    self->block_pool = (block_t *)calloc((size_t)max_active_blocks,
+                                         sizeof(block_t));
+    if (self->block_pool == NULL) {
+        LOG_ERROR("[DIL] deinterleaver_create: calloc(block_pool) failed");
+        free(self->slots);
+        free(self);
+        return NULL;
+    }
+    {
+        int bi;
+        for (bi = 0; bi < max_active_blocks; ++bi)
+            self->slots[bi].block = &self->block_pool[bi];
+    }
+
     LOG_INFO("[DIL] Created: max_active=%d N=%d K=%d M=%d sym_size=%zu "
              "stab_ms=%.1f max_age_ms=%.1f",
              max_active_blocks, symbols_per_block, k, self->m,
@@ -596,6 +615,7 @@ deinterleaver_t *deinterleaver_create(int    max_active_blocks,
 void deinterleaver_destroy(deinterleaver_t *self)
 {
     if (self == NULL) { return; }
+    free(self->block_pool);
     free(self->slots);
     free(self);
 }
@@ -718,7 +738,7 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
      * guaranteed zero by the memset(&sym,0) in rx_pipeline_run_once(), so
      * Wirehair sees correct zero-padding for partial symbols. */
     {
-        symbol_t *d = &slot->block.symbols[fec_pos];
+        symbol_t *d = &slot->block->symbols[fec_pos];
         d->packet_id     = sym->packet_id;
         d->fec_id        = sym->fec_id;
         d->symbol_index  = sym->symbol_index;
@@ -730,7 +750,7 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
 
     bitset_set(slot->received_mask, fec_pos);
     slot->valid_symbols++;
-    slot->block.symbol_count = slot->valid_symbols;
+    slot->block->symbol_count = slot->valid_symbols;
     slot->last_sym_time      = now;
 
     LOG_DEBUG("[DIL] block_id=%u fec_id=%u stored (%d/%d) payload_len=%u",
@@ -770,37 +790,35 @@ int deinterleaver_push_symbol(deinterleaver_t *self, const symbol_t *sym)
 /* Retrieval                                                                   */
 /* -------------------------------------------------------------------------- */
 
-int deinterleaver_get_ready_block(deinterleaver_t *self, block_t *out_block)
+block_t *deinterleaver_get_ready_block(deinterleaver_t *self)
 {
     int i;
 
-    if (self == NULL || out_block == NULL) {
-        LOG_ERROR("[DIL] get_ready_block: NULL argument");
-        return -1;
+    if (self == NULL) {
+        LOG_ERROR("[DIL] get_ready_block: NULL self");
+        return NULL;
     }
 
     for (i = 0; i < self->max_active_blocks; ++i) {
         slot_t *s = &self->slots[i];
 
         if (s->state == BLOCK_READY_TO_DECODE) {
-            if (s->block.symbols_per_block == 0) {
+            if (s->block->symbols_per_block == 0) {
                 LOG_ERROR("[DIL] BUG: block_id=%u symbols_per_block=0 "
                           "— correcting",
                           (unsigned)s->block_id);
-                s->block.symbols_per_block = self->symbols_per_block;
+                s->block->symbols_per_block = self->symbols_per_block;
             }
-
-            *out_block = s->block;
 
             LOG_INFO("[DIL] get_ready_block: block_id=%u (%d/%d syms) "
                      "— state unchanged; mark_result() required",
                      (unsigned)s->block_id,
                      s->valid_symbols, self->symbols_per_block);
-            return 0;
+            return s->block;
         }
     }
 
-    return -1;
+    return NULL;
 }
 
 /* -------------------------------------------------------------------------- */
