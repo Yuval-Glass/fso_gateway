@@ -344,13 +344,13 @@ static slot_t *alloc_slot(deinterleaver_t       *self,
 
     /* Priority 3: oldest FILLING slot — data loss */
     if (oldest_filling != NULL) {
-        LOG_WARN("[DIL] Evicting FILLING block_id=%u (age=%.1f ms, "
-                 "%d/%d syms) for block_id=%u",
-                 (unsigned)oldest_filling->block_id,
-                 oldest_fill_age,
-                 oldest_filling->valid_symbols,
-                 self->symbols_per_block,
-                 (unsigned)block_id);
+        LOG_DEBUG("[DIL] Evicting FILLING block_id=%u (age=%.1f ms, "
+                  "%d/%d syms) for block_id=%u",
+                  (unsigned)oldest_filling->block_id,
+                  oldest_fill_age,
+                  oldest_filling->valid_symbols,
+                  self->symbols_per_block,
+                  (unsigned)block_id);
         self->stats.evicted_filling_blocks++;
 
         if (self->eviction_cb != NULL) {
