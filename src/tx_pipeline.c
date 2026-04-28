@@ -54,14 +54,16 @@
 /* Wire header size in bytes */
 #define WIRE_HDR_SIZE        18U
 
-/* FSO Ethernet II header prepended to every FEC wire frame so the mlx5 NIC
- * classifies frames as Ethernet II (EtherType ≥ 0x0600) rather than IEEE 802.3
- * length frames.  EtherType 0x7FEC is in the locally-assigned range. */
+/* FSO Ethernet II header prepended to every FEC wire frame.
+ * EtherType 0x7FEC (≥ 0x0600) ensures mlx5 classifies the frame as
+ * Ethernet II, which the DPDK rte_flow catch-all rule can steer to queue 0.
+ * Without this header, payload_len (bytes 12-13) ≈ 1400 < 0x0600, and the
+ * NIC treats the frame as IEEE 802.3 — only ~1/N frames reach DPDK via RSS. */
 #define FSO_ETH_HDR_SIZE     14U
 static const unsigned char FSO_ETH_HDR[FSO_ETH_HDR_SIZE] = {
     0x01, 0x7f, 0x45, 0x43, 0x00, 0x01,  /* dst: multicast, locally-administered */
     0x02, 0x7f, 0x45, 0x43, 0x00, 0x01,  /* src: locally-administered */
-    0x7f, 0xec                             /* EtherType 0x7FEC — custom FSO FEC */
+    0x7f, 0xec                             /* EtherType 0x7FEC */
 };
 
 /* -------------------------------------------------------------------------- */
@@ -551,7 +553,6 @@ static int tx_serialize_and_send(tx_pipeline_t *pl, const symbol_t *sym)
         return -1;
     }
 
-    /* Prepend FSO Ethernet II header so EtherType ≥ 0x0600 (mlx5 requirement) */
     memcpy(wire, FSO_ETH_HDR, FSO_ETH_HDR_SIZE);
 
     tmp32 = htonl(sym->packet_id);

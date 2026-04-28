@@ -11,7 +11,7 @@
 #   GW_K            FEC source symbols            (default 10)
 #   GW_M            FEC repair symbols            (default 4)
 #   GW_DEPTH        interleaver depth             (default 8)
-#   GW_SYMBOL_SIZE  symbol size in bytes          (default 1514 = max standard Ethernet frame)
+#   GW_SYMBOL_SIZE  symbol size in bytes          (default 1400)
 #   GW_DURATION     run duration in seconds, 0=forever (default 0)
 #   DPDK_CORES      CPU list for EAL -l flag      (default 0-3)
 #   HUGEPAGES_2M    number of 2 MB hugepages to allocate (default 1024)
@@ -32,7 +32,7 @@ FSO_IFACE="${FSO_IFACE:-}"
 GW_K="${GW_K:-10}"
 GW_M="${GW_M:-4}"
 GW_DEPTH="${GW_DEPTH:-8}"
-GW_SYMBOL_SIZE="${GW_SYMBOL_SIZE:-1514}"
+GW_SYMBOL_SIZE="${GW_SYMBOL_SIZE:-1400}"
 DPDK_CORES="${DPDK_CORES:-0-3}"
 HUGEPAGES_2M="${HUGEPAGES_2M:-1024}"
 SIDE=""
@@ -178,16 +178,6 @@ preflight() {
         warn "Only ${hp_count} hugepages available. DPDK requires at least 64."
         warn "Running hugepage setup now..."
         setup_hugepages
-    fi
-
-    # Enable jumbo frames on the FSO link so FEC wire frames (FEC header 18B +
-    # symbol payload) are not truncated by the NIC.  The mlx5 bifurcated PMD
-    # honours the kernel MTU even after DPDK takes the port.
-    step "Setting FSO NIC MTU to 9000 (jumbo frames)"
-    if ip link set "${FSO_IFACE}" mtu 9000 2>/dev/null; then
-        success "  ${FSO_IFACE} MTU → 9000"
-    else
-        warn "  Could not set MTU on ${FSO_IFACE} — large frames may be dropped"
     fi
 }
 

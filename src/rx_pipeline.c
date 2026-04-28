@@ -45,11 +45,6 @@
 /* Wire header size in bytes */
 #define WIRE_HDR_SIZE        18U
 
-/* FSO Ethernet II header size — stripped from every received FEC wire frame */
-#define FSO_ETH_HDR_SIZE     14U
-#define FSO_ETHERTYPE_HI     0x7f
-#define FSO_ETHERTYPE_LO     0xec
-
 /* block_max_age for the deinterleaver */
 #define RX_BLOCK_MAX_AGE_MS  50.0
 
@@ -250,15 +245,17 @@ int rx_pipeline_run_once(rx_pipeline_t *pl)
 
     /* ------------------------------------------------------------------ */
     /* Step 1b — Strip FSO Ethernet II header (EtherType 0x7FEC)          */
+    /* Bytes 12-13 of the received frame are the EtherType field.         */
+    /* GW-A prepends this header so mlx5 sees Ethernet II (≥ 0x0600) and */
+    /* the DPDK rte_flow catch-all rule steers frames to queue 0.         */
     /* ------------------------------------------------------------------ */
+#define FSO_ETH_HDR_SIZE     14U
     if (wire_len >= FSO_ETH_HDR_SIZE &&
-        wire_buf[12] == FSO_ETHERTYPE_HI &&
-        wire_buf[13] == FSO_ETHERTYPE_LO) {
+        wire_buf[12] == 0x7f && wire_buf[13] == 0xec) {
         wire_len -= FSO_ETH_HDR_SIZE;
         memmove(wire_buf, wire_buf + FSO_ETH_HDR_SIZE, wire_len);
     } else {
-        /* Frame without FSO EtherType — drop silently (stray kernel frame) */
-        return 0;
+        return 0;   /* not an FSO FEC frame — drop silently */
     }
 
     /* ------------------------------------------------------------------ */
