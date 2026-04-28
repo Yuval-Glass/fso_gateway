@@ -168,7 +168,7 @@ static deinterleaver_t *make_dil(void)
 static void t01_stabilization(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk;
+    block_t *blk;
     int              rc;
 
     printf("\n--- T01: Stabilization quiet period ---\n");
@@ -189,12 +189,14 @@ static void t01_stabilization(results_t *r)
     check(r, deinterleaver_ready_count(dil) == 1,
           "T01: ready_count == 1 after stabilization");
 
-    rc = deinterleaver_get_ready_block(dil, &blk);
+    blk = deinterleaver_get_ready_block(dil);
+
+    rc = (blk != NULL) ? 0 : -1;
     check(r, rc == 0,              "T01: get_ready_block() succeeded");
-    check(r, blk.symbol_count == TEST_K,
+    check(r, blk->symbol_count == TEST_K,
           "T01: block.symbol_count == K");
 
-    rc = deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    rc = deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     check(r, rc == 0,              "T01: mark_result() succeeded");
     check(r, deinterleaver_active_blocks(dil) == 0,
           "T01: slot EMPTY after mark_result");
@@ -210,7 +212,7 @@ static void t02_duplicate_rejection(results_t *r)
 {
     deinterleaver_t *dil;
     symbol_t         sym;
-    block_t          blk;
+    block_t *blk;
     int              rc1, rc2;
     dil_stats_t      stats;
 
@@ -235,16 +237,18 @@ static void t02_duplicate_rejection(results_t *r)
         }
     }
 
-    rc1 = deinterleaver_get_ready_block(dil, &blk);
+    blk = deinterleaver_get_ready_block(dil);
+
+    rc1 = (blk != NULL) ? 0 : -1;
     check(r, rc1 == 0,              "T02: block retrieved");
-    check(r, blk.symbol_count == TEST_N,
+    check(r, blk->symbol_count == TEST_N,
           "T02: symbol_count == N (no inflation)");
 
     deinterleaver_get_stats(dil, &stats);
     check(r, stats.dropped_symbols_duplicate >= 1,
           "T02: dropped_symbols_duplicate >= 1");
 
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     deinterleaver_destroy(dil);
 }
 
@@ -256,7 +260,7 @@ static void t03_frozen_same_fec(results_t *r)
 {
     deinterleaver_t *dil;
     symbol_t         sym;
-    block_t          blk;
+    block_t *blk;
     int              sc_before, sc_after;
     int              rc;
     dil_stats_t      stats;
@@ -269,23 +273,23 @@ static void t03_frozen_same_fec(results_t *r)
     push_range(dil, 2U, 0, TEST_N, TEST_SYMBOL_SIZE, TEST_N);
     check(r, deinterleaver_ready_count(dil) == 1, "T03: block READY");
 
-    deinterleaver_get_ready_block(dil, &blk);
-    sc_before = blk.symbol_count;
+    blk = deinterleaver_get_ready_block(dil);
+    sc_before = blk->symbol_count;
 
     /* Late arrival for fec_id=0 on frozen block */
     make_symbol(&sym, 2U, 0U, TEST_SYMBOL_SIZE, TEST_N);
     rc = deinterleaver_push_symbol(dil, &sym);
     check(r, rc == 0, "T03: late symbol dropped (rc=0)");
 
-    deinterleaver_get_ready_block(dil, &blk);
-    sc_after = blk.symbol_count;
+    blk = deinterleaver_get_ready_block(dil);
+    sc_after = blk->symbol_count;
     check(r, sc_after == sc_before, "T03: symbol_count unchanged");
 
     deinterleaver_get_stats(dil, &stats);
     check(r, stats.dropped_symbols_frozen >= 1,
           "T03: dropped_symbols_frozen >= 1");
 
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     deinterleaver_destroy(dil);
 }
 
@@ -297,7 +301,7 @@ static void t04_frozen_new_fec(results_t *r)
 {
     deinterleaver_t *dil;
     symbol_t         sym;
-    block_t          blk;
+    block_t *blk;
     int              sc_before, sc_after;
     int              rc;
 
@@ -313,20 +317,20 @@ static void t04_frozen_new_fec(results_t *r)
 
     check(r, deinterleaver_ready_count(dil) == 1, "T04: block READY");
 
-    deinterleaver_get_ready_block(dil, &blk);
-    sc_before = blk.symbol_count;
+    blk = deinterleaver_get_ready_block(dil);
+    sc_before = blk->symbol_count;
 
     /* Push a brand-new repair symbol (fec_id=K, not yet received) */
     make_symbol(&sym, 3U, (uint32_t)TEST_K, TEST_SYMBOL_SIZE, TEST_N);
     rc = deinterleaver_push_symbol(dil, &sym);
     check(r, rc == 0, "T04: new fec_id for frozen block dropped (rc=0)");
 
-    deinterleaver_get_ready_block(dil, &blk);
-    sc_after = blk.symbol_count;
+    blk = deinterleaver_get_ready_block(dil);
+    sc_after = blk->symbol_count;
     check(r, sc_after == sc_before,
           "T04: symbol_count unchanged after new fec_id rejected");
 
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     deinterleaver_destroy(dil);
 }
 
@@ -371,7 +375,7 @@ static void t05_holes_gt_m_recycled(results_t *r)
 static void t06_slot_reuse(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk;
+    block_t *blk;
     int              rc;
 
     printf("\n--- T06: Slot reuse — READY slots recycled after mark_result ---\n");
@@ -386,10 +390,10 @@ static void t06_slot_reuse(results_t *r)
     check(r, deinterleaver_ready_count(dil) == 2, "T06: both READY");
 
     /* Acknowledge both → EMPTY */
-    deinterleaver_get_ready_block(dil, &blk);
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
-    deinterleaver_get_ready_block(dil, &blk);
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    blk = deinterleaver_get_ready_block(dil);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
+    blk = deinterleaver_get_ready_block(dil);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
 
     check(r, deinterleaver_active_blocks(dil) == 0,
           "T06: active_blocks == 0 after both mark_result");
@@ -404,8 +408,8 @@ static void t06_slot_reuse(results_t *r)
     rc = push_range(dil, 12U, 0, TEST_N, TEST_SYMBOL_SIZE, TEST_N);
     check(r, rc >= 0, "T06: 3rd block accepted after slots recycled (rc>=0)");
 
-    deinterleaver_get_ready_block(dil, &blk);
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    blk = deinterleaver_get_ready_block(dil);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
 
     deinterleaver_destroy(dil);
 }
@@ -447,7 +451,7 @@ static void t07_timeout_irrecoverable(results_t *r)
 static void t08_timeout_ready(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk;
+    block_t *blk;
     int              rc;
 
     printf("\n--- T08: Hard timeout + valid >= K + holes <= M → READY ---\n");
@@ -463,11 +467,13 @@ static void t08_timeout_ready(results_t *r)
     check(r, rc >= 1, "T08: tick transitioned at least 1 slot");
     check(r, deinterleaver_ready_count(dil) == 1, "T08: READY after timeout");
 
-    rc = deinterleaver_get_ready_block(dil, &blk);
-    check(r, rc == 0, "T08: get_ready_block succeeded");
-    check(r, blk.symbol_count == TEST_K, "T08: symbol_count == K");
+    blk = deinterleaver_get_ready_block(dil);
 
-    rc = deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    rc = (blk != NULL) ? 0 : -1;
+    check(r, rc == 0, "T08: get_ready_block succeeded");
+    check(r, blk->symbol_count == TEST_K, "T08: symbol_count == K");
+
+    rc = deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     check(r, rc == 0, "T08: mark_result succeeded");
 
     deinterleaver_destroy(dil);
@@ -528,7 +534,7 @@ static void t09_fec_too_many_holes(results_t *r)
 static void t10_full_block(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk;
+    block_t *blk;
     int              rc;
 
     printf("\n--- T10: Full N-symbol block transitions correctly ---\n");
@@ -540,12 +546,14 @@ static void t10_full_block(results_t *r)
     check(r, rc == 1,   "T10: last push returns 1 (READY)");
     check(r, deinterleaver_ready_count(dil) == 1, "T10: ready_count == 1");
 
-    rc = deinterleaver_get_ready_block(dil, &blk);
-    check(r, rc == 0,                    "T10: get_ready_block succeeded");
-    check(r, blk.symbol_count == TEST_N, "T10: symbol_count == N");
-    check(r, (uint32_t)blk.block_id == 30U, "T10: block_id == 30");
+    blk = deinterleaver_get_ready_block(dil);
 
-    rc = deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    rc = (blk != NULL) ? 0 : -1;
+    check(r, rc == 0,                    "T10: get_ready_block succeeded");
+    check(r, blk->symbol_count == TEST_N, "T10: symbol_count == N");
+    check(r, (uint32_t)blk->block_id == 30U, "T10: block_id == 30");
+
+    rc = deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
     check(r, rc == 0, "T10: mark_result succeeded");
     check(r, deinterleaver_active_blocks(dil) == 0,
           "T10: active_blocks == 0 after mark_result");
@@ -566,7 +574,7 @@ static void t10_full_block(results_t *r)
 static void t11_ready_evictable_under_pressure(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk_a;
+    block_t *blk_a;
     dil_stats_t      stats_before, stats_after;
     int              rc;
 
@@ -583,9 +591,10 @@ static void t11_ready_evictable_under_pressure(results_t *r)
           "T11: block 40 READY");
 
     /* Retrieve block A (does not change state) */
-    rc = deinterleaver_get_ready_block(dil, &blk_a);
+    blk_a = deinterleaver_get_ready_block(dil);
+    rc = (blk_a != NULL) ? 0 : -1;
     check(r, rc == 0, "T11: block 40 retrieved");
-    check(r, (uint32_t)blk_a.block_id == 40U, "T11: block_id == 40");
+    check(r, (uint32_t)blk_a->block_id == 40U, "T11: block_id == 40");
 
     /* Record stats before pressure push */
     deinterleaver_get_stats(dil, &stats_before);
@@ -614,9 +623,9 @@ static void t11_ready_evictable_under_pressure(results_t *r)
     /* Clean up block B */
     deinterleaver_tick(dil, 0.0);
     if (deinterleaver_ready_count(dil) > 0) {
-        block_t blk_b;
-        deinterleaver_get_ready_block(dil, &blk_b);
-        deinterleaver_mark_result(dil, (uint32_t)blk_b.block_id, 1);
+        block_t *blk_b;
+        blk_b = deinterleaver_get_ready_block(dil);
+        deinterleaver_mark_result(dil, (uint32_t)blk_b->block_id, 1);
     }
 
     deinterleaver_destroy(dil);
@@ -629,7 +638,7 @@ static void t11_ready_evictable_under_pressure(results_t *r)
 static void t12_mark_result_recycles(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk;
+    block_t *blk;
     int              rc;
 
     printf("\n--- T12: mark_result() recycles READY → EMPTY ---\n");
@@ -638,7 +647,7 @@ static void t12_mark_result_recycles(results_t *r)
     if (!dil) { fail(r, "T12: create failed"); return; }
 
     push_range(dil, 50U, 0, TEST_N, TEST_SYMBOL_SIZE, TEST_N);
-    deinterleaver_get_ready_block(dil, &blk);
+    blk = deinterleaver_get_ready_block(dil);
 
     rc = deinterleaver_mark_result(dil, 50U, 1);
     check(r, rc == 0,  "T12: mark_result returned 0");
@@ -663,7 +672,7 @@ static void t13_late_arrival_mask(results_t *r)
 {
     deinterleaver_t *dil;
     symbol_t         sym;
-    block_t          blk1, blk2;
+    block_t *blk1, *blk2;
 
     printf("\n--- T13: Late arrival after freeze — mask unchanged ---\n");
 
@@ -673,17 +682,17 @@ static void t13_late_arrival_mask(results_t *r)
     push_range(dil, 60U, 0, TEST_K, TEST_SYMBOL_SIZE, TEST_N);
     deinterleaver_tick(dil, 0.0);
 
-    deinterleaver_get_ready_block(dil, &blk1);
+    blk1 = deinterleaver_get_ready_block(dil);
 
     /* Late repair symbol (fec_id=K, unseen) */
     make_symbol(&sym, 60U, (uint32_t)TEST_K, TEST_SYMBOL_SIZE, TEST_N);
     deinterleaver_push_symbol(dil, &sym);
 
-    deinterleaver_get_ready_block(dil, &blk2);
+    blk2 = deinterleaver_get_ready_block(dil);
 
-    check(r, blk1.symbol_count == blk2.symbol_count,
+    check(r, blk1->symbol_count == blk2->symbol_count,
           "T13: symbol_count unchanged after late arrival");
-    check(r, blk2.symbol_count == TEST_K,
+    check(r, blk2->symbol_count == TEST_K,
           "T13: block has exactly K symbols");
 
     deinterleaver_mark_result(dil, 60U, 1);
@@ -754,7 +763,7 @@ static void t15_fec_id_range(results_t *r)
 static void t16_idempotent_get(results_t *r)
 {
     deinterleaver_t *dil;
-    block_t          blk1, blk2;
+    block_t *blk1, *blk2;
     int              rc;
 
     printf("\n--- T16: get_ready_block() is idempotent ---\n");
@@ -764,19 +773,22 @@ static void t16_idempotent_get(results_t *r)
 
     push_range(dil, 90U, 0, TEST_N, TEST_SYMBOL_SIZE, TEST_N);
 
-    rc = deinterleaver_get_ready_block(dil, &blk1);
+    blk1 = deinterleaver_get_ready_block(dil);
+
+    rc = (blk1 != NULL) ? 0 : -1;
     check(r, rc == 0, "T16: first get_ready_block succeeded");
     check(r, deinterleaver_active_blocks(dil) == 1,
           "T16: slot still active (READY_TO_DECODE, not EMPTY)");
 
     /* Second call without mark_result — must return the same block */
-    rc = deinterleaver_get_ready_block(dil, &blk2);
+    blk2 = deinterleaver_get_ready_block(dil);
+    rc = (blk2 != NULL) ? 0 : -1;
     check(r, rc == 0, "T16: second get_ready_block succeeded (idempotent)");
-    check(r, blk2.block_id == blk1.block_id,
+    check(r, blk2->block_id == blk1->block_id,
           "T16: same block_id returned on second call");
 
     /* success=0 — still recycles to EMPTY */
-    rc = deinterleaver_mark_result(dil, (uint32_t)blk1.block_id, 0);
+    rc = deinterleaver_mark_result(dil, (uint32_t)blk1->block_id, 0);
     check(r, rc == 0, "T16: mark_result(success=0) returned 0");
     check(r, deinterleaver_active_blocks(dil) == 0,
           "T16: slot recycled to EMPTY after mark_result");
@@ -846,7 +858,7 @@ static void t18_stats(results_t *r)
 {
     deinterleaver_t *dil;
     symbol_t         sym;
-    block_t          blk;
+    block_t *blk;
     dil_stats_t      stats;
 
     printf("\n--- T18: dil_stats_t accumulation ---\n");
@@ -877,8 +889,8 @@ static void t18_stats(results_t *r)
     make_symbol(&sym, 100U, 0U, TEST_SYMBOL_SIZE, TEST_N);
     deinterleaver_push_symbol(dil, &sym);
 
-    deinterleaver_get_ready_block(dil, &blk);
-    deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+    blk = deinterleaver_get_ready_block(dil);
+    deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
 
     deinterleaver_get_stats(dil, &stats);
 
@@ -960,7 +972,7 @@ static void t20_crc_corrupted_symbol_rejected(results_t *r)
     /* (c) CRC discard behaves as erasure */
     {
         deinterleaver_t *dil;
-        block_t          blk;
+        block_t *blk;
         symbol_t         good;
         int              i;
         int              rc_ready;
@@ -987,14 +999,16 @@ static void t20_crc_corrupted_symbol_rejected(results_t *r)
         sleep_ms((long)(STAB_MS + 5.0));
         deinterleaver_tick(dil, -1.0);
 
-        rc_ready = deinterleaver_get_ready_block(dil, &blk);
+        blk = deinterleaver_get_ready_block(dil);
+
+        rc_ready = (blk != NULL) ? 0 : -1;
         check(r, rc_ready == 0,
               "T20c: block reaches READY despite one CRC-dropped symbol (erasure)");
 
         if (rc_ready == 0) {
-            check(r, blk.symbol_count == TEST_N - 1,
+            check(r, blk->symbol_count == TEST_N - 1,
                   "T20c: block has N-1 valid symbols (one erasure from CRC drop)");
-            deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1);
+            deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1);
         }
 
         deinterleaver_destroy(dil);

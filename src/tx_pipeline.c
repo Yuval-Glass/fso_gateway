@@ -163,9 +163,9 @@ tx_pipeline_t *tx_pipeline_create(const struct config *cfg,
         return NULL;
     }
 
-    if (block_builder_init(&pl->builder, cfg->k) != 0) {
-        LOG_ERROR("[tx_pipeline] create: block_builder_init(k=%d) failed",
-                  cfg->k);
+    if (block_builder_init(&pl->builder, cfg->k, cfg->symbol_size) != 0) {
+        LOG_ERROR("[tx_pipeline] create: block_builder_init(k=%d,sym=%d) failed",
+                  cfg->k, cfg->symbol_size);
         free(pl->source_buf);
         free(pl);
         return NULL;

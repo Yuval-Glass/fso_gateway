@@ -158,31 +158,29 @@ static void drain_ready_blocks(deinterleaver_t *dil,
                                int              depth,
                                size_t           source_bytes)
 {
-    block_t block;
-    int     rc;
+    block_t *block;
+    int      rc;
 
-    while (deinterleaver_get_ready_block(dil, &block) == 0) {
-        int blk_id = (int)block.block_id;
+    while ((block = deinterleaver_get_ready_block(dil)) != NULL) {
+        int blk_id = (int)block->block_id;
         int fec_rc;
 
         if (blk_id < 0 || blk_id >= depth) {
-            /* Unknown block_id — still must acknowledge to free the slot */
-            deinterleaver_mark_result(dil, (uint32_t)block.block_id, 0);
+            deinterleaver_mark_result(dil, (uint32_t)block->block_id, 0);
             continue;
         }
 
         if (records[blk_id].decoded_ok) {
-            /* Already decoded (can happen if drain is called twice) */
-            deinterleaver_mark_result(dil, (uint32_t)block.block_id, 1);
+            deinterleaver_mark_result(dil, (uint32_t)block->block_id, 1);
             continue;
         }
 
         memset(records[blk_id].reconstructed, 0, source_bytes);
 
         fec_rc = fec_decode_block(fec_dec,
-                                  block.symbols,
-                                  block.symbol_count,
-                                  block.symbols_per_block,
+                                  block->symbols,
+                                  block->symbol_count,
+                                  block->symbols_per_block,
                                   records[blk_id].reconstructed);
 
         records[blk_id].decoded_ok = (fec_rc == FEC_DECODE_OK);
@@ -194,13 +192,12 @@ static void drain_ready_blocks(deinterleaver_t *dil,
                         source_bytes) == 0);
         }
 
-        /* Acknowledge: success if FEC succeeded, failure otherwise */
         rc = deinterleaver_mark_result(dil,
-                                       (uint32_t)block.block_id,
+                                       (uint32_t)block->block_id,
                                        (fec_rc == FEC_DECODE_OK) ? 1 : 0);
         if (rc != 0) {
             LOG_WARN("[BSIM] drain_ready_blocks: mark_result failed for "
-                     "block_id=%u", (unsigned)block.block_id);
+                     "block_id=%u", (unsigned)block->block_id);
         }
     }
 }

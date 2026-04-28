@@ -1159,7 +1159,7 @@ static int sr_run_tx_pipeline(sr_ctx_t *ctx)
         goto cleanup;
     }
 
-    if (block_builder_init(&bb, (uint16_t)ctx->k) != 0) {
+    if (block_builder_init(&bb, (int)ctx->k, ctx->symbol_size) != 0) {
         goto cleanup_bb;
     }
 
@@ -1540,22 +1540,22 @@ static int sr_service_ready_blocks(sr_ctx_t *ctx,
                                    int *accum_count,
                                    int max_accum)
 {
-    block_t blk;
+    block_t *blk;
 
     if (ctx == NULL || dil == NULL || fec == NULL || recon == NULL ||
         accum == NULL || accum_count == NULL) {
         return -1;
     }
 
-    while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-        int                    blk_idx = (int)blk.block_id;
+    while ((blk = deinterleaver_get_ready_block(dil)) != NULL) {
+        int                    blk_idx = (int)blk->block_id;
         uint64_t               holes = 0U;
         fec_decode_telemetry_t telemetry;
         int                    decode_rc;
         int                    failure_reason = SR_FAIL_NONE;
 
-        if (blk.symbols_per_block > blk.symbol_count) {
-            holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+        if (blk->symbols_per_block > blk->symbol_count) {
+            holes = (uint64_t)(blk->symbols_per_block - blk->symbol_count);
         }
 
         ctx->stat_blocks_attempted++;
@@ -1565,11 +1565,11 @@ static int sr_service_ready_blocks(sr_ctx_t *ctx,
 
         memset(recon, 0, (size_t)ctx->k * (size_t)ctx->symbol_size);
 
-        fec_set_current_decode_block_id((uint64_t)blk.block_id);
+        fec_set_current_decode_block_id((uint64_t)blk->block_id);
         decode_rc = fec_decode_block(fec,
-                                     blk.symbols,
-                                     blk.symbol_count,
-                                     blk.symbols_per_block,
+                                     blk->symbols,
+                                     blk->symbol_count,
+                                     blk->symbols_per_block,
                                      recon);
         fec_get_last_decode_telemetry(&telemetry);
 
@@ -1578,9 +1578,9 @@ static int sr_service_ready_blocks(sr_ctx_t *ctx,
         }
 
         sr_update_decode_telemetry(ctx, &telemetry, decode_rc == FEC_DECODE_OK);
-        sr_print_decoder_telemetry((uint64_t)blk.block_id, &telemetry, ctx->m);
-        sr_print_block_analysis((uint64_t)blk.block_id,
-                                blk.symbols_per_block,
+        sr_print_decoder_telemetry((uint64_t)blk->block_id, &telemetry, ctx->m);
+        sr_print_block_analysis((uint64_t)blk->block_id,
+                                blk->symbols_per_block,
                                 &telemetry,
                                 failure_reason);
 
@@ -1592,13 +1592,13 @@ static int sr_service_ready_blocks(sr_ctx_t *ctx,
                 sr_deliver_block(ctx, blk_idx, recon, accum, accum_count, max_accum);
             }
 
-            if (deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 1) != 0) {
+            if (deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 1) != 0) {
                 return -1;
             }
         } else {
             ctx->stat_blocks_failed++;
             stats_inc_block_failure();
-            if (deinterleaver_mark_result(dil, (uint32_t)blk.block_id, 0) != 0) {
+            if (deinterleaver_mark_result(dil, (uint32_t)blk->block_id, 0) != 0) {
                 return -1;
             }
         }

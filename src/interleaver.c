@@ -134,8 +134,7 @@ static void reset_window(interleaver_t *il)
         return;
     }
 
-    memset(il->matrix, 0,
-           sizeof(symbol_t) * (size_t)il->depth * (size_t)il->n);
+    /* Don't memset the matrix — push_symbol overwrites every field before pop reads it. */
     memset(il->slots, 0,
            sizeof(slot_meta_t) * (size_t)il->depth);
     memset(il->row_block_key, 0,
@@ -228,13 +227,13 @@ static void force_fill_row(interleaver_t *il, int row)
         }
 
         dst = cell(il, row, col);
-        memset(dst, 0, sizeof(symbol_t));
         dst->packet_id = block_key;
         dst->fec_id = (uint32_t)col;
         dst->symbol_index = (uint16_t)col;
         dst->total_symbols = (uint16_t)il->n;
         dst->payload_len = 0;
         dst->crc32 = 0U;
+        memset(dst->data, 0, (size_t)il->symbol_size);
 
         bitset_set(slot->received_mask, col);
     }
@@ -409,7 +408,13 @@ int interleaver_push_symbol(interleaver_t *il, const symbol_t *sym)
     }
 
     dst = cell(il, row, col);
-    *dst = *sym;
+    dst->packet_id     = sym->packet_id;
+    dst->fec_id        = sym->fec_id;
+    dst->symbol_index  = sym->symbol_index;
+    dst->total_symbols = sym->total_symbols;
+    dst->payload_len   = sym->payload_len;
+    dst->crc32         = sym->crc32;
+    memcpy(dst->data, sym->data, (size_t)il->symbol_size);
 
     bitset_set(slot->received_mask, col);
     slot->symbol_count++;
@@ -519,7 +524,13 @@ int interleaver_pop_ready_symbol(interleaver_t *il, symbol_t *out_sym)
     }
 
     src = cell_const(il, il->pop_row, il->pop_col);
-    *out_sym = *src;
+    out_sym->packet_id     = src->packet_id;
+    out_sym->fec_id        = src->fec_id;
+    out_sym->symbol_index  = src->symbol_index;
+    out_sym->total_symbols = src->total_symbols;
+    out_sym->payload_len   = src->payload_len;
+    out_sym->crc32         = src->crc32;
+    memcpy(out_sym->data, src->data, (size_t)il->symbol_size);
 
     LOG_DEBUG("[IL] pop: row=%d col=%d -> packet_id=%u fec_id=%u",
               il->pop_row,

@@ -464,7 +464,7 @@ static int run_tx_pipeline(sim_t *ctx)
     }
 
     memset(&bb, 0, sizeof(bb));
-    if (block_builder_init(&bb, SIM_K) != 0) {
+    if (block_builder_init(&bb, SIM_K, SIM_SYMBOL_SIZE) != 0) {
         LOG_ERROR("[E2E] block_builder_init failed");
         goto cleanup;
     }
@@ -841,7 +841,7 @@ static int run_rx_pipeline(sim_t *ctx)
     for (i = 0; i < ctx->tx_count; ++i) {
         symbol_t *sym = &ctx->tx_buf[i];
         int       rc;
-        block_t   blk;
+        block_t  *blk;
 
         if (sym->payload_len == 0) {
             stats_record_symbol(true);
@@ -869,12 +869,12 @@ static int run_rx_pipeline(sim_t *ctx)
             /*
              * Pool exhausted — drain ready blocks to free slots, retry.
              */
-            while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-                int      blk_idx = (int)blk.block_id;
+            while ((blk = deinterleaver_get_ready_block(dil)) != NULL) {
+                int      blk_idx = (int)blk->block_id;
                 uint64_t holes   = 0U;
 
-                if (blk.symbols_per_block > blk.symbol_count) {
-                    holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+                if (blk->symbols_per_block > blk->symbol_count) {
+                    holes = (uint64_t)(blk->symbols_per_block - blk->symbol_count);
                 }
 
                 ctx->stat_blocks_attempted++;
@@ -882,9 +882,9 @@ static int run_rx_pipeline(sim_t *ctx)
                 memset(recon, 0, (size_t)SIM_K * SIM_SYMBOL_SIZE);
 
                 if (fec_decode_block(fec,
-                                     blk.symbols,
-                                     blk.symbol_count,
-                                     blk.symbols_per_block,
+                                     blk->symbols,
+                                     blk->symbol_count,
+                                     blk->symbols_per_block,
                                      recon) == FEC_DECODE_OK) {
                     ctx->stat_blocks_ok++;
                     if (blk_idx >= 0 &&
@@ -893,11 +893,11 @@ static int run_rx_pipeline(sim_t *ctx)
                                       accum, &accum_count);
                     }
                     deinterleaver_mark_result(dil,
-                                              (uint32_t)blk.block_id, 1);
+                                              (uint32_t)blk->block_id, 1);
                 } else {
                     ctx->stat_blocks_failed++;
                     deinterleaver_mark_result(dil,
-                                              (uint32_t)blk.block_id, 0);
+                                              (uint32_t)blk->block_id, 0);
                 }
             }
 
@@ -920,13 +920,13 @@ static int run_rx_pipeline(sim_t *ctx)
     deinterleaver_tick(dil, 0.0);
 
     {
-        block_t blk;
-        while (deinterleaver_get_ready_block(dil, &blk) == 0) {
-            int      blk_idx = (int)blk.block_id;
+        block_t *blk;
+        while ((blk = deinterleaver_get_ready_block(dil)) != NULL) {
+            int      blk_idx = (int)blk->block_id;
             uint64_t holes   = 0U;
 
-            if (blk.symbols_per_block > blk.symbol_count) {
-                holes = (uint64_t)(blk.symbols_per_block - blk.symbol_count);
+            if (blk->symbols_per_block > blk->symbol_count) {
+                holes = (uint64_t)(blk->symbols_per_block - blk->symbol_count);
             }
 
             ctx->stat_blocks_attempted++;
@@ -934,9 +934,9 @@ static int run_rx_pipeline(sim_t *ctx)
             memset(recon, 0, (size_t)SIM_K * SIM_SYMBOL_SIZE);
 
             if (fec_decode_block(fec,
-                                 blk.symbols,
-                                 blk.symbol_count,
-                                 blk.symbols_per_block,
+                                 blk->symbols,
+                                 blk->symbol_count,
+                                 blk->symbols_per_block,
                                  recon) == FEC_DECODE_OK) {
                 ctx->stat_blocks_ok++;
                 if (blk_idx >= 0 &&
@@ -945,11 +945,11 @@ static int run_rx_pipeline(sim_t *ctx)
                                   accum, &accum_count);
                 }
                 deinterleaver_mark_result(dil,
-                                          (uint32_t)blk.block_id, 1);
+                                          (uint32_t)blk->block_id, 1);
             } else {
                 ctx->stat_blocks_failed++;
                 deinterleaver_mark_result(dil,
-                                          (uint32_t)blk.block_id, 0);
+                                          (uint32_t)blk->block_id, 0);
             }
         }
     }

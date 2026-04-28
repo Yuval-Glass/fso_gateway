@@ -306,8 +306,8 @@ int main(int argc, char *argv[])
     /* ------------------------------------------------------------------ */
     /* Block builder                                                       */
     /* ------------------------------------------------------------------ */
-    if (block_builder_init(&g_block_builder, cfg.k) != 0) {
-        LOG_ERROR("block_builder_init() failed for k=%d", cfg.k);
+    if (block_builder_init(&g_block_builder, cfg.k, cfg.symbol_size) != 0) {
+        LOG_ERROR("block_builder_init() failed for k=%d sym=%d", cfg.k, cfg.symbol_size);
         return 1;
     }
 

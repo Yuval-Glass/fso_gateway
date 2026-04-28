@@ -15,6 +15,7 @@ typedef struct block_builder_t {
     uint64_t block_id;
     int symbol_count;
     int k_limit;
+    int symbol_size;
     symbol_t *symbols;
     struct timespec first_activity;
 } block_builder_t;
@@ -29,7 +30,7 @@ typedef struct block_builder_t {
  *
  * @return 0 on success, -1 on failure.
  */
-int block_builder_init(block_builder_t *bb, int k);
+int block_builder_init(block_builder_t *bb, int k, int symbol_size);
 
 /**
  * @brief Add one symbol into the current block.

@@ -189,34 +189,34 @@ static int push_to_deinterleaver(deinterleaver_t *dil,
 
 static void verify_blocks(deinterleaver_t *dil, results_t *r)
 {
-    block_t  block;
+    block_t *block;
     int      retrieved = 0;
     int      all_ok    = 1;
     char     desc[128];
 
     printf("\n  Reconstructed blocks:\n");
 
-    while (deinterleaver_get_ready_block(dil, &block) == 0) {
+    while ((block = deinterleaver_get_ready_block(dil)) != NULL) {
         int      sym_count_ok = 1;
         int      order_ok     = 1;
         int      payload_ok   = 1;
         int      f;
-        uint32_t bid          = (uint32_t)block.block_id;
+        uint32_t bid          = (uint32_t)block->block_id;
 
         printf("\n  Block %u (%d/%d symbols):\n",
-               (unsigned)bid, block.symbol_count, TEST_N);
+               (unsigned)bid, block->symbol_count, TEST_N);
 
-        if (block.symbol_count != TEST_N) {
+        if (block->symbol_count != TEST_N) {
             snprintf(desc, sizeof(desc),
                      "Block %u: symbol_count=%d expected=%d",
-                     (unsigned)bid, block.symbol_count, TEST_N);
+                     (unsigned)bid, block->symbol_count, TEST_N);
             fail(r, desc);
             sym_count_ok = 0;
             all_ok       = 0;
         }
 
         for (f = 0; f < TEST_N; ++f) {
-            const symbol_t *s   = &block.symbols[f];
+            const symbol_t *s   = &block->symbols[f];
             uint32_t        fid = (uint32_t)f;
             size_t          j;
 
@@ -324,9 +324,9 @@ static void test_duplicate_rejection(results_t *r)
     }
 
     {
-        block_t block;
-        int     found = 0;
-        int     i;
+        block_t *block;
+        int      found = 0;
+        int      i;
 
         /* Force-complete the block so we can retrieve it */
         for (i = 0; i < TEST_N; ++i) {
@@ -335,21 +335,22 @@ static void test_duplicate_rejection(results_t *r)
             deinterleaver_push_symbol(dil, &sym);
         }
 
-        if (deinterleaver_get_ready_block(dil, &block) == 0) {
+        block = deinterleaver_get_ready_block(dil);
+        if (block != NULL) {
             found = 1;
 
-            if (block.symbol_count == TEST_N) {
+            if (block->symbol_count == TEST_N) {
                 pass(r, "Dup test: block symbol_count correct after duplicate");
             } else {
                 char desc[128];
                 snprintf(desc, sizeof(desc),
                          "Dup test: symbol_count=%d expected=%d",
-                         block.symbol_count, TEST_N);
+                         block->symbol_count, TEST_N);
                 fail(r, desc);
             }
 
             /* MANDATORY: recycle the slot */
-            deinterleaver_mark_result(dil, (uint32_t)block.block_id, 1);
+            deinterleaver_mark_result(dil, (uint32_t)block->block_id, 1);
         }
 
         if (!found) {

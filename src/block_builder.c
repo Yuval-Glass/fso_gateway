@@ -48,7 +48,7 @@ static double block_builder_elapsed_ms(const struct timespec *start,
     return (sec_diff * 1000.0) + (nsec_diff / 1000000.0);
 }
 
-int block_builder_init(block_builder_t *bb, int k)
+int block_builder_init(block_builder_t *bb, int k, int symbol_size)
 {
     if (bb == NULL) {
         LOG_ERROR("block_builder_init: bb is NULL");
@@ -60,12 +60,15 @@ int block_builder_init(block_builder_t *bb, int k)
         return -1;
     }
 
-    /*
-     * Defensive initialization in case caller passed a non-zeroed structure.
-     */
+    if (symbol_size <= 0) {
+        LOG_ERROR("block_builder_init: invalid symbol_size=%d", symbol_size);
+        return -1;
+    }
+
     bb->block_id = 0;
     bb->symbol_count = 0;
     bb->k_limit = 0;
+    bb->symbol_size = 0;
     bb->symbols = NULL;
     bb->first_activity.tv_sec = 0;
     bb->first_activity.tv_nsec = 0;
@@ -81,12 +84,14 @@ int block_builder_init(block_builder_t *bb, int k)
     bb->block_id = 1U;
     bb->symbol_count = 0;
     bb->k_limit = k;
+    bb->symbol_size = symbol_size;
     bb->first_activity.tv_sec = 0;
     bb->first_activity.tv_nsec = 0;
 
-    LOG_INFO("Block builder initialized: block_id=%lu k=%d",
+    LOG_INFO("Block builder initialized: block_id=%lu k=%d symbol_size=%d",
              (unsigned long)bb->block_id,
-             bb->k_limit);
+             bb->k_limit,
+             bb->symbol_size);
 
     return 0;
 }
@@ -117,7 +122,16 @@ int block_builder_add_symbol(block_builder_t *bb, const symbol_t *sym)
         return -1;
     }
 
-    bb->symbols[bb->symbol_count] = *sym;
+    {
+        symbol_t *d = &bb->symbols[bb->symbol_count];
+        d->packet_id     = sym->packet_id;
+        d->fec_id        = sym->fec_id;
+        d->symbol_index  = sym->symbol_index;
+        d->total_symbols = sym->total_symbols;
+        d->payload_len   = sym->payload_len;
+        d->crc32         = sym->crc32;
+        memcpy(d->data, sym->data, (size_t)bb->symbol_size);
+    }
     bb->symbol_count++;
 
     /* Record timestamp only on the first symbol so the timeout measures
@@ -193,7 +207,14 @@ void block_builder_finalize_with_padding(block_builder_t *bb)
     padding_count = bb->k_limit - bb->symbol_count;
 
     for (i = bb->symbol_count; i < bb->k_limit; ++i) {
-        memset(&bb->symbols[i], 0, sizeof(symbol_t));
+        symbol_t *s = &bb->symbols[i];
+        s->packet_id = 0;
+        s->fec_id = 0;
+        s->symbol_index = 0;
+        s->total_symbols = 0;
+        s->payload_len = 0;
+        s->crc32 = 0;
+        memset(s->data, 0, (size_t)bb->symbol_size);
     }
 
     LOG_DEBUG("block_builder_finalize_with_padding: block_id=%lu original_symbols=%d padding=%d",
@@ -210,14 +231,6 @@ void block_builder_reset(block_builder_t *bb)
         return;
     }
 
-    if (bb->symbols != NULL && bb->k_limit > 0) {
-        memset(bb->symbols, 0, (size_t)bb->k_limit * sizeof(symbol_t));
-    }
-
-    /*
-     * Reset logical state only. Do not free here, so repeated reset calls are safe
-     * and do not cause double-free issues.
-     */
     bb->symbol_count = 0;
 
     if (bb->block_id != 0) {
