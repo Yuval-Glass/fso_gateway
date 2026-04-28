@@ -453,9 +453,9 @@ static int maybe_freeze_slot(slot_t                *s,
             /* Immediate-promotion path: no quiet period required. */
             if (holes > M) {
                 stats->blocks_failed_holes++;
-                LOG_WARN("[DIL] Block %u → recycle (unrecoverable: "
-                         "holes=%d > M=%d, valid=%d)",
-                         (unsigned)s->block_id, holes, M, s->valid_symbols);
+                LOG_DEBUG("[DIL] Block %u → recycle (unrecoverable: "
+                          "holes=%d > M=%d, valid=%d)",
+                          (unsigned)s->block_id, holes, M, s->valid_symbols);
                 return FREEZE_RECYCLE;
             }
 
@@ -474,9 +474,9 @@ static int maybe_freeze_slot(slot_t                *s,
         if (quiet_ms >= stab_ms) {
             if (holes > M) {
                 stats->blocks_failed_holes++;
-                LOG_WARN("[DIL] Block %u → recycle (stabilized but "
-                         "holes=%d > M=%d, valid=%d)",
-                         (unsigned)s->block_id, holes, M, s->valid_symbols);
+                LOG_DEBUG("[DIL] Block %u → recycle (stabilized but "
+                          "holes=%d > M=%d, valid=%d)",
+                          (unsigned)s->block_id, holes, M, s->valid_symbols);
                 return FREEZE_RECYCLE;
             }
 
@@ -509,10 +509,10 @@ static int maybe_freeze_slot(slot_t                *s,
         } else {
             stats->blocks_failed_timeout++;
         }
-        LOG_WARN("[DIL] Block %u → recycle "
-                 "(timeout %.1f ms: valid=%d/%d K=%d holes=%d M=%d)",
-                 (unsigned)s->block_id,
-                 timeout_ms, s->valid_symbols, N, K, holes, M);
+        LOG_DEBUG("[DIL] Block %u → recycle "
+                  "(timeout %.1f ms: valid=%d/%d K=%d holes=%d M=%d)",
+                  (unsigned)s->block_id,
+                  timeout_ms, s->valid_symbols, N, K, holes, M);
         return FREEZE_RECYCLE;
     }
 

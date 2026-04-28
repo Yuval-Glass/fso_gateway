@@ -117,6 +117,7 @@ struct port_state {
     pthread_mutex_t     lock;
     uint64_t            rx_poll_count;    /* per-port empty-poll counter */
     int                 rx_burst_logged;  /* 1 after first successful rx_burst */
+    int64_t             last_stats_ns;    /* monotonic ns of last periodic HW stats log */
 };
 
 struct packet_io_ctx {
@@ -718,6 +719,24 @@ int packet_io_receive(packet_io_ctx_t *ctx,
             ctx->port->rx_burst_logged = 1;
             LOG_WARN("[packet_io_dpdk] port %u: first rx_burst returned %u pkts "
                      "(DPDK RX is working)", ctx->port->port_id, n);
+        }
+
+        /* Periodic HW stats — every 5 s regardless of idle/traffic state */
+        {
+            int64_t now_ns  = mono_ns();
+            int64_t elapsed = now_ns - ctx->port->last_stats_ns;
+            if (elapsed >= 5000000000LL) {
+                ctx->port->last_stats_ns = now_ns;
+                struct rte_eth_stats st;
+                if (rte_eth_stats_get(ctx->port->port_id, &st) == 0) {
+                    LOG_WARN("[packet_io_dpdk] port %u HW stats: "
+                             "ipackets=%" PRIu64 " ibytes=%" PRIu64
+                             " imissed=%" PRIu64 " ierrors=%" PRIu64,
+                             ctx->port->port_id,
+                             st.ipackets, st.ibytes,
+                             st.imissed, st.ierrors);
+                }
+            }
         }
 
         ctx->rx_burst_count = n;

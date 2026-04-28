@@ -36,7 +36,7 @@ static void print_usage(void)
     fprintf(stderr,
             "Usage: fso_gw_runner --lan-iface <i> --fso-iface <i>\n"
             " [--duration <sec>] [--k N] [--m N] [--depth N]\n"
-            " [--symbol-size N]\n");
+            " [--symbol-size N] [--log-level debug|info|warn|error]\n");
 }
 
 static int parse_int_arg(const char *name, const char *value, int *out_value)
@@ -129,6 +129,7 @@ int main(int argc, char *argv[])
         { "depth",               required_argument, NULL, 'e' },
         { "symbol-size",         required_argument, NULL, 's' },
         { "internal-symbol-crc", required_argument, NULL, 'c' },
+        { "log-level",           required_argument, NULL, 'L' },
         { NULL, 0, NULL, 0 }
     };
 
@@ -140,6 +141,7 @@ int main(int argc, char *argv[])
     int depth = DEFAULT_DEPTH;
     int symbol_size = DEFAULT_SYMBOL_SIZE;
     int internal_crc = 1;
+    const char *log_level_str = "warn";
 
     struct config cfg;
     struct sigaction sa;
@@ -158,6 +160,21 @@ int main(int argc, char *argv[])
 
     log_init();
 
+    /* Parse log level early so it applies to all subsequent logging.
+     * Default is WARN; pass --log-level debug|info|warn|error to change. */
+    while ((opt = getopt_long(argc, argv, "", long_opts, NULL)) != -1) {
+        if (opt == 'L') { log_level_str = optarg; break; }
+    }
+    optind = 1; /* reset for full parse below */
+    {
+        log_level lvl = WARN;
+        if      (strcmp(log_level_str, "debug") == 0) lvl = DEBUG;
+        else if (strcmp(log_level_str, "info")  == 0) lvl = INFO;
+        else if (strcmp(log_level_str, "warn")  == 0) lvl = WARN;
+        else if (strcmp(log_level_str, "error") == 0) lvl = ERROR;
+        log_set_level(lvl);
+    }
+
     if (wirehair_init() != Wirehair_Success) {
         fprintf(stderr, "wirehair_init() failed\n");
         return 1;
@@ -175,6 +192,7 @@ int main(int argc, char *argv[])
         case 'e': parse_int_arg("--depth", optarg, &depth); break;
         case 's': parse_int_arg("--symbol-size", optarg, &symbol_size); break;
         case 'c': parse_int_arg("--internal-symbol-crc", optarg, &internal_crc); break;
+        case 'L': log_level_str = optarg; break;
         default: print_usage(); return 1;
         }
     }
